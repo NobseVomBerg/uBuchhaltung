@@ -1336,7 +1336,9 @@ kein Subagent darauf:
   Konto getragen werden – sonst `SKR_NOT_IN_CHART`/`SKR_OUT_OF_RANGE`/`SKR_IN_USE` auf dem Fehlerweg der Seite, nichts gespeichert; ein unverändert
   zurückgeschickter Wert ist nie ein Verstoß. Die Sperre „SKR-Konto nicht geändert: n Buchungssätze …“ kommt danach, unverändert (1200 → 1800 gelingt,
   solange kein Satz 1800 führt; nichts wird nachgetragen). Die Datenbankschicht prüft nichts (Importe, Seed, Tests). Die Meldungen von `_bank_coa_of`
-  sagen, was zu tun ist („… bitte unter Stammdaten → Bankkonten … wählen (üblich: 1800)“). Texte kurz halten (Entscheidung des Owners: ein Satz
+  sagen, was zu tun ist („… bitte unter Stammdaten → Bankkonten … wählen (üblich: 1800)“). Prüfen und Schreiben laufen unter EINER
+  Sperre (`handlers._BANK_ACCOUNT_LOCK`: Anlegen, Ändern, Ersteinrichtung – zwei gleichzeitige Anfragen bekommen nie dieselbe Nummer), und
+  eine als Text gespeicherte Nummer gilt als vergeben (`_carries_skr_number`). Texte kurz halten (Entscheidung des Owners: ein Satz
   unter dem Feld, keine Erklärstücke). `tests/test_bank_account_chart_choice.py`
 - **Besteuerungsart (seit 2.4.0):** Kleine Variante – die Angabe wird nur gespeichert und angezeigt. `Contacts.VatMethod` (Schema 2004)
   nennt, ob die Umsatzsteuer nach vereinnahmten (`'ist'`, Ist-Versteuerung: mit der Zahlung) oder vereinbarten Entgelten (`'soll'`,
@@ -1409,7 +1411,13 @@ kein Subagent darauf:
   einer anderen Bewegung, Bankzeile, die Bewegung selbst, Forderung, unbekannt, keine Ganzzahl, doppelt – ist 400 mit „Zeile n:
   …“, auch bei einer neuen Bewegung, und nichts ist gespeichert (`tests/test_split_editor_adopt_guard.py`,
   `test_split_editor_atomic.py`). `transaction_id` wird streng gelesen (leer/0 = neu, sonst positive Ganzzahl oder 400); der
-  Editor nimmt höchstens `MAX_SPLIT_ROWS` = 500 Zeilen je Anfrage an (geplant und geschrieben wird unter der Schreibsperre)
+  Editor nimmt höchstens `MAX_SPLIT_ROWS` = 500 Zeilen je Anfrage an (geplant und geschrieben wird unter der Schreibsperre). **Eine veraltete
+  Maske löscht nichts, was sie nie gezeigt hat (seit 2.8.5):** Der Editor nennt im versteckten Feld `split_loaded` die IDs der Zeilen, die
+  er beim Öffnen gezeigt hat (`handlers._loaded_split_ids`: genau ein Feld, kanonische positive Ganzzahlen mit Komma, höchstens 5000 IDs und
+  100 000 Zeichen, sonst 400). Hängt beim Speichern ein Satz unter der Bewegung, der weder in einer Zeile steht noch geladen war – eine
+  Zahlung aus einem zweiten Fenster, ein Satz vom Import oder Abgleich –, lehnt das Planen ab (`SPLIT_ROWS_CHANGED`, 400, nichts
+  gespeichert); bis 2.8.4 galt er als „entfernt“ und ging samt Zuordnung verloren. Fehlt das Feld (ältere Aufrufer), gilt alles wie bisher.
+  Ein neues Skript der Maske, das Sätze anlegt oder löst, muss die Maske neu laden (`tests/test_split_editor_stale_mask.py`)
 - **Bankbewegung mit zugeordneter Zahlung (seit 2.3.15, Entscheidung des Owners: ablehnen, nichts umrechnen):** Solange einer
   Bankbewegung nach dem Speichern noch eine Zuordnung gehört (`InvoicePayments.BookingID` zeigt auf sie oder auf einen ihrer
   Buchungssätze – so ordnet ein Import zu –: Zahlung oder Erstattung), lassen

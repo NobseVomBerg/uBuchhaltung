@@ -26,7 +26,7 @@ from db.matching import _ID_CHUNK
 from server.handlers import MAX_SPLIT_ROWS, handle_add_transaction, link_booking_to_invoice_capped
 from tests.document_helpers import state
 from tests.entry_form_helpers import bank_account, coa, execute, minor, query
-from tests.entry_form_roundtrip import add_row, adopt_row, differences, open_form, snapshot, submit
+from tests.entry_form_roundtrip import add_row, adopt_row, differences, open_form, row_fields, snapshot, submit
 from tests.http_client import post
 
 STATE_TABLES = ('Bookings', 'InvoicePayments', 'Invoices')
@@ -462,7 +462,7 @@ def _with_rows(db, post_data, count, **row):
     Konto 6815, soweit ``row`` nichts anderes nennt."""
     row = {'split_amount': '-0.10', 'split_coa': str(coa(db, 6815)), **row}
     result = dict(post_data)
-    for name in [name for name in post_data if name.startswith('split_')]:
+    for name in row_fields(post_data):
         result[name] = [row.get(name, '')] * count
     return result
 

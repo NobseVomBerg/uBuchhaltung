@@ -1572,9 +1572,7 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             elif self.path.startswith("/invoice/view") or self.path.startswith("/invoice/edit"):
                 query_components = self._query()
                 invoice_id = _id_param(query_components)
-                self.respond(200, PageInvoice(
-                    db, {}, invoice_id,
-                    payment_error=query_components.get("payment_error", [None])[0]))
+                self.respond(200, PageInvoice(db, {}, invoice_id))
             elif self.path.startswith("/invoice/xml_download"):
                 # Abgelegte XRechnung ausliefern – nur herunterladen, nie frisch erzeugen
                 # (todo #3); eine Route, die das XML neu baute, gibt es nicht.

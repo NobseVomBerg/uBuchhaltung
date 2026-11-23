@@ -1045,14 +1045,11 @@ def document_submenu(active):
     ])
 
 
-def PageInvoice(db: Database, filters: dict = None, invoice_id=None, copy_from=None,
-                payment_error=None, err=None):
+def PageInvoice(db: Database, filters: dict = None, invoice_id=None, copy_from=None, err=None):
     """Generate invoice list page with search and filter
 
     copy_from: ID einer Quellrechnung – das Formular öffnet sich dann als
     neue Rechnung mit deren Inhalten (todo #4).
-    payment_error: Grund, warum eine Zahlung aus der Buchungsmaske nicht zugeordnet werden
-    konnte (Klartext, wird maskiert ausgegeben).
     err: Grund, warum eine Aktion abgelehnt wurde (z. B. das Löschen einer versendeten Rechnung) –
     Klartext, kommt als Meldung auf die Seite.
     """
@@ -1257,7 +1254,7 @@ def PageInvoice(db: Database, filters: dict = None, invoice_id=None, copy_from=N
                 ).replace('__DELETE_SENT_BEFORE__', script_json(delete_question(True)))
     s+= '</div><!-- Ende gridLeftCol -->'
     s+= '<div class="gridRightCol" style="order:2">'
-    s+= _invoice_form_html(db, invoice_id, copy_from, payment_error)
+    s+= _invoice_form_html(db, invoice_id, copy_from)
     s+= '</div><!-- Ende gridRightCol --></div><!-- Ende grid2Cols -->'
     if err:
         s += ('<script>document.addEventListener("DOMContentLoaded",function(){'
@@ -1292,12 +1289,12 @@ def _einvoice_notice(db, invoice, invoice_id):
     return f'<tr><td>E-Rechnung:</td><td>{_html.escape(row)}</td></tr>', question
 
 
-def _invoice_form_html(db: Database, invoice_id=None, copy_from=None, payment_error=None):
+def _invoice_form_html(db: Database, invoice_id=None, copy_from=None):
     """Generate invoice form HTML block (no page wrapper).
 
     copy_from: ID einer Quellrechnung. Deren Inhalte füllen das Formular, es
     bleibt aber eine *neue* Rechnung – frisches Datum, frische Nummer, Entwurf
-    (todo #4). payment_error: siehe PageInvoice.
+    (todo #4).
     """
     import datetime
     import json
@@ -2740,8 +2737,6 @@ function copyInvoiceAsNew(invId) {{
     <div style="margin: 30px 0; padding: 20px; border: 1px solid #ddd; border-radius: 4px;">
         <h3>Zahlungsverknüpfungen</h3>
 '''
-        if payment_error:
-            s += f'        <p class="errorColor">{_html.escape(str(payment_error))}</p>\n'
         findings = db.find_payment_inconsistencies(invoice_id)
         if findings:
             s += ('        <div class="warnColor"><strong>Zahlungszuordnung prüfen:</strong><ul>\n'

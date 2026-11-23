@@ -472,6 +472,12 @@ def _refuse_same_account(db, coa_id, counter_coa_id, where=''):
 # So viele Zeilen nimmt der Buchungssatz-Editor in einer Anfrage an. Geplant und geschrieben wird unter der Schreibsperre der
 # Datenbank (``Database.save_bank_with_rows``) – eine Anfrage mit Zehntausenden Zeilen hielte sie fest.
 MAX_SPLIT_ROWS = 500
+# Der Editor nennt mit ``split_loaded`` die Sätze, die er beim Öffnen gezeigt hat (``_loaded_split_ids``): Steht beim Speichern ein anderer unter der
+# Bewegung – zugeordnet in einem zweiten Fenster, angehängt vom Import oder vom Abgleich –, lehnt das Speichern ab, statt ihn als „entfernt“ zu löschen.
+SPLIT_ROWS_CHANGED = ('Die Buchungssätze dieser Bankbewegung wurden inzwischen geändert (zum Beispiel in einem zweiten Fenster). '
+                      'Bitte die Buchung neu öffnen – nichts wurde gespeichert.')
+_LOADED_IDS_MAX = 5000
+_LOADED_CHARS_MAX = 100_000
 
 
 def _form_id(text):
@@ -587,6 +593,30 @@ def _split_row_bookings(db, bank_id, own_ids, lines):
     return rows
 
 
+def _loaded_split_ids(post_data):
+    """Die Sätze, die die Maske beim Öffnen gezeigt hat (Feld ``split_loaded``), als Menge von IDs – ``None``, wenn das Formular das Feld nicht
+    mitbringt (ältere Aufrufer: dann wird nichts verglichen). Das Feld steht genau einmal da; leer heißt „keine Zeile“, sonst sind es IDs mit Komma
+    getrennt, jede eine kanonische positive ASCII-Ganzzahl in 64 Bit (kein Vorzeichen, keine führende Null, kein Leerraum), höchstens
+    ``_LOADED_IDS_MAX`` Stück in höchstens ``_LOADED_CHARS_MAX`` Zeichen. Alles andere ist ``_Refused(INVALID_REQUEST)``."""
+    values = post_data.get('split_loaded')
+    if values is None:
+        return None
+    if len(values) != 1 or len(values[0]) > _LOADED_CHARS_MAX:
+        raise _Refused(INVALID_REQUEST)
+    if not values[0]:
+        return set()
+    tokens = values[0].split(',')
+    if len(tokens) > _LOADED_IDS_MAX:
+        raise _Refused(INVALID_REQUEST)
+    ids = set()
+    for token in tokens:
+        number = _form_id(token)
+        if number is None or str(number) != token:          # ``_form_id`` nimmt Leerraum und führende Nullen hin, hier gilt nur die kanonische Schreibweise
+            raise _Refused(INVALID_REQUEST)
+        ids.add(number)
+    return ids
+
+
 def _plan_split_rows(db, bank_id, post_data, account_coa_id, date, date_tax,
                      recipient, currency):
     """Buchungssätze einer Bankbewegung aus dem Editor lesen und prüfen (schreibt nichts).
@@ -633,6 +663,11 @@ def _plan_split_rows(db, bank_id, post_data, account_coa_id, date, date_tax,
     Geplant wird in ``Database.save_bank_with_rows``, innerhalb der Schreibsperre und
     vor dem ersten Schreiben: Die Prüfung dort ist die maßgebliche, der Stand ändert
     sich bis zum Schreiben nicht mehr.
+
+    Das Feld ``split_loaded`` nennt die Sätze, die die Maske beim Öffnen gezeigt hat (``_loaded_split_ids``): Hängt unter der Bankbewegung
+    inzwischen einer, den sie nie gesehen hat (ein zweites Fenster hat eine Zahlung zugeordnet, der Import oder der Abgleich hat einen
+    angehängt), lehnt das Planen ab (``SPLIT_ROWS_CHANGED``) – er gälte sonst als vom Nutzer entfernt und würde gelöscht. Ein ungültiges Feld
+    wird auch bei einer neuen Bankbewegung abgelehnt; fehlt es ganz, gilt alles wie bisher.
     """
     ids = post_data.get('split_id', [])
     amounts = post_data.get('split_amount', [])
@@ -646,6 +681,7 @@ def _plan_split_rows(db, bank_id, post_data, account_coa_id, date, date_tax,
     def _at(seq, i, default=''):
         return seq[i] if i < len(seq) else default
 
+    loaded = _loaded_split_ids(post_data)         # ein ungültiges Feld lehnt ab, bevor eine Zeile gelesen ist – auch bei einer neuen Bewegung
     bank_coa_ids = db.get_bank_coa_ids()
     payment_coa_ids = db.get_payment_coa_ids()
     # Orientierung bestehender Sätze merken: liquide-zuerst gebuchte Sätze
@@ -766,9 +802,14 @@ def _plan_split_rows(db, bank_id, post_data, account_coa_id, date, date_tax,
                 del fields['document_number']
         planned.append((rid, fields, adopt))
     if bank_id:
+        kept = {rid for rid, _fields, _adopt in planned if rid is not None}
+        # Eine veraltete Maske: Hängt unter der Bewegung ein Satz, der weder in einer Zeile steht noch beim Öffnen gezeigt wurde, kennt der
+        # Nutzer ihn nicht – er hat ihn nicht entfernt. Abgelehnt, bevor irgendetwas geschrieben ist.
+        if loaded is not None and db.dropped_split_rows(bank_id, kept | loaded):
+            raise _Refused(SPLIT_ROWS_CHANGED)
         # Schritt 2: Was der Nutzer entfernt hat, darf keine Zahlung mitnehmen, die das Guthaben einer stornierten Rechnung
         # deckt. Geprüft wird jetzt, vor dem ersten Schreiben – ein Speichern gelingt ganz oder gar nicht.
-        dropped = db.dropped_split_rows(bank_id, {rid for rid, _fields, _adopt in planned if rid is not None})
+        dropped = db.dropped_split_rows(bank_id, kept)
         blocker = db.split_removal_blocker(dropped)
         if blocker:
             raise _Refused(blocker)
@@ -1145,15 +1186,27 @@ def _business_only_from_form(post_data):
     return post_data.get('business_only', [''])[0] == '1'
 
 
+# Die Nummer eines Bank- oder Kassenkontos prüfen und das Konto anlegen oder ändern gehört zusammen: Ohne diese Sperre bekämen zwei Anfragen zugleich
+# dieselbe freie Nummer (beide prüfen, bevor eine schreibt).
+_BANK_ACCOUNT_LOCK = threading.Lock()
+
+
+def _carries_skr_number(stored, number):
+    """Trägt ein Konto mit dem gespeicherten Wert ``stored`` (``Accounts.SKRAccount``) die Nummer ``number``? Auch ein als Text gespeicherter
+    Wert gilt (SQLite wandelt ihn nicht in eine Zahl um, wenn etwa ein geschütztes Leerzeichen daran hängt); NULL nie."""
+    return stored is not None and str(stored).strip() == str(number)
+
+
 def free_bank_skr_number(db):
     """Die kleinste Kontonummer des Kontenrahmens im Bereich der Bankkonten (``BANK_SKR_RANGE``), die noch kein eigenes Bank- oder
     Kassenkonto trägt – 1800, dann 1810 … –, sonst ``None``. EINE Stelle für die Vorauswahl im Formular und für das Bankkonto der
     Ersteinrichtung: Die App rechnet in SKR04, eine Nummer aus einem anderen Kontenrahmen (1200) stünde nicht im Kontenrahmen, und
     keine Zahlung ließe sich zuordnen."""
     low, high = BANK_SKR_RANGE
-    taken = {row[7] for row in db.fetch_accounts()}
+    accounts = db.fetch_accounts()
     numbers = {row[2] for row in db.fetch_chart_of_accounts() if type(row[2]) is int and low <= row[2] <= high}
-    return next((number for number in sorted(numbers) if number not in taken), None)
+    return next((number for number in sorted(numbers)
+                 if not any(_carries_skr_number(row[7], number) for row in accounts)), None)
 
 
 def _skr_account_refusal(db, number, account_id=None, is_cash=False):
@@ -1169,7 +1222,7 @@ def _skr_account_refusal(db, number, account_id=None, is_cash=False):
     low, high = CASH_SKR_RANGE if is_cash else BANK_SKR_RANGE
     if not low <= number <= high:
         return SKR_OUT_OF_RANGE
-    if any(row[0] != account_id and row[7] == number for row in db.fetch_accounts()):
+    if any(row[0] != account_id and _carries_skr_number(row[7], number) for row in db.fetch_accounts()):
         return SKR_IN_USE.format(n=number)
     return None
 
@@ -1185,13 +1238,14 @@ def handle_add_bankaccount(db: Database, post_data):
     skr_account = _form_int(skr_raw, 1, 99999)
     if skr_raw.strip() and skr_account is None:
         return 303, f"/masterdata/bankaccounts?error={quote(SKR_ACCOUNT_ERROR, safe='')}"
-    if skr_account is not None:
-        refusal = _skr_account_refusal(db, skr_account)
-        if refusal:
-            return 303, f"/masterdata/bankaccounts?error={quote(refusal, safe='')}"
-    business_only = _business_only_from_form(post_data)
-    db.insert_account(name, holder, iban, bic, bank_name, skr_account=skr_account,
-                      business_only=True if business_only is None else business_only)
+    with _BANK_ACCOUNT_LOCK:                        # prüfen und anlegen gehören zusammen
+        if skr_account is not None:
+            refusal = _skr_account_refusal(db, skr_account)
+            if refusal:
+                return 303, f"/masterdata/bankaccounts?error={quote(refusal, safe='')}"
+        business_only = _business_only_from_form(post_data)
+        db.insert_account(name, holder, iban, bic, bank_name, skr_account=skr_account,
+                          business_only=True if business_only is None else business_only)
     return 303, "/masterdata/bankaccounts"
 
 def handle_update_bankaccount(db: Database, post_data):
@@ -1208,32 +1262,33 @@ def handle_update_bankaccount(db: Database, post_data):
     skr_account = _form_int(skr_raw, 1, 99999)
     if skr_raw.strip() and skr_account is None:
         return 303, f"/masterdata/bankaccounts/edit?id={account_id}&error={quote(SKR_ACCOUNT_ERROR, safe='')}"
-    current = db.get_account_by_id(account_id)
-    old_skr = current[7] if current else None
-    if skr_account != old_skr:
-        if skr_account is not None:
-            refusal = _skr_account_refusal(db, skr_account, account_id, is_cash=bool(current and current[6] == 1))
-            if refusal:
-                return 303, f"/masterdata/bankaccounts/edit?id={account_id}&error={quote(refusal, safe='')}"
-        # Die Form eines Buchungssatzes (Bookings.EntryForm) steht seit 2.1.0 fest, und EÜR
-        # und DATEV-Export lesen sie. Zeilen ohne Form (Roh-SQL), die Zuordnung der Sätze zu
-        # Kasse und Dashboard, die Split-Summe und der Abgleich richten sich aber weiter nach
-        # den Konten, die gerade Geldkonten sind – das Vorzeichen stammt vom Zeitpunkt der
-        # Buchung bzw. des Imports. Hängen schon Sätze am alten oder am neuen Konto, würde die
-        # Umstellung sie umdeuten (Ausgabe ↔ Einnahme); die Sperre bleibt.
-        affected = db.count_entries_on_account_numbers([old_skr, skr_account])
-        if affected:
-            msg = (f'SKR-Konto nicht geändert: {affected} Buchungssätze führen das bisherige '
-                   f'oder das neue Konto. Die Umstellung würde sie anders lesen als gebucht '
-                   f'(Einnahme statt Ausgabe). Das Konto lässt sich nur umstellen, solange '
-                   f'keine Buchungen daran hängen – z. B. vor dem ersten Import.')
-            return 303, f"/masterdata/bankaccounts/edit?id={account_id}&error={quote(msg)}"
-    if skr_account == DEFAULT_CASH_ACCOUNT:
-        # Ältere Datenbanken kennen das Kassenkonto 1600 noch nicht – ohne das Konto im
-        # Kontenrahmen bliebe die Umstellung einer Kasse auf 1600 wirkungslos.
-        db.ensure_cash_coa()
-    db.update_account(account_id, name, holder, iban, bic, bank_name, skr_account=skr_account,
-                      business_only=_business_only_from_form(post_data))
+    with _BANK_ACCOUNT_LOCK:                        # prüfen und ändern gehören zusammen (auch der gespeicherte Stand wird darin gelesen)
+        current = db.get_account_by_id(account_id)
+        old_skr = current[7] if current else None
+        if skr_account != old_skr:
+            if skr_account is not None:
+                refusal = _skr_account_refusal(db, skr_account, account_id, is_cash=bool(current and current[6] == 1))
+                if refusal:
+                    return 303, f"/masterdata/bankaccounts/edit?id={account_id}&error={quote(refusal, safe='')}"
+            # Die Form eines Buchungssatzes (Bookings.EntryForm) steht seit 2.1.0 fest, und EÜR
+            # und DATEV-Export lesen sie. Zeilen ohne Form (Roh-SQL), die Zuordnung der Sätze zu
+            # Kasse und Dashboard, die Split-Summe und der Abgleich richten sich aber weiter nach
+            # den Konten, die gerade Geldkonten sind – das Vorzeichen stammt vom Zeitpunkt der
+            # Buchung bzw. des Imports. Hängen schon Sätze am alten oder am neuen Konto, würde die
+            # Umstellung sie umdeuten (Ausgabe ↔ Einnahme); die Sperre bleibt.
+            affected = db.count_entries_on_account_numbers([old_skr, skr_account])
+            if affected:
+                msg = (f'SKR-Konto nicht geändert: {affected} Buchungssätze führen das bisherige '
+                       f'oder das neue Konto. Die Umstellung würde sie anders lesen als gebucht '
+                       f'(Einnahme statt Ausgabe). Das Konto lässt sich nur umstellen, solange '
+                       f'keine Buchungen daran hängen – z. B. vor dem ersten Import.')
+                return 303, f"/masterdata/bankaccounts/edit?id={account_id}&error={quote(msg)}"
+        if skr_account == DEFAULT_CASH_ACCOUNT:
+            # Ältere Datenbanken kennen das Kassenkonto 1600 noch nicht – ohne das Konto im
+            # Kontenrahmen bliebe die Umstellung einer Kasse auf 1600 wirkungslos.
+            db.ensure_cash_coa()
+        db.update_account(account_id, name, holder, iban, bic, bank_name, skr_account=skr_account,
+                          business_only=_business_only_from_form(post_data))
     return 303, "/masterdata/bankaccounts"
 
 def _skr_redirect(msg, type_='success'):
@@ -5355,15 +5410,16 @@ def handle_setup_save(db: Database, post_data: dict):
         bic = g('bic').strip()
         bank_name = g('bank_name').strip()
         try:
-            db.insert_account(
-                name=bank_name_label,
-                holder=company_name,
-                number=iban,
-                bic=bic,
-                bank_name=bank_name,
-                is_cash=0,
-                skr_account=free_bank_skr_number(db),       # 1800 im Standard-Kontenrahmen; nie eine feste Nummer
-            )
+            with _BANK_ACCOUNT_LOCK:                # die freie Nummer suchen und das Konto anlegen gehören zusammen
+                db.insert_account(
+                    name=bank_name_label,
+                    holder=company_name,
+                    number=iban,
+                    bic=bic,
+                    bank_name=bank_name,
+                    is_cash=0,
+                    skr_account=free_bank_skr_number(db),       # 1800 im Standard-Kontenrahmen; nie eine feste Nummer
+                )
         except Exception:
             import traceback
             traceback.print_exc()                   # der volle Fehler nur ins Server-Log, nie in die Antwort

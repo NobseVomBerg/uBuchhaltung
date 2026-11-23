@@ -1607,9 +1607,8 @@ def test_inconsistency_hint_and_list_are_shown_and_escaped(db, acct):
     inv = _sent(db, 'R-<b>', 119.00, status='finalized')
     db.link_invoice_to_transaction(inv, _bank(db, acct, 119.00), 119.00)
 
-    page = PageInvoice(db, {}, inv, payment_error='<script>alert(1)</script>')
+    page = PageInvoice(db, {}, inv)
     assert 'Zahlungszuordnung prüfen' in page
-    assert '&lt;script&gt;alert(1)&lt;/script&gt;' in page and '<script>alert(1)</script>' not in page
 
     misc = PageMiscellaneous(db, check_payments=True)
     assert 'Zahlungszuordnungen' in misc
@@ -1700,13 +1699,13 @@ def test_link_and_delete_routes_over_http_book_and_unbook_the_payment(server_por
     assert _children(db, bank) == [] and _invoice_state(db, books.invoice)[0] in ('sent', 'overdue')
 
 
-def test_invoice_page_over_http_shows_the_payment_error_escaped(server_port, auto_login):
+def test_invoice_page_over_http_ignores_a_payment_error_in_the_address(server_port, auto_login):
+    """Kein Weg der App setzt ``payment_error`` mehr (scheitert die Zuordnung nach dem Speichern der Buchungsmaske, steht der Grund auf
+    der Maske selbst, ``err``): Ein Wert in der Adresse kommt nirgends auf die Seite."""
     books = make_books(auto_login)
-    resp = get(server_port, f'/invoice/edit?id={books.invoice}&payment_error='
-                            '%3Cscript%3Ealert(1)%3C%2Fscript%3E')
+    resp = get(server_port, f'/invoice/edit?id={books.invoice}&payment_error=Fremder-Text-Z9')
     assert resp.status == 200
-    assert '&lt;script&gt;alert(1)&lt;/script&gt;' in resp.text
-    assert '<script>alert(1)</script>' not in resp.text
+    assert 'Fremder-Text-Z9' not in resp.text
 
 
 # ── Bausteine ────────────────────────────────────────────────────────────────

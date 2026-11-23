@@ -667,6 +667,9 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                 f'</tr>')
 
         rows_html = ''.join(_split_row(r) for r in split_rows)
+        # Die Sätze, die diese Maske gezeigt hat (``split_loaded``, die IDs mit Komma getrennt): Steht beim Speichern ein anderer unter der
+        # Bewegung, lehnt der Server ab (``handlers._plan_split_rows``) – sonst gälte er als „entfernt“ und würde gelöscht
+        loaded_ids = ','.join(str(int(r['id'])) for r in split_rows)
         bank_amount = float(edit_trans[11] or 0)
         # Als JSON in den Skriptblock (nie nur maskiert in Anführungszeichen): Ein Zeilenumbruch im Verwendungszweck – der Import eines
         # PDF-Auszugs verbindet dessen Zeilen damit – oder ein Backslash am Ende beendete sonst die Zeichenkette, und der ganze Block des
@@ -706,6 +709,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                 '&#8631; Zuordnen</button>')
         s+= f'''
             <h3 style="margin-top:18px;">Buchungssätze zu dieser Bankbewegung</h3>
+            <input type="hidden" name="split_loaded" value="{loaded_ids}">
             <div class="splitScroll">
             <table id="splitTable">
                 <colgroup><col><col class="colSplitAmount"><col class="colSplitCoa">
