@@ -1242,6 +1242,53 @@ kein Subagent darauf:
   `execute`) und `revenueCoaId` streng; ein unerwarteter Fehler ist 500 mit `REBUILD_FAILED`, nie ein Ausnahmetext. Die Seite der Rechnung
   zeigt Knopf und Plan unter der Befundliste (nur mit Befund, nicht an einer Stornorechnung; das Skript setzt Werte nur über `textContent`);
   *Sonstiges* verweist darauf. `tests/test_invoice_payment_repair.py`
+- **Zahlungsvorschläge (seit 2.8.1, `db/payment_matching.py` rein, `db/payment_suggestions.py` nur lesend):** Zu einem Zahlungseingang wird die
+  passende offene Rechnung **vorgeschlagen – zugeordnet wird allein auf Klick** über die bestehenden Wege (`POST /invoice/link-payment`, Feld
+  `invoice_id` der Maske → `assign_invoice_payment`), nichts ist vorausgewählt; nicht einführen, dass ein Speichern still zuordnet. **Vorschlag** =
+  die Rechnungsnummer steht im Verwendungszweck oder im Empfänger der Bewegung ODER (freier Betrag = offener Betrag UND gemeinsames Namenswort von
+  Empfänger und Kunde); ein gleicher Betrag allein ist nie ein Vorschlag. **Es zählt nur, was von der Bank kommt:** Beleg-Nr. und Kontakt der
+  Bankzeile zählen bewusst nicht – eine Zuordnung trägt beides aus der Rechnung ein (`_backfill_booking_skr`), und es bleibt nach dem Entfernen
+  stehen; eine falsch zugeordnete und wieder gelöste Rechnung wäre sonst der stärkste Vorschlag. Kundenname ist die Firma, sonst der Name (nie der
+  Ansprechpartner neben der Firma). Nur in Euro (Währung leer oder `EUR`, auf beiden Seiten). Punkte 100/50/30, feste Begründungen (`reason_text`,
+  „ · “), eine Zahlung mehr als 7 Tage vor dem Rechnungsdatum nur mit Nummer, höchstens 5 je Bewegung bzw. Rechnung. **Nummer im Text:** gesucht im
+  Originaltext ohne Rücksicht auf die Schreibweise; an einer Fuge mit einem Buchstaben darf EIN Trennzeichen stehen (Leerraum, `-`, `_`, `/`, `.` –
+  `R 26003`, `R-26003`), **zwischen zwei Ziffern nur dort, wo die Nummer selbst eines trägt** (`_number_parts`: `RE-2026/0042` steht in
+  `RE 2026 0042`; `26001` nicht in `26.001,00`, `202601` nicht in `2026-01-15`, `R26003` nicht in `R26 003`), ein Punkt dort nur, wo die Nummer
+  selbst einen Punkt trägt (`26/001` nicht in `26.001,00`); Ziffernsperre an dem Rand, an dem die Nummer selbst mit einer Ziffer beginnt oder endet
+  (`R26001` steht nicht in `R260010`, wohl aber in `RE-Nr.R26001.KD-Nr.` und `1R26001`); brauchbar wie bei den Belegen (mindestens 4 Zeichen mit
+  einer Ziffer, rein numerisch ab 5), höchstens 40 Zeichen, Felder auf 2000 Zeichen gekappt, linear. Diese Regeln nicht lockern – lieber ein
+  Vorschlag weniger als ein falscher. **`pair_up`** ist die Eins-zu-eins-Liste der Übersicht: Paare nach (−Punkte, Datumsabstand, IDs), jede
+  Bewegung und jede Rechnung höchstens einmal – zwei gleich hohe Rechnungen und Zahlungen desselben Kunden bekommen so je die zeitlich nächste –,
+  `ambiguous` („mehrere möglich – bitte prüfen“) bei einem weiteren Paar gleicher Punktzahl; ein Paar, das schon in `InvoicePayments` steht, ist nie
+  ein Vorschlag. **Bewegungen:** Übersicht und Rechnungsseite lesen nur Bankbewegungen mit Betrag > 0 ohne Kind und ohne Zuordnung (frei = Betrag;
+  `_UNBOOKED_MOVEMENTS` liest die Zuordnungen EINMAL über `NOT IN` – `InvoicePayments` hat keinen Index auf `BookingID`, eine Unterabfrage je
+  Bewegung kostete bei 20 000 unkontierten Eingängen 1,2 s statt 28 ms; ein Test zählt die SQLite-Schritte); der freie Rest nach `_free_minor_sql`
+  gilt für die EINE Bewegung der Maske. Kaputte Werte (Betrag als Text, unlesbares Datum) sind kein Kandidat, nie ein Fehler. **Seiten:** Kasten
+  `#paySuggest` „Zahlungseingänge zu offenen Rechnungen“ links über der Buchungsliste (aus allen Zeiträumen, höchstens 20 Zeilen, „Zuordnen“ =
+  `payAssign`, lädt danach die Adresse ohne `err` neu; `refreshTable()` erneuert ihn nach einem Import; nicht im Bereich, den `openEditForm`
+  austauscht), Maske einer Bankbewegung mit freiem Rest (Vorschläge zuerst in der Auswahl „Rechnung“, „Übernehmen“ setzt nur den Wert), Rechnungsseite
+  (Vorschläge zuerst, Begründung unter dem Auftraggeber, der Haken bei gleichem Betrag bleibt). Scheitert eine der Abfragen, bleibt die Seite stehen
+  (leer, Fehler im Server-Log). **Fehlerweg der Maske:** Scheitert die Zuordnung nach dem Speichern, bleibt der Nutzer bei der Buchung
+  (303 auf `/transactions/edit?id=<ID>&err=…`, `PAYMENT_NOT_ASSIGNED`: „Die Buchung ist gespeichert, die Zahlung wurde aber nicht zugeordnet: …“),
+  nicht mehr auf der Rechnung. Bekannte Grenzen: Skonto zählt nicht; ein Umbruch der Bank mitten in den Ziffern der Nummer ist kein Treffer; eine
+  Rechnung, die eine Erlöskonto-Wahl braucht, lässt sich im Kasten nicht zuordnen (die Wahl gibt es auf Rechnungsseite und Maske); vorgeschlagen
+  wird auch eine Bewegung, deren Bankkonto kein Konto im Kontenrahmen hat (der Klick meldet es). **Werte im Skript des Buchungssatz-Editors**
+  (`SPLIT_BANK_TEXT`, `SPLIT_BANK_DOCNR`) stehen als JSON (`script_json`): Ein Zeilenumbruch im Verwendungszweck – der Import eines PDF-Auszugs
+  verbindet Zeilen damit – ließ den Block sonst ausfallen (`tests/test_split_editor_script_values.py`). `tests/test_payment_matching.py`,
+  `tests/test_payment_suggestions.py`
+- **Konto im Kontenrahmen eines Bankkontos (seit 2.8.1, `Accounts.SKRAccount`):** Das Formular Stammdaten → Bankkonten bietet eine **Auswahl**
+  (`pages_masterdata._skr_select`): die Konten des Kontenrahmens im Bereich der Art – Bank 1700–1899, Kasse 1600–1699
+  (`handlers.BANK_SKR_RANGE`/`CASH_SKR_RANGE`) – und „-- keines --“. **Ein neues Bankkonto bekommt die kleinste freie Nummer** (1800, dann 1810 …;
+  `handlers.free_bank_skr_number` – EINE Stelle für das Formular und für das Bankkonto der Ersteinrichtung, `handle_setup_save`, das bis 2.8.0 fest
+  1200 trug: die Banknummer eines anderen Kontenrahmens, mit der sich keine Zahlung zuordnen ließ). Ein gespeicherter Wert, den die Auswahl nicht
+  kennt (1200, eine alte Kasse mit 1460), steht als eigene gewählte Option da, nichts wird still umgestellt; die Liste nennt in Warnfarbe „kein Konto
+  im Kontenrahmen“ bzw. „1200 nicht im Kontenrahmen“. **Speichern** (`handlers._skr_account_refusal`, EINE Prüfung für Anlegen und Ändern): Ein neuer
+  oder geänderter Wert muss im Kontenrahmen stehen (die Kasse auf 1600 legt ihr Konto selbst an), im Bereich liegen und von keinem anderen eigenen
+  Konto getragen werden – sonst `SKR_NOT_IN_CHART`/`SKR_OUT_OF_RANGE`/`SKR_IN_USE` auf dem Fehlerweg der Seite, nichts gespeichert; ein unverändert
+  zurückgeschickter Wert ist nie ein Verstoß. Die Sperre „SKR-Konto nicht geändert: n Buchungssätze …“ kommt danach, unverändert (1200 → 1800 gelingt,
+  solange kein Satz 1800 führt; nichts wird nachgetragen). Die Datenbankschicht prüft nichts (Importe, Seed, Tests). Die Meldungen von `_bank_coa_of`
+  sagen, was zu tun ist („… bitte unter Stammdaten → Bankkonten … wählen (üblich: 1800)“). Texte kurz halten (Entscheidung des Owners: ein Satz
+  unter dem Feld, keine Erklärstücke). `tests/test_bank_account_chart_choice.py`
 - **Besteuerungsart (seit 2.4.0):** Kleine Variante – die Angabe wird nur gespeichert und angezeigt. `Contacts.VatMethod` (Schema 2004)
   nennt, ob die Umsatzsteuer nach vereinnahmten (`'ist'`, Ist-Versteuerung: mit der Zahlung) oder vereinbarten Entgelten (`'soll'`,
   Soll-Versteuerung: mit der Leistung) entsteht; NULL = nicht festgelegt. Es trägt sie nur ein eigener Kontakt (`ContactType='own'`, Firma

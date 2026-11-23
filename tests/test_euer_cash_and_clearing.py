@@ -43,7 +43,6 @@ from db.matching import is_asset_transfer
 from money import from_minor
 from server.handlers import (
     handle_add_transaction, handle_book_depreciation, handle_datev_export,
-    handle_update_bankaccount,
 )
 from server.pages_dashboard import PageDashboard
 from tests.fdb_builder import FdbBuilder, INT64, LONG, SHORT, TEXT, TIMESTAMP, Column
@@ -77,14 +76,14 @@ def _execute(db, sql, params=()):
 
 def _make_db(tmp_path, kasse_skr, name='buch.db'):
     """Frische Datenbank mit Girokonto (SKR 1800) und der automatisch angelegten Kasse; deren
-    SKR-Nummer wird wie in den Stammdaten (``handle_update_bankaccount``) auf ``kasse_skr``
-    gestellt (``None`` = leer)."""
+    SKR-Nummer wird auf ``kasse_skr`` gestellt (``None`` = leer) – über die Datenbankschicht, so wie
+    ältere Datenbanken ihre Kasse tragen: Das Formular der Stammdaten nimmt für die Kasse seit 2.8.1
+    nur noch 1600–1699 aus dem Kontenrahmen (1460 nicht mehr)."""
     db = Database(db_name=str(tmp_path / name))
     db.insert_account('Cash-Giro', 'Owner', 'DE00CASHCLEAR', 'BIC', 'Bank', is_cash=0,
                       skr_account=1800)
     kasse = next(a for a in db.fetch_accounts() if a[6])
-    handle_update_bankaccount(db, {'id': [str(kasse[0])], 'name': [kasse[1]],
-                                   'skr_account': ['' if kasse_skr is None else str(kasse_skr)]})
+    db.update_account(kasse[0], kasse[1], kasse[2], kasse[3], kasse[4], kasse[5], skr_account=kasse_skr)
     return db
 
 

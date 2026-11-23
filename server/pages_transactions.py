@@ -5,13 +5,15 @@
 Transactions page (Buchungen: Bankbewegungen + Buchungssätze)
 """
 import html as _html
+import traceback
 from decimal import Decimal
 import demo
 from db import Database
-from money import fmt_eur
+from money import fmt_eur, from_minor
 from db.matching import bank_effect, is_bank_effective, is_mirror_row, purpose_in_counter
 from db.invoices import InvoiceCol
 from db.invoice_payments import PAYABLE_STATUSES, has_mixed_rates
+from db.payment_matching import reason_text
 from .pages import Header1, Header2, Header3, Footer, script_json
 from .pages_invoice import revenue_coa_choice
 from .period import period_filter_widget
@@ -123,6 +125,79 @@ def _receipt_links_block(db, booking_id):
         + f'var TX_LINK_BOOKING_ID = {int(booking_id)};\n'
         + f'var TX_RECEIPTS = {script_json(linked_documents(db, booking_id))};\n'
         + TX_LINK_JS + '</script>')
+
+
+def invoice_option_label(number, name, due):
+    """Der Text einer offenen Rechnung in der Auswahl „Rechnung“ der Maske: Nummer, Kunde, offener Betrag (Euro). Roh – wer ihn ausgibt, maskiert ihn."""
+    return f"{number} — {name} — offen {fmt_eur(due)}"
+
+
+# ── Zahlungseingänge zu offenen Rechnungen (der Kasten über der Buchungsliste, seit 2.8.1) ───────────────────────────────────────────
+PAY_SUGGEST_LIMIT = 20          # so viele Zeilen zeigt der Kasten höchstens; darunter „… und n weitere“
+PAY_FAILED = 'Die Zahlung konnte nicht zugeordnet werden.'
+
+# „Zuordnen“ ruft den bestehenden Weg (POST /invoice/link-payment, ohne Betrag: so viel wie möglich); das Skript der Fußzeile hängt das CSRF-Token
+# an. Erfolg: die Seite unter derselben Adresse neu laden – der Vorschlag ist dann weg. Fehler: der Klartext der Antwort über appMsg (textContent),
+# die Zeile bleibt. Nur var und function; die IDs stehen als Zahl im Aufruf.
+PAY_SUGGEST_JS = '''function payAssign(invoiceId, bookingId, button) {
+    button.disabled = true;      // ein Doppelklick ordnet nicht doppelt zu
+    fetch('/invoice/link-payment', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({invoice_id: invoiceId, transaction_id: bookingId})
+    }).then(function (r) { return r.json(); }).then(function (data) {
+        if (data.success) {
+            // ohne eine alte Meldung in der Adresse neu laden (``err`` eines früheren, gescheiterten Speicherns)
+            var query = new URLSearchParams(window.location.search);
+            query.delete('err');
+            var rest = query.toString();
+            window.location.href = window.location.pathname + (rest ? '?' + rest : '');
+            return;
+        }
+        button.disabled = false;
+        appMsg(data.error || PAY_FAILED, 'error');
+    }).catch(function () {
+        button.disabled = false;
+        appMsg(PAY_FAILED, 'error');
+    });
+}
+'''
+
+
+def _payment_suggestions_html(db):
+    """Der Inhalt des Kastens „Zahlungseingänge zu offenen Rechnungen“ (``Database.suggest_invoice_payments``): je Vorschlag eine Zeile – Datum und Auftraggeber
+    der Bewegung, ihr freier Betrag, die Rechnung (die Nummer als Link), ihr Kunde und offener Betrag, die Begründung, „Zuordnen“ –, höchstens
+    ``PAY_SUGGEST_LIMIT`` Zeilen, darunter „… und n weitere“. Leer, wenn es keine Vorschläge gibt (dann gibt es auch keinen Kasten). Jeder Wert aus der
+    Datenbank ist maskiert, die IDs stehen nur als Zahl. Es wird nur vorgeschlagen; zugeordnet wird erst mit dem Klick."""
+    try:
+        overview = db.suggest_invoice_payments(PAY_SUGGEST_LIMIT)
+    except Exception:                               # die Seite hängt nicht an den Vorschlägen
+        traceback.print_exc()                       # der volle Fehler nur ins Server-Log
+        return ''
+    if not overview.items:
+        return ''
+
+    def esc(value):
+        return _html.escape(str(value), quote=True)
+
+    rows = ''
+    for suggestion, movement, invoice in overview.items:
+        rows += (
+            f'<tr><td>{esc(movement["date"] or "–")}</td><td>{esc(movement["recipient"] or "")}</td>'
+            f'<td class="num">{esc(fmt_eur(from_minor(movement["amount_minor"])))}</td>'
+            f'<td><a href="/invoice/edit?id={int(invoice["id"])}">{esc(invoice["number"] or invoice["id"])}</a></td>'
+            f'<td>{esc(invoice["label"])}</td><td class="num">{esc(fmt_eur(from_minor(invoice["open_minor"])))}</td>'
+            f'<td>{esc(reason_text(suggestion))}</td>'
+            f'<td><button type="button" class="coloredButton btn-sm bg-green" title="Ordnet den Zahlungseingang dieser Rechnung zu" '
+            f'onclick="payAssign({int(invoice["id"])}, {int(movement["id"])}, this)">Zuordnen</button></td></tr>\n')
+    more = f'<p class="hint">… und {int(overview.more)} weitere</p>\n' if overview.more else ''
+    return ('<div class="rectRounded">\n'
+            '<h3>Zahlungseingänge zu offenen Rechnungen</h3>\n'
+            '<p class="hint">Vorschläge aus allen Zeiträumen, nicht nur aus dem gewählten. Zugeordnet wird erst mit „Zuordnen“.</p>\n'
+            '<table class="refundTable">\n'
+            '<tr><th>Datum</th><th>Auftraggeber</th><th class="num">Betrag (frei)</th><th>Rechnung</th><th>Kunde</th>'
+            '<th class="num">offen</th><th>Begründung</th><th></th></tr>\n'
+            f'{rows}</table>\n{more}</div>\n')
 
 
 # Spaltenindizes in Bookings (SELECT *):
@@ -314,22 +389,44 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
     # Zahlungseingänge lassen sich zuordnen); bestehende Zuordnungen werden angezeigt und nur
     # über die Rechnungsseite gelöst.
     allocated_ids = {a[1] for a in allocations}
-    invoice_options = ''
-    for oinv in open_invoices:
-        if oinv[0] in allocated_ids:
-            continue
-        oinv_due = oinv[39] if oinv[39] is not None else (oinv[38] or 0)
-        sel = ' selected' if prefill.get('invoice_id') == oinv[0] else ''
-        olabel = f"{oinv[1] or oinv[0]} — {oinv[15] or oinv[14] or ''} — offen {fmt_eur(oinv_due)}"
-        invoice_options += f'<option value="{oinv[0]}"{sel}>{_html.escape(olabel)}</option>'
     show_invoice_select = (not edit_trans) or (
         is_bank_form and (edit_trans[11] or 0) > 0 and booking_free is not None
         and booking_free > 0)
+    # Vorschläge (Rechnungsnummer im Verwendungszweck, Betrag, Kunde) gibt es nur für eine vorhandene Bankbewegung mit freiem Rest: Für eine
+    # neue Buchung und die Vorbelegung aus einer Rechnung (from_invoice) ändert sich nichts. Sie stehen in der Auswahl zuerst, danach die übrigen
+    # wie bisher; gewählt bleibt „-- Keine Rechnung --“ – zugeordnet wird erst mit „Aktualisieren“.
+    suggestions = []
+    if edit_trans and show_invoice_select:
+        try:
+            suggestions = [(pair, sinv) for pair, sinv in db.suggest_invoices_for_booking(edit_trans[0])
+                           if sinv['id'] not in allocated_ids]
+        except Exception:                           # die Maske hängt nicht an den Vorschlägen
+            traceback.print_exc()                   # der volle Fehler nur ins Server-Log
+    suggested_ids = {sinv['id'] for _pair, sinv in suggestions}
+    invoice_options = ''
+    for pair, sinv in suggestions:
+        slabel = invoice_option_label(sinv['number'] or sinv['id'], sinv['label'], from_minor(sinv['open_minor']))
+        invoice_options += f'<option value="{int(sinv["id"])}">{_html.escape(f"{slabel} — Vorschlag: {reason_text(pair)}")}</option>'
+    for oinv in open_invoices:
+        if oinv[0] in allocated_ids or oinv[0] in suggested_ids:
+            continue
+        oinv_due = oinv[39] if oinv[39] is not None else (oinv[38] or 0)
+        sel = ' selected' if prefill.get('invoice_id') == oinv[0] else ''
+        olabel = invoice_option_label(oinv[1] or oinv[0], oinv[15] or oinv[14] or '', oinv_due)
+        invoice_options += f'<option value="{oinv[0]}"{sel}>{_html.escape(olabel)}</option>'
     invoice_field = ''
     if show_invoice_select:
         invoice_field = ('<select name="invoice_id">'
                          '<option value="">-- Keine Rechnung --</option>'
                          f'{invoice_options}</select>')
+    suggestion_line = ''
+    if suggestions:
+        best_pair, best_invoice = suggestions[0]
+        # „Übernehmen“ setzt nur den Wert der Auswahl (kein Speichern, kein Absenden); die ID steht als Zahl im Attribut
+        suggestion_line = ('<div class="hint" id="invoiceSuggestion">Vorschlag: Rechnung '
+                           f'{_html.escape(str(best_invoice["number"] or best_invoice["id"]))} ({_html.escape(reason_text(best_pair))}) '
+                           '<button type="button" class="coloredButton btn-sm bg-blue" '
+                           f'onclick="this.form.elements[\'invoice_id\'].value = \'{int(best_invoice["id"])}\'">Übernehmen</button></div>')
     alloc_note = ''
     if allocations:
         parts = ', '.join(
@@ -339,7 +436,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                       'Lösen über die Rechnungsseite.</small></div>')
     invoice_row = ''
     if invoice_field or alloc_note:
-        invoice_row = f'<tr><td>Rechnung:</td><td>{invoice_field}{alloc_note}</td></tr>'
+        invoice_row = f'<tr><td>Rechnung:</td><td>{invoice_field}{suggestion_line}{alloc_note}</td></tr>'
 
     # Eine Rechnungszahlung braucht das Bankkonto: ohne SKR-Nummer des Kontos lässt sie sich nicht
     # kontieren (Database.assign_invoice_payment)
@@ -556,8 +653,11 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
 
         rows_html = ''.join(_split_row(r) for r in split_rows)
         bank_amount = float(edit_trans[11] or 0)
-        bank_docnr = _attr(edit_trans[16])
-        bank_text = _attr(edit_trans[15])
+        # Als JSON in den Skriptblock (nie nur maskiert in Anführungszeichen): Ein Zeilenumbruch im Verwendungszweck – der Import eines
+        # PDF-Auszugs verbindet dessen Zeilen damit – oder ein Backslash am Ende beendete sonst die Zeichenkette, und der ganze Block des
+        # Editors fiel mit einem Syntaxfehler aus; ein ``&`` stand als ``&amp;`` in der neuen Zeile
+        bank_docnr_js = script_json('' if edit_trans[16] is None else str(edit_trans[16]))
+        bank_text_js = script_json('' if edit_trans[15] is None else str(edit_trans[15]))
 
         # Auswahl bestehender Buchungen (Zuordnung läuft über die ID)
         adopt_widget = ''
@@ -614,8 +714,8 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                 // geöffneten Maske erneut ein. Ein zweites const im selben
                 // globalen Scope wirft und riss den ganzen Block mit sich.
                 var SPLIT_BANK_AMOUNT = {bank_amount};
-                var SPLIT_BANK_DOCNR = "{bank_docnr}";
-                var SPLIT_BANK_TEXT = "{bank_text}";
+                var SPLIT_BANK_DOCNR = {bank_docnr_js};
+                var SPLIT_BANK_TEXT = {bank_text_js};
                 var SPLIT_SUFFIX = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 
                 function splitRows() {{
@@ -1211,6 +1311,10 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                 const fresh = doc.getElementById('transactionsTable');
                 const cur = document.getElementById('transactionsTable');
                 if (fresh && cur) cur.innerHTML = fresh.innerHTML;
+                // Nach einem Import stehen auch die Vorschläge „Zahlungseingänge zu offenen Rechnungen“ neu da (der Kasten steht außerhalb der Tabelle)
+                const freshSuggest = doc.getElementById('paySuggest');
+                const curSuggest = document.getElementById('paySuggest');
+                if (freshSuggest && curSuggest) curSuggest.innerHTML = freshSuggest.innerHTML;
             });
         }
 
@@ -1242,6 +1346,10 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
     '''
     s+= '<div class="gridLeftCol" style="order:1">'    # ── Buchungstabelle ───────────────────────────────────────────────────
     s+= '<div id="importPreview"></div>'              # Inline-Import-Vorschau (per Beleg)
+    # Der Kasten „Zahlungseingänge zu offenen Rechnungen“ steht links über der Liste – nicht im rechten Bereich, den openEditForm austauscht, und
+    # nicht in der Menüzeile. Der Container ist immer da (leer, wenn es keine Vorschläge gibt): refreshTable füllt ihn nach einem Import neu.
+    s+= '<div id="paySuggest">' + _payment_suggestions_html(db) + '</div>'
+    s+= '<script>var PAY_FAILED = ' + script_json(PAY_FAILED) + ';\n' + PAY_SUGGEST_JS + '</script>'
     # Feste Spaltenbreiten via colgroup (table-layout: fixed in buch.css):
     # Empfänger bekommt ~26%, Text den gesamten Rest – auf großen Bildschirmen
     # wächst so automatisch die Textspalte. Kürzung übernimmt CSS (Ellipsis),

@@ -842,7 +842,7 @@ def test_update_path_names_the_missing_revenue_account(db, acct):
     status, location = handle_add_transaction(
         db, _post(transaction_id=bank, invoice_id=inv, account=acct, amount='116.00'))
 
-    assert status == 303 and location.startswith(f'/invoice/edit?id={inv}&payment_error=')
+    assert status == 303 and location.startswith(f'/transactions/edit?id={bank}&err=')
     assert db.get_invoice_payments(inv) == []
 
 
@@ -1024,7 +1024,7 @@ def test_bank_account_without_skr_number_is_rejected(db):
     no_skr = [a[0] for a in db.fetch_accounts() if a[1] == 'Ohne-SKR'][0]
     inv = _sent(db, 'R-NS', 119.00)
     bank = _bank(db, no_skr, 119.00)
-    _no_change(db, lambda: db.assign_invoice_payment(inv, bank), 'SKR-Nummer')
+    _no_change(db, lambda: db.assign_invoice_payment(inv, bank), 'kein Konto im Kontenrahmen')
 
 
 def test_movement_without_a_bank_account_is_rejected(db):
@@ -1426,7 +1426,7 @@ def test_payment_form_with_a_bank_account_without_skr_is_rejected(db):
     inv = _sent(db, 'R-FORM', 119.00)
     before = _count(db)
     status, message = handle_add_transaction(db, _post(invoice_id=inv, account=no_skr))
-    assert status == 400 and 'SKR-Nummer' in message and _count(db) == before
+    assert status == 400 and 'kein Konto im Kontenrahmen' in message and _count(db) == before
 
 
 def test_payment_form_books_settlement_and_transfer_and_ignores_the_posted_revenue_account(db, acct):
@@ -1476,7 +1476,7 @@ def test_update_path_names_the_reason_when_the_assignment_fails(db, acct):
     status, location = handle_add_transaction(
         db, _post(transaction_id=bank, invoice_id=inv, account=acct))
 
-    assert status == 303 and location.startswith(f'/invoice/edit?id={inv}&payment_error=')
+    assert status == 303 and location.startswith(f'/transactions/edit?id={bank}&err=')
     assert 'versendet' in location                       # der Grund steht in der Meldung
     assert db.get_invoice_payments(inv) == []
 

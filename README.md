@@ -123,7 +123,7 @@ Anmeldung). Vorher eine Datensicherung anlegen – Ablauf und Rückweg unter
 
 | Bereich | Was drin ist |
 |---|---|
-| **Buchen** | Bankbewegungen und Buchungssätze, Split-Buchungen, Kontierungs-Vorschlag aus der Historie, Belege verknüpfen |
+| **Buchen** | Bankbewegungen und Buchungssätze, Split-Buchungen, Kontierungs-Vorschlag aus der Historie, Belege verknüpfen. Zu einem Zahlungseingang schlägt die App die passende offene Rechnung vor (Rechnungsnummer im Verwendungszweck, sonst Betrag und Kunde) – zugeordnet wird erst auf Klick |
 | **Belege** | Dateien hochladen, ansehen und mit Buchungen verknüpfen. Die App liest Belege aus (nach dem Hochladen gleich, vorhandene auf Knopfdruck): E-Rechnungen (XRechnung, ZUGFeRD) strukturiert, PDFs mit Textebene über feste Regeln. Die gelesenen Werte stehen mit ihrer Herkunft am Beleg, dazu Vorschläge für die passende Bankbewegung – verknüpft wird erst auf Klick. Keine Texterkennung für Scans und Fotos; die Regeln lesen nicht jede Rechnung, gelesene Werte sind zu prüfen |
 | **Kontenrahmen** | SKR04 vorbelegt, eigene Konten (auch weiterer Rahmen wie SKR03) anlegbar, DATEV-Steuerschlüssel |
 | **Auswertung** | Dashboard mit Monatsverlauf, Einnahmen-Überschuss-Rechnung (EÜR, auch als eigene Seite und PDF), monatliche betriebswirtschaftliche Auswertung, Summen- und Saldenliste und Liquiditätsrechnung (je Seite und PDF; die beiden ersten auch als CSV für eine Tabellenkalkulation) |
@@ -645,7 +645,7 @@ uBuchhaltung/
 │   ├── bookings.py · matching.py · invoices.py · contacts.py · …
 │   └── (weitere Domänen-Mixins: assets, accounts, wiso_import, reporting,
 │        worktimes, seed, numbering, articles, receipts, document_readings,
-│        receipt_matching …)
+│        receipt_matching, payment_matching …)
 ├── document_parser.py         # Belegablage, SQL-Audit-Log/-Rotation, DKB-PDF-Parser
 ├── importers/                 # Datenimport: Abstraktionsschicht + Bankmodule
 │   ├── base.py                #   Gemeinsames Datenmodell (BankStatement, Transaktion)

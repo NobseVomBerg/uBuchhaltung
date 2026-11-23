@@ -661,8 +661,8 @@ def test_a_bank_account_without_a_skr_number_cannot_be_booked(world):
                       skr_account=None)
     no_skr = {a[1]: a[0] for a in db.fetch_accounts()}['Ohne Nummer']
     refused(world, s1, outgoing(world, 50.0, account_id=no_skr),
-            'Das Bankkonto hat keine SKR-Nummer – bitte in den Stammdaten ergänzen, sonst lässt sich die Erstattung nicht '
-            'kontieren.')
+            'Das Bankkonto hat kein Konto im Kontenrahmen – bitte unter Stammdaten → Bankkonten eines wählen (üblich: 1800), '
+            'sonst lässt sich die Erstattung nicht kontieren.')
     refused(world, s1, db.insert_booking('2026-07-10', -50.0, booking_type='bank'), 'Für die Erstattung fehlt das Bankkonto.')
 
 
@@ -673,8 +673,9 @@ def test_the_old_messages_of_the_payment_stay_as_they_were(world):
                       skr_account=None)
     no_skr = {a[1]: a[0] for a in db.fetch_accounts()}['Ohne Nummer']
     invoice = sent(world)
-    assert db.payment_precheck(invoice, no_skr) == ('Das Bankkonto hat keine SKR-Nummer – bitte in den Stammdaten ergänzen, '
-                                                    'sonst lässt sich die Zahlung nicht kontieren.')
+    assert db.payment_precheck(invoice, no_skr) == ('Das Bankkonto hat kein Konto im Kontenrahmen – bitte unter Stammdaten → '
+                                                    'Bankkonten eines wählen (üblich: 1800), sonst lässt sich die Zahlung nicht '
+                                                    'kontieren.')
     assert db.payment_precheck(invoice, None) == 'Für die Zahlung fehlt das Bankkonto.'
 
 
@@ -1891,7 +1892,7 @@ def test_the_bank_editor_offers_no_new_way_to_assign_a_credit_note(world):
     post = {'transaction_id': [str(bank)], 'date': ['2026-07-10'], 'amount': ['-50.00'], 'account': [str(world.bank)],
             'invoice_id': [str(s1)]}
     status, location = handle_add_transaction(db, post)
-    assert status == 303 and location.startswith(f'/invoice/edit?id={s1}&payment_error=')
+    assert status == 303 and location.startswith(f'/transactions/edit?id={bank}&err=')
     assert 'Stornorechnung' in location
     after = comparable(db)
     assert after['InvoicePayments'] == before['InvoicePayments'] and len(after['Bookings']) == len(before['Bookings'])

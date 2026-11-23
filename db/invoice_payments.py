@@ -837,11 +837,12 @@ class InvoicePaymentsMixin:
         if account is None:
             return f'Für die {what} fehlt das Bankkonto.', None
         if not account[7]:
-            return ('Das Bankkonto hat keine SKR-Nummer – bitte in den Stammdaten ergänzen, '
+            return ('Das Bankkonto hat kein Konto im Kontenrahmen – bitte unter Stammdaten → Bankkonten eines wählen (üblich: 1800), '
                     f'sonst lässt sich die {what} nicht kontieren.'), None
         bank_coa = self.get_coa_id_by_account_number(account[7])
         if bank_coa is None:
-            return f'Das SKR-Konto {account[7]} des Bankkontos fehlt im Kontenrahmen.', None
+            return (f'Das Bankkonto trägt die Nummer {account[7]}, die nicht im Kontenrahmen steht – bitte unter Stammdaten → Bankkonten '
+                    f'ein Konto aus dem Kontenrahmen wählen (üblich: 1800), sonst lässt sich die {what} nicht kontieren.'), None
         return None, bank_coa
 
     def _payment_prerequisites(self, invoice_id, account_id, revenue_coa_id=None):
