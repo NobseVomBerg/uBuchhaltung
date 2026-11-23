@@ -1127,7 +1127,8 @@ class InvoicePaymentsMixin:
         bei einer Ablehnung ein Klartext für die Oberfläche, ``revenue_coa_id`` das Erlöskonto,
         auf das gebucht wurde.
         """
-        if self.get_document(invoice_id, 'invoice') is None:
+        invoice = self.get_document(invoice_id, 'invoice')
+        if invoice is None:
             return _refused('Rechnung nicht gefunden')
         booking = self.get_booking_by_id(booking_id)
         if booking is None:
@@ -1136,6 +1137,11 @@ class InvoicePaymentsMixin:
             return _refused('Nur Bankbewegungen lassen sich einer Rechnung zuordnen.')
         if any(a[1] == invoice_id for a in self.get_booking_allocations(booking_id)):
             return _refused('Buchung ist bereits mit dieser Rechnung verknüpft')
+        # Was an der Rechnung liegt, zuerst (dieselbe Prüfung wie in ``_payment_prerequisites``): Eine Stornorechnung nennt ihren Grund,
+        # auch wenn die Bewegung ein Ausgang ist
+        blocked = payment_blocker(invoice[45], invoice[40], invoice[38], invoice[50] if len(invoice) > 50 else None)
+        if blocked:
+            return _refused(blocked)
         # Der Betrag vor den Vorbedingungen: Sie können ein Konto anlegen (4184/4185), und eine abgelehnte Zuordnung legt keines an
         requested = None
         if amount is not None:
