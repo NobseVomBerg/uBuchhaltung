@@ -648,7 +648,7 @@ class SchemaMixin:
         ''')
 
         # NumberRanges table for invoice/receipt numbering
-        # Type: 'invoice' (Ausgangsrechnungen), 'receipt_company' (Belege Firma), 'receipt_category' (Belege Kategorien)
+        # Type: 'invoice' (Ausgangsrechnungen), 'quote' (Angebote), 'receipt_company' (Belege Firma), 'receipt_category' (Belege Kategorien)
         # Format: e.g., 'R' for Rechnungen, 'B' for Belege, etc.
         # Suffix: optional suffix for subdivision (e.g., '_A', '_B') – appended after the number
         # NumberFormat: format template, e.g. '{yy}{l}{nnn}{s}' → '26F001' or '26F001_A'

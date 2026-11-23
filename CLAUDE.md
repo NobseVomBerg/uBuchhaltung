@@ -2273,7 +2273,14 @@ kein Subagent darauf:
   `1.5`, `true` – ist 400): Der Ordner `Fassungen/<ID>` heißt nach der Zahl. Eine Formatvorlage braucht **genau einen Zähler** (`{n}`, `{nn}` oder `{nnn}`,
   `number_format_error`): Beim Speichern eines Nummernkreises wird sie sonst mit Klartext abgelehnt; ein
   Altbestand mit anderer Vorlage lässt den Vorschlag leer (Hinweis in der Maske, `peek_next_number` wirft nie)
-  und das Speichern mit dem Klartext `NumberRangeError` scheitern, nie die Seite
+  und das Speichern mit dem Klartext `NumberRangeError` scheitern, nie die Seite. **Angebote (seit 2.8.5) bekommen ihre Nummer auf
+  demselben Weg** (`allocate_document_number(conn, 'quote', Datum, requested)`; `allocate_invoice_number` ist dieselbe Funktion für
+  `'invoice'`): Der Kreis der Art `quote` entsteht beim ersten Speichern (Buchstabe `A`, `DOCUMENT_LETTERS`; bis 2.8.4 gab es keinen,
+  die Maske schlug immer `<JJ>A001` vor, und das zweite neue Angebot scheiterte), er steht unter Stammdaten → Nummernkreise
+  („Angebote“). Der Vorschlag (`peek_next_number('quote', Jahr)`) ist genau die Nummer, die das Speichern vergibt – auch ohne Kreis des
+  Jahres –, die Maske schickt ihn als `numberSuggestion` mit; die Antwort von `/quote/save` bleibt `{success, quote_id}` (die Maske
+  lädt das Angebot danach neu). Das Löschen eines Angebots gibt die Nummer nicht zurück (eine Lücke bleibt), das Ändern fasst den
+  Zähler nie an. `tests/test_quote_numbering.py`
 - **Entwurf löschen** (`POST /invoice/delete?id=`, `Database.delete_draft_invoice`): nur Status `draft`, ohne
   zugeordnete Zahlung und ohne Forderungsbuchung, in einer Transaktion; eine Ablehnung geht mit dem Grund
   (`err`) zurück auf die Rechnung. Ein Quellangebot im Status `converted` ohne weitere Rechnung geht auf

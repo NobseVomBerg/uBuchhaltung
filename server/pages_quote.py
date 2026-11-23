@@ -223,22 +223,9 @@ def _quote_form_html(db: Database, quote_id=None):
         page_title = f"Angebot {_html.escape(quote_number)} bearbeiten"
         is_edit = True
     else:
-        # nächste Angebotsnummer ermitteln (Letter 'A')
-        quote_number = ''
-        ranges = db.fetch_number_ranges('quote')
-        current_range = None
-        for r in ranges:
-            if r[2] == current_year:
-                current_range = r
-                break
-        if not current_range and ranges:
-            current_range = ranges[0]
-        if current_range:
-            year = current_range[2]; letter = current_range[3]
-            prefix = current_range[4] or ''; current_num = current_range[5] or 0
-            quote_number = f"{str(year)[-2:]}{letter}{prefix}{current_num + 1:03d}"
-        else:
-            quote_number = f"{str(current_year)[-2:]}A001"
+        # Vorschlag aus dem Nummernkreis der Angebote: genau die Nummer, die das Speichern vergibt (eine belegte wird übersprungen);
+        # verbraucht wird sie erst dort
+        quote_number = db.peek_next_number('quote', current_year)[0] or ''
         quote_date = ''
         selected_own_id = own_contact[0] if own_contact else None
         selected_customer_id = None
@@ -265,6 +252,10 @@ def _quote_form_html(db: Database, quote_id=None):
     # Die ID gehört nur in den Bearbeiten-Modus (ein fremder oder unbekannter Beleg ergibt das
     # leere Formular, das beim Speichern ein neues Angebot anlegt)
     s = f'<input type="hidden" id="quote_id" value="{quote_id if is_edit else ""}">'
+    # Die Nummer im Feld ist nur ein Vorschlag, solange sie unverändert bleibt: Dann vergibt der Server beim Speichern frisch
+    # (ein zweites Fenster kann den Vorschlag inzwischen verbraucht haben)
+    s += ('<input type="hidden" id="number_suggestion" value="'
+          f'{"" if is_edit else _html.escape(quote_number)}">')
     s += f'<input type="hidden" id="is_edit_mode" value="{str(is_edit).lower()}">'
     s += f'<input type="hidden" id="quote_status_value" value="{_html.escape(str(quote_status))}">'
     s += f'<input type="hidden" id="pdf_exists" value="{str(pdf_file_exists).lower()}">'
@@ -680,7 +671,9 @@ def _quote_form_html(db: Database, quote_id=None):
                 validUntil: document.getElementById('valid_until').value || null,
                 introText: document.getElementById('intro_text_editor').innerHTML || null,
                 closingText: document.getElementById('closing_text_editor').innerHTML || null,
-                taxRate: taxRate/100, showTax: showTax, status: status, items: items
+                taxRate: taxRate/100, showTax: showTax, status: status, items: items,
+                // Die vorgeschlagene Nummer: bleibt sie unverändert, vergibt der Server beim Speichern frisch
+                numberSuggestion: isEdit ? null : (document.getElementById('number_suggestion').value || null)
             };
             if (mixed) data.taxMode = 'mixed';
             if (isEdit) data.quoteId = parseInt(quoteId);

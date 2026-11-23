@@ -812,6 +812,7 @@ def PageNumberRanges(db: Database, edit_id=None, err=None):
 
     type_names = {
         'invoice': 'Ausgangsrechnungen',
+        'quote': 'Angebote',
         'receipt_company': 'Belegnummern Firma',
         'receipt_category': 'Belegnummern Kategorien',
     }

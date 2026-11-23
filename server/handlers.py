@@ -4386,8 +4386,9 @@ def handle_quote_save(post_body: bytes):
     """Angebot speichern/aktualisieren. Returns JSON (success, quote_id).
 
     Kopf und Positionen werden in EINER Transaktion geschrieben: scheitert ein Schritt (auch
-    eine unvollständige Position), bleibt nichts halb gespeichert zurück. Eine Aktualisierung
-    trifft nur ein Angebot – die ID einer Rechnung wird abgewiesen und nichts verändert."""
+    eine unvollständige Position), bleibt nichts halb gespeichert zurück – auch keine verbrauchte
+    Angebotsnummer (``allocate_document_number``). Eine Aktualisierung trifft nur ein Angebot – die ID
+    einer Rechnung wird abgewiesen und nichts verändert – und fasst nie einen Zähler an."""
     data = _json_request(post_body)         # kein gültiges Objekt: InvalidRequest → 400 (app.py)
     try:
         quote_id = data.get('quoteId')
@@ -4470,6 +4471,13 @@ def handle_quote_save(post_body: bytes):
                 if is_update:
                     _save_quote_update(tx, quote_id, doc)
                 else:
+                    # Die Nummer wird beim ersten Speichern vergeben, wie bei der Rechnung: Ist die Nummer des Formulars noch der
+                    # Vorschlag, den es beim Öffnen bekam (``numberSuggestion``), zählt sie nicht als eigene – ein zweites Fenster
+                    # kann ihn inzwischen verbraucht haben, vergeben wird frisch; die Maske lädt das Angebot danach neu und zeigt die Nummer, die gilt.
+                    requested = str(doc['invoice_number']).strip()
+                    if requested == data.get('numberSuggestion'):
+                        requested = None
+                    doc['invoice_number'] = db.allocate_document_number(tx.conn, 'quote', quote_date, requested)
                     quote_id = db.insert_invoice(doc, tx=tx)
 
                 for idx, item in enumerate(items):
@@ -4486,7 +4494,7 @@ def handle_quote_save(post_body: bytes):
                         'tax_rate': item_rates[idx],
                         **(snapshots[idx] or {}),     # die Momentaufnahme eines Steuersatzes aus den Stammdaten (überschreibt ``tax_category``); ohne sie nichts
                     }, tx=tx)
-        except (DocumentNotFound, QuoteStatusLocked) as e:
+        except (DocumentNotFound, QuoteStatusLocked, NumberRangeError) as e:
             return json.dumps({'success': False, 'error': str(e)}).encode()
 
         return json.dumps({'success': True, 'quote_id': quote_id}).encode()
