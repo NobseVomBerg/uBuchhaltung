@@ -853,7 +853,11 @@ kein Subagent darauf:
   Spiegel −40, „6805 an Bank“ −10 und „2100 an 6805“ +10: Übertrag −40, privat −10, Ausgabe 0).
   **Bankbewegung ohne Kind:** Deckt die Übertragsrechnung des DATEV-Exports sie (`settle_transfers(…).covered`, über den
   ganzen Bestand; `db/matching.py` bleibt unberührt), ist sie ganz Übertrag, sonst nach dem Vorzeichen Einnahme oder
-  Ausgabe; „offen“ (`unlinked_count`) bleibt sie in beiden Fällen. Die Rechnung läuft nur, wenn eine solche Bewegung zu
+  Ausgabe; „offen“ (`unlinked_count`) bleibt sie in beiden Fällen – **außer bei einem Betrag von genau 0,00 € (seit 2.8.4,
+  Entscheidung des Owners):** Eine solche Bewegung ohne Satz zählt nicht als offen (`Amount IS NOT 0`; `bank_count` zählt sie weiter), die
+  Buchungsliste zeigt statt „offen“ das graue Abzeichen „0,00“ (`pages_transactions.is_zero_movement`, `ZERO_MOVEMENT_HINT`), und die
+  Liquiditätsrechnung zählt sie nicht unter den Bankbewegungen ohne Buchungssatz; DATEV-Export und Summen- und Saldenliste übergingen sie
+  schon vorher (`tests/test_zero_amount_movement.py`). Die Rechnung läuft nur, wenn eine solche Bewegung zu
   zählen ist, und einmal je `get_dashboard` (die Seite ruft nur das auf). **Eigenständiger Satz auf der Kasse** (Betrag aus
   Sicht der Kasse, `_cash_amount_sql`): ein Spiegel zwischen eigenen Konten (`is_mirror_row`, jede Form; `mirror_legacy` und
   Zeilen ohne Form mit dem Rohbetrag) ist Übertrag, 2100–2199 auf einer Seite privat, alles andere nach dem Vorzeichen.
@@ -1571,7 +1575,7 @@ kein Subagent darauf:
   Ein Umsatz ohne Datum oder Betrag ist in Vorschau und Import gleich behandelt – nicht importierbar
   (Befund `incomplete`; je Datei `skipped_invalid`), weder neu noch Duplikat; ein Betrag von 0,00 € ist dagegen kein Befund (`amount` heißt nur
   „Betrag fehlt“, also `None`): Die Zeile ist ein gewöhnlicher, importierbarer Umsatz und zählt bei den Duplikaten wie jede andere
-  (`tests/test_import_zero_amount.py`)
+  (`tests/test_import_zero_amount.py`); als Bankbewegung ohne Buchungssatz gilt sie nicht als offen (siehe *Dashboard*)
 
 ### WISO-Datenübernahme
 - Zwei Wege: die **Textexporte** (`db/wiso_import.py`, CSV) und die

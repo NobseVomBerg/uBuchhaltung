@@ -435,7 +435,7 @@ class ReportingMixin:
 
         Returns:
             ``totals``: income, private, expense, transfers, balance (= Summe der vier), bank_count (gezählte
-            Bewegungen), unlinked_count (Bankbewegungen ohne Buchungssatz) – Beträge als float in Euro.
+            Bewegungen), unlinked_count (Bankbewegungen ohne Buchungssatz, ohne die über 0,00 €) – Beträge als float in Euro.
             ``monthly``: eine Liste, geordnet nach Monat, je Kalendermonat des Zeitraums ``{'year_month': 'YYYY-MM',
             'label': str, 'income': float, 'private': float, 'expense': float, 'transfers': float}``; eine Bewegung
             mit unlesbarem Datum steht nur in ``totals``. Ohne Konto ``([…alle 0…], [])``."""
@@ -448,10 +448,10 @@ class ReportingMixin:
                          'bank_count': 0, 'unlinked_count': 0}, [])
             rows = self._dashboard_movements(cursor, date_from, date_to, scope)
             acct_ids = scope[0]
-            # Unlinked = bank bookings without child entries
+            # Offen = Bankbewegungen ohne Buchungssatz; eine Bewegung über 0,00 € zählt nicht (nichts zu verbuchen)
             unlinked = cursor.execute(f'''
                 SELECT COUNT(*) FROM Bookings b
-                WHERE b.BookingType = 'bank'
+                WHERE b.BookingType = 'bank' AND b.Amount IS NOT 0
                   AND b.DateBooking BETWEEN ? AND ? AND b.Account_ID IN ({','.join('?' * len(acct_ids))})
                   AND NOT EXISTS (
                       SELECT 1 FROM Bookings e
@@ -899,11 +899,12 @@ class ReportingMixin:
         „ohne Kind“ des Dashboards (``_dashboard_movements``, ``split_bank_movement``): Bankbewegungen der Konten ``acct_ids`` mit Datum im Zeitraum und
         ohne einen einzigen Satz (wie die Zählung ``unlinked`` in ``get_dashboard``); die Übertragsrechnung des DATEV-Exports (``_settle_stock``) läuft nur,
         wenn eine davon einen ganzzahligen Betrag ≠ 0 hat, und eine gedeckte Bewegung ist ein Übertrag und zählt hier nicht. Beträge über ``_minor_or_zero``
-        (ein Wert, den das Dashboard nicht lesen kann, zählt 0 – die Bewegung zählt trotzdem mit). ``covered``: eine Funktion ohne Argument, die die
+        (ein Wert, den das Dashboard nicht lesen kann, zählt 0 – die Bewegung zählt trotzdem mit). Eine Bewegung über genau 0,00 € zählt nicht (seit 2.8.4:
+        nichts zu verbuchen, ``Amount IS NOT 0``). ``covered``: eine Funktion ohne Argument, die die
         gedeckten IDs liefert – so rechnet ein Aufruf über mehrere Zeiträume die Übertragsrechnung (sie liest den ganzen Bestand) nur einmal."""
         marks = ','.join('?' * len(acct_ids))
         cursor.execute(
-            f"SELECT b.ID, b.Amount FROM Bookings b WHERE b.BookingType = 'bank' AND b.DateBooking BETWEEN ? AND ? "
+            f"SELECT b.ID, b.Amount FROM Bookings b WHERE b.BookingType = 'bank' AND b.Amount IS NOT 0 AND b.DateBooking BETWEEN ? AND ? "
             f"AND b.Account_ID IN ({marks}) AND NOT EXISTS (SELECT 1 FROM Bookings e WHERE e.ParentBooking_ID = b.ID)",
             [date_from, date_to, *acct_ids])
         movements = cursor.fetchall()
