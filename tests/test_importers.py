@@ -86,7 +86,7 @@ def test_clean_transaction_has_no_findings():
 
 def test_missing_amount_and_date_are_found():
     assert 'amount' in check_transaction(_txn(amount=None))
-    assert 'amount' in check_transaction(_txn(amount=0))
+    assert 'amount' not in check_transaction(_txn(amount=0))      # 0,00 € ist ein Betrag (tests/test_import_zero_amount.py)
     assert 'date' in check_transaction(_txn(date=None))
     assert 'date' in check_transaction(_txn(date='31.03.2026'))   # nicht ISO
 
@@ -178,10 +178,10 @@ def test_preview_still_checks_older_import_files(tmp_db):
     tmp_db.insert_account('Testbank', 'Nina Nutzer', 'DE02120300000000202051',
                           'BIC', 'Bank', is_cash=0, skr_account=1800)
     alt = {'files': [{'filename': 'alt.pdf', 'iban': 'DE02120300000000202051',
-                      'transactions': [{'date': '2026-03-01', 'amount': 0,
+                      'transactions': [{'date': '2026-03-01', 'amount': None,
                                         'recipient': '', 'reference': ''}]}]}
     f = build_import_preview(tmp_db, alt)['files'][0]
-    assert set(f['problems'][0]['warn']) == {'amount', 'empty'}
+    assert set(f['problems'][0]['warn']) == {'amount', 'empty', 'incomplete'}
 
 
 def test_document_date_as_string_still_bounds_the_range():

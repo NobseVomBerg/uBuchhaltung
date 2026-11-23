@@ -28,7 +28,7 @@ from collections import namedtuple
 from .invoice_lock import (
     CHANGED_MESSAGE, CLOSED, COLUMN_OF, EDITABLE, FIELDS, FROZEN_STATUSES, LABEL_OF,
     DocumentNotFound, InvoiceLocked, _Refusal, as_document_version, buyer_snapshot, changed_open_fields,
-    check_changes, closed_message, document_version, invoice_row, is_storno, lock_message, row_group)
+    check_changes, closed_message, document_version, invoice_row, is_storno, lock_message, row_group, stored_items)
 
 CORRECTION_ARCHIVE_FAILED_MESSAGE = ('Die bisherigen Dokumente (PDF/XML) ließen sich nicht in den Ordner '
                                      '„Fassungen“ verschieben – die Rechnung wurde nicht berichtigt.')
@@ -207,12 +207,8 @@ class InvoiceVersionsMixin:
                     customer = self.get_contact_by_id(row['CustomerId'])
                     if customer:
                         changes.update(buyer_snapshot(customer))
-                stored_items = None
-                if items is not None:
-                    stored_items = conn.execute(
-                        'SELECT Description, Quantity, Unit, PricePerUnit, TaxRate FROM InvoiceItems '
-                        'WHERE InvoiceId = ? ORDER BY Position, ID', (invoice_id,)).fetchall()
-                problems = check_changes(row, changes, stored_items, items)
+                stored_rows = stored_items(conn, invoice_id) if items is not None else None
+                problems = check_changes(row, changes, stored_rows, items)
                 if problems:
                     payments = conn.execute('SELECT COUNT(*) FROM InvoicePayments WHERE InvoiceID = ?',
                                             (invoice_id,)).fetchone()[0]

@@ -43,6 +43,7 @@ from .pages_masterdata import (
     PageBankAccounts, PageBankAccountEdit,
     PageNumberRanges, PageNumberRangesEdit,
 )
+from .pages_tax_rates import PageTaxRates
 from .pages_contacts import PageContacts, PageContactNew, PageContactEdit
 from .pages_miscellaneous import PageMiscellaneous
 from .pages_transactions import PageTransactions
@@ -347,6 +348,8 @@ _ACTION_PATHS = frozenset({
     "/receipts/delete",
     "/transactions/delete",
     "/masterdata/numberranges/delete",
+    "/masterdata/taxrates/delete",
+    "/masterdata/taxrates/toggle",
     "/assets/delete",
     "/asset_categories/delete",
     "/worktime/delete",
@@ -1165,6 +1168,11 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         elif path == "/masterdata/numberranges/delete":
             db.delete_number_range(item_id)
             self.respond(303, "", headers={"Location": "/masterdata/numberranges"})
+        elif path == "/masterdata/taxrates/delete":
+            self._respond_after_delete(db.delete_tax_rate, item_id, "/masterdata/taxrates", "err")
+        elif path == "/masterdata/taxrates/toggle":
+            status_code, location = handlers.handle_toggle_tax_rate(db, item_id)
+            self.respond(status_code, "", headers={"Location": location})
         elif path == "/assets/delete":
             try:
                 db.delete_asset(item_id)
@@ -1718,6 +1726,11 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 query_components = self._query()
                 range_id = _id_param(query_components)
                 self.respond(200, PageNumberRangesEdit(db, range_id, err=query_components.get('err', [None])[0]))
+            elif route == "/masterdata/taxrates":
+                self.respond(200, PageTaxRates(db, err=self._query().get('err', [None])[0]))
+            elif route == "/masterdata/taxrates/edit":
+                query_components = self._query()
+                self.respond(200, PageTaxRates(db, _id_param(query_components), err=query_components.get('err', [None])[0]))
             # ── Assets / Anlagenverzeichnis ───────────────────────────────
             elif self.path == "/assets" or self.path.startswith("/assets?"):
                 status_filter = ''
@@ -2084,6 +2097,10 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 self._respond_form_result(handlers.handle_add_number_range(db, post_data))
             elif self.path == "/masterdata/numberranges/update":
                 self._respond_form_result(handlers.handle_update_number_range(db, post_data))
+            elif self.path == "/masterdata/taxrates/add":
+                self._respond_form_result(handlers.handle_add_tax_rate(db, post_data))
+            elif self.path == "/masterdata/taxrates/update":
+                self._respond_form_result(handlers.handle_update_tax_rate(db, post_data))
             # ── Master Data POST Routes ───────────────────────────────────
             # SKR
             elif self.path == "/masterdata/skr/add":

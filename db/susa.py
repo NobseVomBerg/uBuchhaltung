@@ -99,7 +99,8 @@ def is_carried(key) -> bool:
 TAX_VAT, TAX_INPUT = 'vat', 'input'           # Umsatzsteuer, Vorsteuer
 
 #: Das Steuerkonto je Art und Steuersatz (Prozent, ``datev_keys.percent``): 16 % und 5 % liegen auf den Konten von 19 % und 7 % – wie die
-#: Vorsteuer in der EÜR; eigene Konten dafür gibt es nicht. Ein anderer Satz hat kein Konto (``TAX_UNASSIGNED``).
+#: Vorsteuer in der EÜR; eigene Konten dafür gibt es nicht. Ein anderer Satz hat hier kein Konto: Er steht auf dem Konto, das ein Eintrag der
+#: Steuersätze der Stammdaten nennt (``tax_account(…, extra)``), sonst auf ``TAX_UNASSIGNED``.
 TAX_ACCOUNTS = {
     TAX_INPUT: {19.0: 1406, 16.0: 1406, 7.0: 1401, 5.0: 1401},
     TAX_VAT: {19.0: 3806, 16.0: 3806, 7.0: 3801, 5.0: 3801},
@@ -116,10 +117,17 @@ VIRTUAL_NAMES = {PRIOR_RESULT: 'Ergebnis der Vorjahre (rechnerisch)', TAX_UNASSI
                  NOT_POSTED: 'Nicht kontiert (Gegenseite fehlt)'}
 
 
-def tax_account(tax_type: str, rate):
+def tax_account(tax_type: str, rate, extra=None):
     """Das Steuerkonto zu Art (``TAX_VAT``/``TAX_INPUT``) und Steuersatz der Buchung (0.19 und 19 sind beide 19 %) – ``TAX_UNASSIGNED``,
-    wenn der Satz keines hat (anderer Satz, kein Satz, kein lesbarer Satz)."""
-    return TAX_ACCOUNTS[tax_type].get(datev_keys.percent(rate), TAX_UNASSIGNED)
+    wenn der Satz keines hat (anderer Satz, kein Satz, kein lesbarer Satz).
+
+    Zuerst gilt die feste Tabelle (``TAX_ACCOUNTS``: 19, 16, 7 und 5 %), dann ``extra`` – die Steuerkonten der Stammdaten, ``{Art: {Prozentzahl: Kontonummer}}``
+    (``Database.get_susa`` liest sie aus den Steuersätzen); für einen Satz der Tabelle ändert ``extra`` also nie etwas."""
+    pct = datev_keys.percent(rate)
+    found = TAX_ACCOUNTS[tax_type].get(pct)
+    if found is None and extra:
+        found = extra.get(tax_type, {}).get(pct)
+    return TAX_UNASSIGNED if found is None else found
 
 
 def tax_side(form, kind, coa_number, counter_number, waiting_numbers):
@@ -181,7 +189,7 @@ class Posting:
 
 
 def entry_postings(form, side, kind, coa_number, counter_number, amount, tax_amount, tax_rate,
-                   waiting_numbers) -> tuple[list[Posting], set[str]]:
+                   waiting_numbers, *, extra_tax_accounts=None) -> tuple[list[Posting], set[str]]:
     """Die Buchungen eines Satzes (oder einer Gruppe gleich gelesener Sätze: die Regel ist linear, also gilt sie für die Summen) – und die
     Hinweise, die er auslöst.
 
@@ -197,8 +205,9 @@ def entry_postings(form, side, kind, coa_number, counter_number, amount, tax_amo
 
     **Steuer:** Der gespeicherte Steuerbetrag ``t`` (negativ bei einem negativen Betrag, mit dem Vorzeichen des Soll-Haben-Satzes) wird aus der Seite
     herausgerechnet (``tax_side``): Sie bekommt ``Betrag − t``, das Steuerkonto ``t`` auf derselben Seite (``tax_account``; ohne Konto zum Satz:
-    ``TAX_UNASSIGNED``, Hinweis ``tax_unassigned``). Gibt es keine Seite (und ist es nicht die Forderung einer Rechnung), steht der Satz brutto,
-    Hinweis ``tax_not_split``."""
+    ``TAX_UNASSIGNED``, Hinweis ``tax_unassigned``). ``extra_tax_accounts`` sind die Steuerkonten der Stammdaten für Sätze außerhalb der festen
+    Tabelle (``tax_account``): Hat der Satz dort ein Konto, steht die Steuer darauf und der Hinweis entfällt. Gibt es keine Seite (und ist es nicht die
+    Forderung einer Rechnung), steht der Satz brutto, Hinweis ``tax_not_split``."""
     if form == FORM_MIRROR_LEGACY:
         return [], {LEGACY_MIRROR}
     if not amount:
@@ -219,7 +228,7 @@ def entry_postings(form, side, kind, coa_number, counter_number, amount, tax_amo
         tax = tax if inflow else -tax
         split, tax_type, quiet = tax_side(form, kind, coa_number, counter_number, waiting_numbers)
         if split is not None:
-            account = tax_account(tax_type, tax_rate)
+            account = tax_account(tax_type, tax_rate, extra_tax_accounts)
             if account == TAX_UNASSIGNED:
                 notices.add(TAX_UNASSIGNED_NOTICE)
             if split == debit:
@@ -236,11 +245,13 @@ def entry_postings(form, side, kind, coa_number, counter_number, amount, tax_amo
 @dataclass(frozen=True)
 class SusaContext:
     """Was die Buchungsregel nachschlägt: die Zahlungskonten (``Database.get_payment_coa_ids``), die Nummern der Konten des Kontenrahmens
-    (``{COA-ID: Nummer oder None}``) und der eigenen Bankkonten (``{Accounts.ID: SKR-Nummer oder None}``) und die Wartekonten."""
+    (``{COA-ID: Nummer oder None}``) und der eigenen Bankkonten (``{Accounts.ID: SKR-Nummer oder None}``), die Wartekonten und die Steuerkonten der
+    Stammdaten für Sätze außerhalb der festen Tabelle (``tax_accounts``: ``{Art: {Prozentzahl: Kontonummer}}``, ``None`` = keine)."""
     liquid_coa_ids: frozenset
     coa_numbers: dict
     account_numbers: dict
     waiting_numbers: tuple
+    tax_accounts: dict | None = None
 
     @cached_property
     def own_numbers(self) -> frozenset:
@@ -320,7 +331,8 @@ def book_group(tally: Tally, context: SusaContext, row: GroupRow, sign: int = 1)
             coa_number = parent_number
             notices.add(MONEY_FROM_PARENT)
     kind = datev_keys.booking_kind(form, coa_number, counter_number, row.inflow, context.waiting_numbers)
-    postings, found = entry_postings(form, side, kind, coa_number, counter_number, row.amount, row.tax, row.tax_rate, context.waiting_numbers)
+    postings, found = entry_postings(form, side, kind, coa_number, counter_number, row.amount, row.tax, row.tax_rate, context.waiting_numbers,
+                                     extra_tax_accounts=context.tax_accounts)
     notices |= found
     if row.stored_form not in ENTRY_FORMS and form != FORM_MIRROR_LEGACY:
         notices.add(NO_FORM)
@@ -583,8 +595,10 @@ NOTICE_TEXTS = {
                       'Steuer.',
                       '{n} Buchungssätze mit Betrag 0 und einem Steuerbetrag ({s} €) sind nicht gebucht: Ohne Betrag gibt es keine Seite für '
                       'die Steuer.'),
-    TAX_UNASSIGNED_NOTICE: ('{n} Steuerbetrag zu einem Steuersatz ohne Steuerkonto ({s} €) steht unter „Steuer ohne Steuerkonto“.',
-                            '{n} Steuerbeträge zu einem Steuersatz ohne Steuerkonto ({s} €) stehen unter „Steuer ohne Steuerkonto“.'),
+    TAX_UNASSIGNED_NOTICE: ('{n} Steuerbetrag zu einem Steuersatz ohne Steuerkonto ({s} €) steht unter „Steuer ohne Steuerkonto“ – '
+                            'ein Steuerkonto je Satz lässt sich in den Stammdaten unter ‚Steuersätze‘ hinterlegen.',
+                            '{n} Steuerbeträge zu einem Steuersatz ohne Steuerkonto ({s} €) stehen unter „Steuer ohne Steuerkonto“ – '
+                            'ein Steuerkonto je Satz lässt sich in den Stammdaten unter ‚Steuersätze‘ hinterlegen.'),
     TAX_NOT_SPLIT: ('{n} Steuerbetrag an Sätzen ohne Erlös-, Aufwands- oder Anlagekonto ({s} €) ist nicht abgespalten; der Satz steht brutto.',
                     '{n} Steuerbeträge an Sätzen ohne Erlös-, Aufwands- oder Anlagekonto ({s} €) sind nicht abgespalten; der Satz steht brutto.'),
     UNBALANCED: ('{n} Bankbewegung, deren Buchungssätze nicht ihren Betrag ergeben (Rest {s} €): '

@@ -242,6 +242,7 @@ def test_existing_rows_stay_untouched_and_the_new_table_is_empty(stock):
 
     after = _contents(stock)
     assert after.pop(NEW_TABLE) == []
+    after.pop('TaxRates')                                                             # seit 2.8.0 angelegt und vorbelegt: test_tax_rates_schema_2008.py
     assert after == before                                                            # jede Zeile jeder Tabelle
 
 

@@ -10,6 +10,7 @@ import math
 from collections import Counter
 from decimal import Decimal
 from money import to_minor, from_minor
+from . import datev_keys
 from .matching import (
     FORM_MIRROR_COA, FORM_MIRROR_COUNTER, FORM_PURPOSE_FIRST, FORM_TRANSFER, MIRROR_FORMS,
     is_asset_transfer, read_entry_form, ASSET_ACCOUNT_RANGE, PL_ACCOUNT_RANGE,
@@ -29,6 +30,14 @@ INCOME_ACCOUNT_RANGE = REVENUE_ACCOUNT_RANGE
 # 4400 +netto wieder auf (beide liegen in der Erlösklasse 4000-4999) und die
 # Forderung erschiene als Ausgabe.
 NEUTRAL_ACCOUNT_NUMBERS = (10000, 4340, 4345, 4405)
+
+# Die virtuelle Zeile der EÜR für Vorsteuer, die auf keinem Vorsteuerkonto steht: Die Zeilen 1401 und 1406 kennen nur die Sätze 5, 7, 16 und 19 Prozent; ein anderer
+# Satz (etwa 5,5 Prozent) hat sein Konto in den Stammdaten (``TaxRates.InputTaxCoaId``) oder keines, ebenso ein Steuerbetrag ohne Satz. Die Vorsteuer ist gezahlt und
+# gehört in die EÜR; auf diese Zeile kommt, was sonst fehlte. Jede Zeile braucht eine ganze Zahl (``euer_section``, ``bwa.group_of`` und die Liquiditätsrechnung lesen nur
+# solche): 1409 liegt in der Gruppe „Gezahlte Vorsteuer“ (1400–1439) und in keinem Standard-Kontenrahmen – keine Nummer, die die App bucht, sondern der Platz der Zeile,
+# nach dem Muster der virtuellen 3806. Führt ein Bestand ein echtes Konto 1409 mit Saldo, stehen zwei Zeilen (wie bei der echten und der virtuellen 3806).
+EUER_INPUT_TAX_UNASSIGNED = 1409
+EUER_INPUT_TAX_UNASSIGNED_NAME = 'Vorsteuer ohne Steuerkonto'
 
 # Verrechnungskonto (Geldtransit): WISO bucht darüber aufgeteilte Zahlungen und
 # Anlagen-Umbuchungen. Ein eigenständiger Satz „Aufwand an Verrechnung“ gilt in der EÜR
@@ -551,11 +560,20 @@ class ReportingMixin:
         Mit Kontofilter läuft Sektion 3 nicht; es bleiben dann nur die Umbuchungen unter den
         Bankbewegungen der gewählten Konten.
 
+        Die Vorsteuer einer Ausgabe steht immer in der EÜR – sie ist gezahlt: auf 1401 (5 und 7 %)
+        bzw. 1406 (16 und 19 %), wie bisher; zu jedem anderen Satz auf dem Vorsteuerkonto, das ein
+        Eintrag der Steuersätze dafür nennt (``Database._report_tax_accounts``, erster Eintrag
+        nach Reihenfolge und ID), sonst – auch bei einem Steuerbetrag ohne Satz und bei fehlendem
+        1401/1406 im Kontenrahmen – auf der virtuellen Zeile 1409 „Vorsteuer ohne Steuerkonto“
+        (``EUER_INPUT_TAX_UNASSIGNED``). Die Umsatzsteuer aus Einnahmen bleibt auf der virtuellen
+        3806, gleich zu welchem Satz.
+
         Returns:
             list of (AccountNumber, Name, total_amount)
             sortiert nach AccountNumber, nur Konten mit Saldo ≠ 0.
         """
         from collections import defaultdict
+        from .susa import TAX_ACCOUNTS, TAX_INPUT          # hier, nicht oben: ``susa`` importiert dieses Modul
 
         conn = self._get_connection()
         cursor = conn.cursor()
@@ -747,13 +765,15 @@ class ReportingMixin:
             WHERE AccountNumber IN (1401, 1406)
         """)
         input_tax_coa_ids = {acct_nr: coa_id for coa_id, acct_nr in cursor.fetchall()}
+        report_accounts = self._report_tax_accounts(cursor)      # Vorsteuerkonten der Steuersätze (Stammdaten), je Satz
 
         neutral_coa_ids = self._get_neutral_coa_ids(cursor)
 
         # ── Zweck-Konto bestimmen und aggregieren ─────────────────────
-        # Netto-Beträge pro Konto + virtuelle USt-Zeile (3806)
+        # Netto-Beträge pro Konto + virtuelle USt-Zeile (3806) + virtuelle Vorsteuerzeile (1409)
         totals: dict[int, float] = defaultdict(float)
         ust_total: float = 0.0   # nur USt aus Einnahmen → 3806
+        unassigned_input_tax = 0  # Vorsteuer ohne Vorsteuerkonto → 1409
 
         def _book(coa, value):
             """Betrag verbuchen – Bestandskonten bleiben aus der EÜR heraus."""
@@ -802,7 +822,8 @@ class ReportingMixin:
                     if purpose in income_coa_ids:
                         ust_total += tax_amount
 
-            # Vorsteuer aus Ausgaben separat auf 1401/1406 ausweisen.
+            # Vorsteuer aus Ausgaben separat ausweisen: auf 1401/1406 (5, 7, 16, 19 %); jede andere – sie ist gezahlt und gehört
+            # in die EÜR – auf dem Vorsteuerkonto der Stammdaten, sonst auf der virtuellen Zeile 1409.
             if (purpose_coa_id is not None
                     and purpose_coa_id not in income_coa_ids
                     and tax_amount != 0):
@@ -813,6 +834,17 @@ class ReportingMixin:
                     input_tax_account = 1406
                 if input_tax_account in input_tax_coa_ids:
                     totals[input_tax_coa_ids[input_tax_account]] += tax_amount
+                else:
+                    # Kein Satz von 5, 7, 16, 19 % (oder dessen Konto fehlt im Kontenrahmen, oder kein Satz): erst die feste Tabelle der Summen- und
+                    # Saldenliste (sie fängt einen als Prozentzahl gespeicherten Satz, 19 statt 0,19), dann die Stammdaten, dann die virtuelle Zeile.
+                    pct = datev_keys.percent(tax_rate)
+                    fixed_account = TAX_ACCOUNTS[TAX_INPUT].get(pct)
+                    if fixed_account in input_tax_coa_ids:
+                        totals[input_tax_coa_ids[fixed_account]] += tax_amount
+                    elif pct in report_accounts.input:
+                        totals[report_accounts.input[pct]] += tax_amount
+                    else:
+                        unassigned_input_tax += tax_amount
 
         # ── COA-Details laden ─────────────────────────────────────────
         result: list[tuple] = []
@@ -837,6 +869,11 @@ class ReportingMixin:
             row_3806 = cursor.fetchone()
             name_3806 = row_3806[0] if row_3806 else 'Umsatzsteuer 19%'
             result.append((3806, name_3806, float(ust_total)))
+
+        # ── Virtuelle Zeile 1409 (Vorsteuer ohne Vorsteuerkonto) ──────
+        unassigned_input_tax = from_minor(unassigned_input_tax)  # Minor Units -> Euro-Decimal
+        if abs(unassigned_input_tax) >= Decimal('0.01'):
+            result.append((EUER_INPUT_TAX_UNASSIGNED, EUER_INPUT_TAX_UNASSIGNED_NAME, float(unassigned_input_tax)))
 
         conn.close()
         result.sort(key=lambda x: x[0])
@@ -978,12 +1015,17 @@ class ReportingMixin:
         der Bankkonten verschieben (ein anderes Datum als die Bankbewegung über das Monatsende, ein anderes eigenes Konto als das der Bewegung).
         Eine Zeile mit einer anderen Buchungsart als ``entry`` und ``bank`` liest der Export wie einen Satz, und so bucht sie die Liste.
 
+        Der Steuerbetrag zu einem Satz außerhalb von 19, 16, 7 und 5 % steht auf dem Umsatzsteuer- bzw. Vorsteuerkonto, das ein Eintrag der Steuersätze dafür nennt
+        (``_report_tax_accounts``: der Stand der Stammdaten von jetzt, auch für frühere Monate), sonst auf „Steuer ohne Steuerkonto“. Der Export für das Steuerbüro kennt
+        diese Konten nicht.
+
         ``ValueError`` bei einem Monat außerhalb von 1 bis 12 oder einem Jahr außerhalb von 1 bis 9999."""
         from . import datev_keys
         from .accounts import LEDGER_ROWS_WHERE
         from .bwa import bwa_periods
-        from .susa import (BAD_DATE, CHILD_OTHER_PERIOD, DOUBTFUL, NOT_POSTED, NOT_READABLE, UNBALANCED, UNBOOKED, UNBOOKED_NO_NUMBER,
-                           UNKNOWN_TYPE, ZERO_AMOUNT_TAX, BankCheck, GroupRow, Posting, SusaContext, Tally, book_group, build_susa)
+        from .susa import (BAD_DATE, CHILD_OTHER_PERIOD, DOUBTFUL, NOT_POSTED, NOT_READABLE, TAX_INPUT, TAX_VAT, UNBALANCED, UNBOOKED,
+                           UNBOOKED_NO_NUMBER, UNKNOWN_TYPE, ZERO_AMOUNT_TAX, BankCheck, GroupRow, Posting, SusaContext, Tally, book_group,
+                           build_susa)
         if not (isinstance(year, int) and isinstance(month, int) and 1 <= month <= 12 and 1 <= year <= 9999):
             raise ValueError(f'Ungültiger Zeitraum: Jahr {year!r}, Monat {month!r}')
         month_start, end = bwa_periods(year, month)['month']
@@ -1014,7 +1056,11 @@ class ReportingMixin:
             for _id, name, _cash, number in accounts:
                 if number is not None:
                     names.setdefault(number, (name, True))                  # ein Bankkonto ohne Zeile im Kontenrahmen
-            context = SusaContext(liquid, coa_numbers, account_numbers, waiting)
+            # Die Steuerkonten der Stammdaten für Sätze außerhalb von 19, 16, 7 und 5 % – als Kontonummern, denn die Liste bucht nach Nummern
+            directory = self._report_tax_accounts(cursor)
+            tax_accounts = {tax_type: {pct: coa_numbers[coa_id] for pct, coa_id in by_rate.items() if coa_numbers.get(coa_id) is not None}
+                            for tax_type, by_rate in ((TAX_VAT, directory.vat), (TAX_INPUT, directory.input))}
+            context = SusaContext(liquid, coa_numbers, account_numbers, waiting, tax_accounts)
             settlement = self._settle_stock(cursor)
 
             def read_groups(extra='', extra_params=()):

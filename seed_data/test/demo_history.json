@@ -13,6 +13,21 @@
         ],
         "first_percent": 40,
         "second_after_days": 21
+      },
+      "tax_entry_example": {
+        "entries": [
+          {"key": "exempt", "label": "Steuerfrei (Beispiel)", "kind": "exempt", "rate": "0", "reason": "Steuerfreie Beispielleistung (Demodaten)", "revenue_account": 4100},
+          {"key": "reduced", "label": "5,5 % (Beispiel)", "kind": "standard", "rate": "5,5", "revenue_account": 4180}
+        ],
+        "days_ago": 60,
+        "customer_number": "K003",
+        "due_days": 14,
+        "items": [
+          {"description": "Beratung Buchhaltung", "quantity": 2, "unit": "HUR", "price": 50.00, "tax_rate": 19},
+          {"description": "Beispielleistung ohne Umsatzsteuer", "quantity": 1, "unit": "C62", "price": 80.00, "tax_rate": 0, "tax_entry": "exempt"}
+        ],
+        "first_percent": 40,
+        "second_after_days": 21
       }
     },
     "test": {"years_back": 1}

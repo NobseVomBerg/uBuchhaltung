@@ -237,7 +237,8 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                     'document_nr': inv[1] or '',
                     'text': f"Zahlung Rechnung {inv[1] or ''}".strip(),
                     'revenue_choice': revenue_coa_choice(db, inv[35], selected=revenue_coa_id,
-                                                         mixed=has_mixed_rates(inv[InvoiceCol.MIXED_TAX_RATES])),
+                                                         mixed=has_mixed_rates(inv[InvoiceCol.MIXED_TAX_RATES]),
+                                                         entry=db.invoice_entry_accounts(inv[0])),
                 }
                 edit_recipient = _html.escape(prefill['recipient'])
                 edit_text = _html.escape(prefill['text'])
@@ -884,6 +885,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             if (a === null || a === undefined || a === '') return '';
             var n = Number(a);
             if (isNaN(n)) return esc(a);
+            if (n === 0) n = 0;                             // −0 (ein Auszug schreibt „0,00 S“) steht als 0,00 da, nicht als −0,00
             return n.toLocaleString('de-DE', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' €';
         }
         // Betrag als Suchtext der Auswahl: deutsch formatiert („1.234,56 €“) und als Zahl („1234.56“) – kein HTML
@@ -1037,11 +1039,14 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
 
             // Einzelne Umsätze lassen sich nur bei einem gemischt genutzten Konto auswählen (f.selectable, vom Server);
             // sonst sieht die Karte aus wie bisher. Indizes stehen nur als Zahl im HTML, jeder Datenwert geht durch esc().
+            // Mit Auswahl steht die Liste beim Anzeigen offen – zugeklappt fände man die Kästchen nicht, obwohl der Import-Knopf
+            // schon „n ausgewählt“ sagt; der Knopf klappt sie weiter zu und auf.
             const fileNo = Number(f.file_index);
             const rows = f.transactions || [];
             const chosenAtStart = rows.filter(t => t.importable).length;
-            h += '<button type="button" class="coloredButton btn-sm bg-gray btnToggleDet" data-target="' + detId + '">Alle Einzelbuchungen</button>';
-            h += '<div id="' + detId + '" style="display:none">';
+            h += '<button type="button" class="coloredButton btn-sm bg-gray btnToggleDet" data-target="' + detId + '">' +
+                 (f.selectable ? 'Umsätze auswählen' : 'Alle Einzelbuchungen') + '</button>';
+            h += '<div id="' + detId + '"' + (f.selectable ? '' : ' style="display:none"') + '>';
             if (f.selectable) {
                 h += '<div class="rowWithObjects"><input type="search" class="selSearch" data-idx="' + fileNo +
                      '" placeholder="Suchen in Datum, Empfänger, Zweck, Betrag" aria-label="Umsätze durchsuchen">' +
@@ -1284,12 +1289,15 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
         return None, ''
 
     def _fmt_rate(r):
-        """TaxRate (0.19) → '19%'; None/'' → ''."""
+        """TaxRate (0.19) → '19%', (0.055) → '5,5%' (ganze Prozent ohne Nachkommastellen, sonst bis zu zwei mit Komma); None/'' → ''."""
         if r is None or r == '':
             return ''
         try:
-            return f"{round(float(r) * 100)}%"
-        except (ValueError, TypeError):
+            pct = round(float(r) * 100, 2)
+            if pct == int(pct):
+                return f"{int(pct)}%"
+            return f"{pct:.2f}".rstrip('0').replace('.', ',') + '%'
+        except (ValueError, TypeError, OverflowError):
             return ''
 
 

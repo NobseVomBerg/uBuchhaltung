@@ -26,6 +26,12 @@ Ergebnis im Ausgabeordner:
 * ``zugferd-mischsatz.pdf``              – Rechnung mit Steuersatz je Position (19 % und 7 %), angelegt über den Weg der Maske
                                          (``taxMode: 'mixed'``): zwei Steueraufschlüsselungen (BG-23, die Steuer je Satz aus der
                                          Summe der Nettobeträge der Gruppe, BR-CO-17), im PDF die Spalte „USt“ und eine Steuerzeile je Satz
+* ``zugferd-satz-5-5.pdf``              – Steuersätze aus den Stammdaten (seit 2.8.0): 19 % und 5,5 % auf einem Beleg (der Eintrag der Stammdaten
+                                         mit seiner ``taxRateId`` an der Position), darunter eine Position über 0,09 € netto zu 5,5 %: Die Steuer
+                                         der Gruppe ist einstufig gerundet 0,00 € (EN 16931, BR-CO-17) – zweistufig wären es 0,01 €, einen Cent zu viel
+* ``zugferd-steuerfrei-gemischt.pdf``   – 19 % und steuerfrei auf einem Beleg: die Aufschlüsselung der steuerfreien Gruppe in Kategorie E, Satz 0, mit dem
+                                         Befreiungsgrund aus den Stammdaten (BT-120, ohne Code)
+* ``zugferd-steuerfrei.pdf``            – ein ganz steuerfreier Beleg (Eintrag im Kopf, Satz 0): Kategorie E mit Befreiungsgrund (BR-E-10)
 * ``xrechnung-normalfall.xml``          – UBL-XRechnung zur Normalfall-Rechnung
 * ``xrechnung-kleinunternehmer.xml``    – UBL-XRechnung zum Kleinunternehmer-Fall
 * ``xrechnung-berichtigt.xml``          – UBL-XRechnung zur berichtigten Fassung (``cbc:Note``)
@@ -35,6 +41,13 @@ Ergebnis im Ausgabeordner:
 * ``xrechnung-steuernummer.xml``        – UBL-XRechnung zum Fall „nur Steuernummer“ (``TAX`` und ``cac:PartyIdentification``)
 * ``xrechnung-steuernummer-kleinunternehmer.xml`` – dasselbe als Kleinunternehmer
 * ``xrechnung-mischsatz.xml``           – UBL-XRechnung zur Rechnung mit Steuersatz je Position (zwei ``cac:TaxSubtotal``)
+* ``xrechnung-satz-5-5.xml``            – UBL-XRechnung zum Beleg mit 19 % und 5,5 % (zwei ``cac:TaxSubtotal``, die der 5,5 % mit Steuer 0,00)
+* ``xrechnung-steuerfrei-gemischt.xml`` – UBL-XRechnung zum Beleg mit 19 % und steuerfrei (``cbc:TaxExemptionReason`` an der Kategorie E)
+* ``xrechnung-steuerfrei.xml``          – UBL-XRechnung zum ganz steuerfreien Beleg
+
+Die drei Beispiele mit Steuersätzen aus den Stammdaten entstehen wie das mit Steuersatz je Position: Das Werkzeug legt die Einträge in seiner
+Demo-Datenbank an (``Database.insert_tax_rate``, erfundene Bezeichnungen und Gründe, Erlöskonten des Standard-Kontenrahmens) und speichert die Entwürfe über den Weg
+der Maske (``handlers.handle_invoice_save`` mit ``taxRateId``). Keiner der Einträge trägt einen Befreiungscode: Der Grund ist nur Text (BT-120).
 
 Jedem Beispiel mit UBL wird vor dem Schreiben nachgerechnet, dass ihm nichts fehlt (``einvoice_gaps``): Sonst bricht das
 Werkzeug ab – die Prüfung der App und Mustang sollen übereinstimmen.
@@ -67,7 +80,8 @@ def _setup_demo():
 
 def _clone_as_exempt(db, invoice_id, number='KU-DEMO-1', **over):
     """Kopie einer Demo-Rechnung als Kleinunternehmer-Rechnung (§ 19 UStG); ``over`` überschreibt Felder von
-    ``insert_invoice`` (z. B. die Steuernummer des Verkäufers)."""
+    ``insert_invoice`` (z. B. die Steuernummer des Verkäufers). Die Positionen tragen die Art ``'E'``, aber nie die Momentaufnahme eines
+    Steuersatzes aus den Stammdaten (Satz in Hundertstel Prozent, Grund, Erlöskonto): § 19 schließt sie aus – der Hinweis kommt aus dem Kopf (−1)."""
     inv = db.get_invoice_by_id(invoice_id)
     items = db.get_invoice_items(invoice_id)
     net = sum(float(it[8]) for it in items)
@@ -97,7 +111,9 @@ def _clone_as_exempt(db, invoice_id, number='KU-DEMO-1', **over):
 def _clone_for_correction(db, invoice_id, number='BE-DEMO-1', **over):
     """Kopie einer Demo-Rechnung (19 % USt, Leitweg-ID) als Entwurf für den Berichtigen- und den Storno-Fall;
     ``over`` überschreibt Felder von ``insert_invoice`` (z. B. das Skonto). Das Kennzeichen „Steuersatz je Position“ geht
-    mit den Sätzen der Positionen mit (nur ``None`` oder ``1``): Sonst entstünde ein Beleg mit zwei Sätzen ohne Kennzeichen."""
+    mit den Sätzen der Positionen mit (nur ``None`` oder ``1``): Sonst entstünde ein Beleg mit zwei Sätzen ohne Kennzeichen.
+    Ebenso die Momentaufnahme eines Steuersatzes aus den Stammdaten an den Positionen (Satz in Hundertstel Prozent, Befreiungsgrund,
+    Erlöskonto; ``TaxCategory`` trägt die Art): Eine Kopie ist dieselbe Rechnung, nicht eine ohne Eintrag."""
     from db.invoices import InvoiceCol, has_mixed_rates
     inv = db.get_invoice_by_id(invoice_id)
     items = db.get_invoice_items(invoice_id)
@@ -121,7 +137,8 @@ def _clone_for_correction(db, invoice_id, number='BE-DEMO-1', **over):
         db.insert_invoice_item({
             'invoice_id': new_id, 'position': it[2], 'description': it[4], 'quantity': it[5],
             'unit': it[6], 'price_per_unit': it[7], 'total_net': it[8],
-            'tax_category': it[9], 'tax_rate': it[10]})
+            'tax_category': it[9], 'tax_rate': it[10],
+            'tax_rate_bp': it[11], 'tax_exempt_reason': it[12], 'revenue_coa_id': it[13]})
     return new_id
 
 
@@ -135,10 +152,10 @@ MIXED_ITEMS = (
 )
 
 
-def _mixed_rates_draft(db, invoice_id, number='MS-DEMO-1'):
-    """Ein Entwurf mit Positionen zu 19 % und 7 % (``MIXED_ITEMS``) – angelegt über den Weg der Maske: ``handlers.handle_invoice_save`` mit
-    ``taxMode: 'mixed'``, so, wie das Formular mit dem Häkchen „Steuersatz je Position“ es schickt. Kunde, eigene Firma, Bankkonto und
-    Fristen übernimmt er von der Demo-Rechnung ``invoice_id``, dazu die Leitweg-ID der anderen Beispiele. Liefert die ID."""
+def _form_draft(db, invoice_id, number, items, label, **head):
+    """Ein Entwurf über den Weg der Maske: ``handlers.handle_invoice_save`` mit den Positionen ``items`` (wie das Formular sie schickt) und den Angaben im Kopf
+    ``head`` (``taxRate``, ``taxMode``, ``taxRateId``). Kunde, eigene Firma, Bankkonto und Fristen übernimmt er von der Demo-Rechnung ``invoice_id``, dazu die
+    Leitweg-ID der anderen Beispiele. Liefert die ID; scheitert das Speichern, bricht das Werkzeug mit ``label`` und dem Grund ab."""
     import json
     from server import handlers
     inv = db.get_invoice_by_id(invoice_id)
@@ -146,15 +163,87 @@ def _mixed_rates_draft(db, invoice_id, number='MS-DEMO-1'):
         'invoiceNumber': number, 'invoiceDate': str(inv[2]), 'deliveryDate': str(inv[25] or inv[2]),
         'customerId': inv[13], 'ownCompanyId': inv[3],
         'bankAccountId': next((a[0] for a in db.fetch_accounts() if a[3] == inv[32]), None),
-        'taxRate': 0.19, 'taxMode': 'mixed', 'dueDate': inv[27], 'paymentTerms': inv[26], 'buyerReference': LEITWEG_ID,
-        'items': [{'position': position, 'description': description, 'quantity': quantity, 'unit': unit, 'unitPrice': price,
-                   'taxRate': rate}
-                  for position, (description, quantity, unit, price, rate) in enumerate(MIXED_ITEMS, 1)],
+        'dueDate': inv[27], 'paymentTerms': inv[26], 'buyerReference': LEITWEG_ID, 'items': items, **head,
     }
     answer = json.loads(handlers.handle_invoice_save(json.dumps(payload).encode()))
     if not answer.get('success'):
-        sys.exit(f'mischsatz: {answer.get("error")}')
+        sys.exit(f'{label}: {answer.get("error")}')
     return answer['invoice_id']
+
+
+def _mixed_rates_draft(db, invoice_id, number='MS-DEMO-1'):
+    """Ein Entwurf mit Positionen zu 19 % und 7 % (``MIXED_ITEMS``) – angelegt über den Weg der Maske: ``handlers.handle_invoice_save`` mit
+    ``taxMode: 'mixed'``, so, wie das Formular mit dem Häkchen „Steuersatz je Position“ es schickt (``_form_draft``). Liefert die ID."""
+    items = [{'position': position, 'description': description, 'quantity': quantity, 'unit': unit, 'unitPrice': price, 'taxRate': rate}
+             for position, (description, quantity, unit, price, rate) in enumerate(MIXED_ITEMS, 1)]
+    return _form_draft(db, invoice_id, number, items, 'mischsatz', taxRate=0.19, taxMode='mixed')
+
+
+# Die Einträge der Steuersätze, die die Beispiele mit Stammdaten wählen: erfundene Bezeichnungen und ein erfundener Befreiungsgrund (ohne Code – er ist nur Text,
+# BT-120). Die Erlöskonten gehören zum Standard-Kontenrahmen: 4100 (Steuerfreie Umsätze) und 4180 (Erlöse nach Durchschnittssätzen, der Satz 5,5 %).
+FREE_REASON = 'Steuerfreie Beispielleistung (erfundener Grund)'
+TAX_ENTRIES = (
+    ('free', 'Steuerfrei (Beispiel der E-Rechnung)', 'exempt', '0', FREE_REASON, 4100),
+    ('reduced', '5,5 % (Beispiel der E-Rechnung)', 'standard', '5,5', None, 4180),
+)
+
+# Positionen der Beispiele mit Steuersätzen aus den Stammdaten: (Bezeichnung, Menge, Einheit, Einzelpreis netto, Steuersatz in Prozent, Schlüssel des Eintrags
+# der Stammdaten oder ``None`` für eine Position wie bisher – 19 % ohne Eintrag).
+# 19 % und 5,5 %: 310,00 € zu 19 % (Steuer 58,90 €) und 0,09 € zu 5,5 %: Die Steuer der Gruppe ist 0,09 × 5,5 % = 0,00495 €, einstufig auf den Cent gerundet
+# (EN 16931, BR-CO-17) 0,00 € – über den Zwischenwert in Minor Units (0,0050 €) wären es 0,01 €. Brutto 310,09 € + 58,90 € = 368,99 €.
+RATE_5_5_ITEMS = (
+    ('Beratung Buchhaltung', 2, 'HUR', 95.0, 19, None),
+    ('Reisekosten', 1, 'LS', 120.0, 19, None),
+    ('Saatgut-Probe (Beispiel)', 1, 'C62', 0.09, 5.5, 'reduced'),
+)
+# 19 % und steuerfrei: 190,00 € zu 19 % (Steuer 36,10 €) und 80,00 € steuerfrei; brutto 306,10 €
+FREE_MIXED_ITEMS = (
+    ('Beratung Buchhaltung', 2, 'HUR', 95.0, 19, None),
+    ('Beispielleistung ohne Umsatzsteuer', 1, 'C62', 80.0, 0, 'free'),
+)
+# ganz steuerfrei: 2 × 60,00 € und 1 × 35,50 €, Steuer 0,00 €, brutto 155,50 €. Den Eintrag wählt der Kopf (``taxRateId`` im Kopf, ohne ``taxMode``: für alle Positionen);
+# eine Position nennt hier keinen
+FREE_ITEMS = (
+    ('Beispielleistung ohne Umsatzsteuer', 2, 'HUR', 60.0, 0, None),
+    ('Beispielleistung, Nebenkosten', 1, 'C62', 35.5, 0, None),
+)
+
+
+def _tax_entries(db):
+    """Die Einträge der Steuersätze der Beispiele (``TAX_ENTRIES``) in der Demo-Datenbank des Werkzeugs anlegen – über ``Database.insert_tax_rate``, mit den Regeln
+    der Stammdaten (die Seite Steuersätze täte dasselbe). Liefert ``{Schlüssel: ID}``; fehlt ein Konto des Kontenrahmens oder lehnt eine Regel ab, bricht das
+    Werkzeug ab."""
+    from tax_groups import parse_rate_bp
+    ids = {}
+    for key, label, kind, rate, reason, account in TAX_ENTRIES:
+        coa_id = db.get_coa_id_by_account_number(account)
+        if coa_id is None:
+            sys.exit(f'steuersaetze: Das Erlöskonto {account} fehlt im Kontenrahmen')
+        try:
+            ids[key] = db.insert_tax_rate(label=label, bp=parse_rate_bp(rate), kind=kind, reason=reason, revenue_coa_id=coa_id)
+        except ValueError as refused:                      # ``TaxRateRefused``: fester Satz der Stammdaten
+            sys.exit(f'steuersaetze: {label}: {refused}')
+    return ids
+
+
+def _entry_items(rows, entries):
+    """Die Positionen eines Beispiels (``RATE_5_5_ITEMS`` …) als Formularzeilen: je Position der Satz, bei einem Eintrag der Stammdaten dazu seine ``taxRateId``."""
+    return [{'position': position, 'description': description, 'quantity': quantity, 'unit': unit, 'unitPrice': price, 'taxRate': rate,
+             **({'taxRateId': entries[entry]} if entry else {})}
+            for position, (description, quantity, unit, price, rate, entry) in enumerate(rows, 1)]
+
+
+def _entry_drafts(db, invoice_id):
+    """Die drei Beispiele mit Steuersätzen aus den Stammdaten: die Einträge anlegen (``_tax_entries``) und die Entwürfe über den Weg der Maske speichern (Kunde, Firma,
+    Bank und Fristen von der Demo-Rechnung ``invoice_id``). Liefert ``{Name der Dateien: ID}``: ``satz-5-5`` (19 % und 5,5 %, Satz je Position), ``steuerfrei-gemischt``
+    (19 % und steuerfrei, Satz je Position) und ``steuerfrei`` (der Eintrag im Kopf, für alle Positionen)."""
+    entries = _tax_entries(db)
+    return {
+        'satz-5-5': _form_draft(db, invoice_id, 'SA-DEMO-1', _entry_items(RATE_5_5_ITEMS, entries), 'satz-5-5', taxRate=0.19, taxMode='mixed'),
+        'steuerfrei-gemischt': _form_draft(db, invoice_id, 'SG-DEMO-1', _entry_items(FREE_MIXED_ITEMS, entries), 'steuerfrei-gemischt',
+                                           taxRate=0.19, taxMode='mixed'),
+        'steuerfrei': _form_draft(db, invoice_id, 'SF-DEMO-1', _entry_items(FREE_ITEMS, entries), 'steuerfrei', taxRate=0, taxRateId=entries['free']),
+    }
 
 
 def _correct_delivery_date(db, invoice_id):
@@ -258,12 +347,20 @@ def _day_before(iso_date):
     return (datetime.date.fromisoformat(str(iso_date)[:10]) - datetime.timedelta(days=1)).isoformat()
 
 
+def _has_tax_snapshot(db, invoice_id):
+    """Trägt eine Position des Belegs die Momentaufnahme eines Steuersatzes aus den Stammdaten (``InvoiceItems.TaxRateBp``, Index 11 der Zeile)? Das ist das Merkmal –
+    nicht die Art ``'E'`` allein: Die Positionen des Beispiels nach § 19 tragen sie ohne Momentaufnahme."""
+    return any(item[11] is not None for item in db.get_invoice_items(invoice_id))
+
+
 def _normal_invoice(db):
-    """Die Rechnung, aus der die Beispiele entstehen: die jüngste mit 19 % im Kopf – keine Stornorechnung und nie ein Beleg mit Steuersatz
-    je Position (``Invoices.MixedTaxRates``): Bei ihm ist der Satz im Kopf nur ein Platzhalter (der höchste Satz der Positionen)."""
+    """Die Rechnung, aus der die Beispiele entstehen: die jüngste mit 19 % im Kopf – keine Stornorechnung, nie ein Beleg mit Steuersatz
+    je Position (``Invoices.MixedTaxRates``): Bei ihm ist der Satz im Kopf nur ein Platzhalter (der höchste Satz der Positionen) – und nie ein Beleg, dessen Position
+    die Momentaufnahme eines Steuersatzes aus den Stammdaten trägt (er könnte etwa 19 % mit einem eigenen Erlöskonto sein: der Kopf sähe aus wie ein Normalfall)."""
     from db.invoices import InvoiceCol, has_mixed_rates
     return next(i for i in db.fetch_invoices()
-                if float(i[35] or 0) in (19, 0.19) and i[50] != 'storno' and not has_mixed_rates(i[InvoiceCol.MIXED_TAX_RATES]))
+                if float(i[35] or 0) in (19, 0.19) and i[50] != 'storno' and not has_mixed_rates(i[InvoiceCol.MIXED_TAX_RATES])
+                and not _has_tax_snapshot(db, i[0]))
 
 
 def main(outdir):
@@ -293,9 +390,13 @@ def main(outdir):
     # Steuersatz je Position: Positionen zu 19 % und 7 % – zwei Steueraufschlüsselungen, die Steuer je Satz aus der Nettosumme der Gruppe
     mixed_id = _mixed_rates_draft(db, normal[0])
 
+    # Steuersätze aus den Stammdaten (seit 2.8.0), ohne Befreiungscode: 19 % und 5,5 % (mit der Position, an der zweistufiges Runden einen Cent zu viel ergäbe), 19 % und
+    # steuerfrei mit Grund (Satz je Position) und ein ganz steuerfreier Beleg (der Eintrag im Kopf)
+    entry_drafts = _entry_drafts(db, normal[0])
+
     for label, iid in (('normalfall', normal[0]), ('kleinunternehmer', exempt_id), ('skonto', skonto_id),
                        ('steuernummer', tax_number_id), ('steuernummer-kleinunternehmer', tax_number_exempt_id),
-                       ('mischsatz', mixed_id)):
+                       ('mischsatz', mixed_id), *entry_drafts.items()):
         result = generate_invoice_documents(db, iid, with_xml=False, overwrite_sent=True)
         if result['error']:
             sys.exit(f'{label}: {result["error"]}')

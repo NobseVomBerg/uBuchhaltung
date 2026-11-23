@@ -258,7 +258,8 @@ def export_to_datev(bookings, coa_id_to_number: dict,
                     date_from: str, date_to: str,
                     liquid_coa_ids=None, *,
                     waiting_numbers=(), invoices=None,
-                    consultant_no=None, client_no=None) -> tuple:
+                    consultant_no=None, client_no=None,
+                    rates_without_key=None) -> tuple:
     """
     Buchungen nach DATEV Buchungsstapel-Format exportieren.
 
@@ -283,6 +284,12 @@ def export_to_datev(bookings, coa_id_to_number: dict,
                               Beleg-Nr. gilt für die Forderung das Buchungsdatum und für die Kette das Land „DE“.
     :param consultant_no:     Berater- und Mandantennummer der eigenen Firma (``db.get_datev_numbers()``),
     :param client_no:         beide gültig oder beide Platzhalter im Vorlauf.
+    :param rates_without_key: eine Liste, in die der Export die IDs der Buchungen legt, die einen Steuersatz über 0 tragen, für den er keinen BU-Schlüssel
+                              ableitet: Art Umsatz- oder Vorsteuer (nicht die Rechnungskette, die nie einen Schlüssel trägt), kein gespeicherter Schlüssel
+                              (``Bookings.DatevKey``) und ein Satz außerhalb der vier mit Schlüssel (19, 7, 16, 5 %; 5,5 % etwa). Der Satz steht dann nur
+                              in Spalte 40 (Umsatzsteuer) oder gar nicht im Stapel (Vorsteuer). Die Zahl entsteht hier, weil nur diese Schleife Art, Schlüssel
+                              und Satz jeder Zeile kennt – eine zweite Lesart im Aufrufer könnte von ihr abweichen. Ohne die Liste (``None``, der Standard) und mit
+                              ihr ist der Stapel Byte für Byte derselbe: Sie wird nur gefüllt.
     :returns:                 (csv_bytes in CP1252, list_of_exported_booking_ids)
     """
     lines = [_make_meta_row(date_from, date_to, consultant_no, client_no), DATEV_COL_HEADER]
@@ -325,6 +332,9 @@ def export_to_datev(bookings, coa_id_to_number: dict,
         stored_key = (datev_keys.parse_key(row[_ROW_DATEV_KEY]) if len(row) > _ROW_DATEV_KEY else None)
         kind = datev_keys.booking_kind(form, konto_number, gegen_number, is_inflow, waiting)
         key = stored_key if stored_key is not None else datev_keys.derive_key(kind, tax_rate, date_booking)
+        if (rates_without_key is not None and stored_key is None and key == 0 and datev_keys.percent(tax_rate) > 0
+                and kind in (datev_keys.KIND_VAT, datev_keys.KIND_INPUT)):
+            rates_without_key.append(booking_id)
         invoice = _invoice_info(invoices, doc_number)
 
         cols = [None] * TOTAL_COLS

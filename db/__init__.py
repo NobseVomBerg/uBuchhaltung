@@ -22,6 +22,7 @@ from .wiso_fdb_import import WisoFdbImportMixin
 from .contacts import ContactsMixin
 from .articles import ArticlesMixin
 from .numbering import NumberRangeMixin
+from .tax_rates import TaxRateRefused, TaxRatesMixin
 from .invoice_payments import InvoicePaymentsMixin
 from .invoices import InvoicesMixin
 from .invoice_lock import InvoiceLockMixin
@@ -31,9 +32,9 @@ from .invoice_repair import InvoiceRepairMixin
 from .reporting import ReportingMixin
 
 
-class Database(SchemaMixin, SeedMixin, ReceiptsMixin, DocumentReadingsMixin, WorkTimesMixin, TripsMixin, BookingsMixin, MatchingMixin, AccountsMixin, AssetsMixin, WisoImportMixin, WisoFdbImportMixin, ContactsMixin, ArticlesMixin, NumberRangeMixin, InvoicePaymentsMixin, InvoicesMixin, InvoiceLockMixin, InvoiceVersionsMixin, InvoiceStornoMixin, InvoiceRepairMixin, ReportingMixin, _CoreMixin):
+class Database(SchemaMixin, SeedMixin, ReceiptsMixin, DocumentReadingsMixin, WorkTimesMixin, TripsMixin, BookingsMixin, MatchingMixin, AccountsMixin, AssetsMixin, WisoImportMixin, WisoFdbImportMixin, ContactsMixin, ArticlesMixin, NumberRangeMixin, TaxRatesMixin, InvoicePaymentsMixin, InvoicesMixin, InvoiceLockMixin, InvoiceVersionsMixin, InvoiceStornoMixin, InvoiceRepairMixin, ReportingMixin, _CoreMixin):
     """Komposition aller Domaenen-Mixins. Siehe db/<domaene>.py."""
     pass
 
 
-__all__ = ["Database", "DeleteRefused", "MigrationBackupError", "SchemaTooNewError", "coa_id"]
+__all__ = ["Database", "DeleteRefused", "MigrationBackupError", "SchemaTooNewError", "TaxRateRefused", "coa_id"]

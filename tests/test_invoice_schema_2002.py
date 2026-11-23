@@ -156,7 +156,10 @@ def test_the_column_positions_of_the_row_reader_match_the_schema(stock):
 #: bekommt die Spalte ``VatMethod`` am Ende (NULL) – ``test_vat_method_schema_2004.py``.
 _ADDED_BY_2003 = {'Bookings': 1, 'CompanyDetails': 2}
 _ADDED_BY_2004 = {'Contacts': 1}
-_ADDED_LATER = {**_ADDED_BY_2003, **_ADDED_BY_2004}
+#: Schema 2008 (2.8.0): ``InvoiceItems`` bekommt die drei Spalten der Momentaufnahme eines Steuersatzes am Ende (NULL) –
+#: ``test_tax_rates_schema_2008.py``; die neue Tabelle ``TaxRates`` steht in keinem Stand davor.
+_ADDED_BY_2008 = {'InvoiceItems': 3}
+_ADDED_LATER = {**_ADDED_BY_2003, **_ADDED_BY_2004, **_ADDED_BY_2008}
 #: Schema 2005 (2.5.0): ``Accounts`` bekommt ``BusinessOnly`` am Ende – beim Bestand überall 1 (= reines Geschäftskonto),
 #: nicht NULL – ``test_business_only_schema_2005.py``. Hier die Werte, die die Spalten tragen.
 _ADDED_BY_2005 = {'Accounts': (1,)}

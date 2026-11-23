@@ -1,20 +1,20 @@
 {
   "code": {
-    "code_lines": 41577,
-    "files": 125,
-    "lines": 61224
+    "code_lines": 42978,
+    "files": 127,
+    "lines": 63681
   },
   "data": {
     "files": 14,
-    "lines": 2263,
-    "non_blank_lines": 2263
+    "lines": 2283,
+    "non_blank_lines": 2283
   },
   "tests": {
-    "cases": 21020,
-    "code_lines": 91701,
-    "files": 249,
-    "functions": 7773,
-    "lines": 132646
+    "cases": 22734,
+    "code_lines": 98793,
+    "files": 263,
+    "functions": 8416,
+    "lines": 143604
   },
-  "version": "2.7.0"
+  "version": "2.8.0"
 }

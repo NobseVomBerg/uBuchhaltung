@@ -298,6 +298,8 @@ _POST_LOCATION = {
     "/masterdata/skr/add_standard": r"/masterdata/skr\?added=\d+",
     "/masterdata/skr/delete": r"/masterdata/skr\?msg=[^&]+&type=error",
     "/masterdata/skr/togglemenu": r"/masterdata/skr",
+    "/masterdata/taxrates/delete": r"/masterdata/taxrates",
+    "/masterdata/taxrates/toggle": r"/masterdata/taxrates\?err=[^&]+",           # die ID gibt es nicht: die Meldung steht auf der Liste
     "/quote/delete": r"/quote",
     "/receipts/delete": r"/receipts",
     "/transactions/delete": r"/transactions",

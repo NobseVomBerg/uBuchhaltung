@@ -131,7 +131,10 @@ class InvoiceStornoMixin:
         Die Konten der Forderung werden vor der Transaktion aufgelöst (sie legt bei Bedarf Konten an – in eigenen
         Verbindungen, nie darin); eine abgelehnte Stornierung legt auch keines an. Bei einem Beleg mit Steuersatz je Position gelten sie für seine
         Satzgruppen (``_mixed_receivable_accounts``), der Schlüssel ``('mixed', Gruppen)`` hält sie fest, und die Transaktion vergleicht den
-        frisch gelesenen Stand mit ihm (``CHANGED_MESSAGE``, wenn Kennzeichen oder Gruppen sich inzwischen geändert haben). Das Dokument der
+        frisch gelesenen Stand mit ihm (``CHANGED_MESSAGE``, wenn Kennzeichen oder Gruppen sich inzwischen geändert haben). Ein Beleg mit EINEM Satz,
+        der die Momentaufnahme eines Steuersatzes aus den Stammdaten trägt (2.8.0), bekommt das Wartekonto genau seines Satzes – dieselben Bausteine wie das
+        Versenden (``_send_key``, ``_entry_receivable_accounts``), nicht ``_tax_rate_key``, der auf ganze Prozent rundet: Für 7,4 % entsteht weder das Konto der
+        7 % noch eine Gegenbuchung; ein steuerfreier Beleg bucht sie über 4340. Ohne Momentaufnahme bleibt alles, wie es war. Das Dokument der
         Stornorechnung erzeugt der Aufrufer nach dem Commit. Returns :class:`Storno`."""
         if not is_iso_date(storno_date):
             return Storno(False, STORNO_DATE_MESSAGE, 400)
@@ -139,7 +142,7 @@ class InvoiceStornoMixin:
             return Storno(False, STORNO_DATE_FUTURE_MESSAGE, 400)
         # Vorprüfung ohne Schreibsperre: Abgelehnt wird vor dem Auflösen der Konten; die Prüfung in der Transaktion
         # (derselbe Aufruf) entscheidet endgültig
-        groups = None
+        groups = entry = send_key = None
         conn = self._get_connection()
         try:
             row = invoice_row(conn, invoice_id)
@@ -149,6 +152,13 @@ class InvoiceStornoMixin:
                     groups = self._checked_mixed_groups(conn, invoice_id)
                 except MixedNotBookable as exc:
                     blocked = (str(exc), 409)
+            elif not blocked:
+                # ein Beleg mit EINEM Satz: Den Stand liest dieselbe Stelle wie beim Versenden (``_send_key``) – trägt er die Momentaufnahme eines Steuersatzes
+                # aus den Stammdaten (``entry``), gilt das Wartekonto genau dieses Satzes
+                try:
+                    send_key, entry = self._send_key(conn, invoice_id, row['TaxRate'], False)
+                except MixedNotBookable as exc:
+                    blocked = (str(exc), 409)
         finally:
             conn.close()
         if blocked:
@@ -156,8 +166,12 @@ class InvoiceStornoMixin:
         if groups is not None:
             # ein Beleg mit Steuersatz je Position: Die Konten gelten für seine Satzgruppen, nie für den Platzhalter im Kopf
             accounts, accounts_key = self._mixed_receivable_accounts(groups), ('mixed', tuple(groups))
-        else:
+        elif entry is None:
             accounts, accounts_key = self._receivable_accounts(row['TaxRate']), self._tax_rate_key(row['TaxRate'])
+        else:
+            # genau dieser Satz (7,4 % ist nicht 7 %: ``_tax_rate_key`` rundete auf ganze Prozent und legte das Wartekonto der 7 % an); ohne Wartekonto
+            # – 5,5 % – keine Gegenbuchung, wie es beim Versenden keine Forderung gab
+            accounts, accounts_key = self._entry_receivable_accounts(entry[0]), send_key
 
         try:
             with self.transaction() as tx:
@@ -173,7 +187,10 @@ class InvoiceStornoMixin:
                     except MixedNotBookable as exc:
                         raise _Refusal(str(exc), 409) from None
                 else:
-                    current_key = self._tax_rate_key(row['TaxRate'])
+                    try:
+                        current_key = self._send_key(conn, invoice_id, row['TaxRate'], False)[0]
+                    except MixedNotBookable as exc:
+                        raise _Refusal(str(exc), 409) from None
                 if accounts_key != current_key:
                     raise _Refusal(CHANGED_MESSAGE, 409)          # der Steuersatz (bzw. beim Beleg mit Satz je Position die Satzgruppen) hat sich inzwischen geändert
                 try:
@@ -370,17 +387,21 @@ class InvoiceStornoMixin:
     def _copy_items(self, conn, tx, source_id, target_id, negate=False):
         """Die Positionen des Belegs ``source_id`` in derselben Reihenfolge als Positionen von ``target_id``. Mit
         ``negate`` (Stornorechnung) sind Menge und Positionssumme negiert, Einzelpreis und alles andere unverändert; ohne
-        (Ersatzrechnung) bleibt alles, wie es ist."""
+        (Ersatzrechnung) bleibt alles, wie es ist. Die Momentaufnahme eines Steuersatzes aus den Stammdaten
+        (``db.invoices.ITEM_SNAPSHOT_COLUMNS``) geht in beiden Fällen unverändert mit."""
         rows = conn.execute(
-            'SELECT Position, ArticleId, Description, Quantity, Unit, PricePerUnit, TotalNet, TaxCategory, TaxRate '
+            'SELECT Position, ArticleId, Description, Quantity, Unit, PricePerUnit, TotalNet, TaxCategory, TaxRate, '
+            'TaxRateBp, TaxExemptReason, RevenueCoaId '
             'FROM InvoiceItems WHERE InvoiceId = ? ORDER BY Position, ID', (source_id,)).fetchall()
-        for position, article, description, quantity, unit, price, total, category, rate in rows:
+        for (position, article, description, quantity, unit, price, total, category, rate,
+             rate_bp, exempt_reason, revenue_coa) in rows:
             self.insert_invoice_item({
                 'invoice_id': target_id, 'position': position, 'article_id': article,
                 'description': description, 'quantity': _negated(quantity) if negate else quantity, 'unit': unit,
                 'price_per_unit': from_minor(price or 0),
                 'total_net': from_minor(_negated(total or 0) if negate else (total or 0)),
-                'tax_category': category, 'tax_rate': rate}, tx=tx)
+                'tax_category': category, 'tax_rate': rate,
+                'tax_rate_bp': rate_bp, 'tax_exempt_reason': exempt_reason, 'revenue_coa_id': revenue_coa}, tx=tx)
 
     def find_storno_invoice(self, invoice_id):
         """Die Stornorechnung zu dieser Rechnung als ``(ID, Nummer, Datum)`` – ``None``, wenn es keine gibt."""

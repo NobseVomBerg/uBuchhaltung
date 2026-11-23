@@ -7,6 +7,7 @@ import datetime
 import json
 import html as _html
 import re
+from typing import NamedTuple, Optional
 from urllib.parse import quote
 from db import Database
 from db.invoices import InvoiceCol, is_storno_row
@@ -15,9 +16,10 @@ from db.invoice_lock import (CLOSED, EDITABLE, LOCKED_STATUSES, NUMBER_KEPT_MESS
                              buyer_snapshot, canonical_status, status_group)
 from db.invoice_payments import MIXED_REVENUE_MESSAGE, PAYABLE_STATUSES, has_mixed_rates
 from db.invoice_versions import DELIVERY_DATE_MESSAGE, PROTOCOL_LABELS, local_date, local_datetime
+from db.tax_rates import entry_snapshot, legacy_expressible
 from money import fmt_eur, format_plain, to_minor
 import tax_groups
-from tax_groups import rate_pct
+from tax_groups import EXEMPT, bp_pct, group_label, rate_pct
 from export.einvoice_model import (SCOPE_EN16931, SCOPE_XRECHNUNG, build_einvoice, einvoice_gaps, gap_texts,
                                    unit_display)
 from export.invoice_files import stored_invoice_path, version_files, wants_xrechnung
@@ -68,13 +70,23 @@ TAX_PREFILL_NOTE = ('<p class="warnColor" id="tax_prefill_note">Vorbelegt wie di
                     '(Kleinunternehmer, §&nbsp;19 UStG).</p>')
 
 
-# ── Steuersatz je Position (seit 2.7.0) ──────────────────────────────────────
-# Das Häkchen „Steuersatz je Position“ und die Spalte „USt“ der Positionstabelle – für Rechnung UND Angebot (``pages_quote`` nimmt dieselben Bausteine).
-# Die wählbaren Sätze stehen nur in ``tax_groups.MIXED_TAX_RATES``: Die Auswahlfelder der Zeilen, die der Server schreibt, und die der neuen Zeilen,
-# die der Browser anlegt (die Liste als JSON im Skriptblock, ``MIXED_TAX_JS``), lesen beide diese eine Liste. Kein Satz und keine Zahl von Sätzen steht
-# im Quelltext der Maske.
+# ── Steuersatz je Position (seit 2.7.0) und Steuersätze der Stammdaten (seit 2.8.0) ──────────────────────────
+# Das Häkchen „Steuersatz je Position“, die Spalte „USt“ der Positionstabelle und das Auswahlfeld „Mehrwertsteuer“ im Kopf – für Rechnung UND Angebot (``pages_quote``
+# nimmt dieselben Bausteine). Wählbar sind die Einträge der Stammdaten (``entry_choices``: aktiv und gültig, in ihrer Reihenfolge): Die Auswahlfelder, die der Server schreibt
+# (Kopf und Zeilen), und die der neuen Zeilen, die der Browser anlegt (die Liste als JSON im Skriptblock, ``MIXED_TAX_JS``), lesen beide diese eine Liste. Kein Satz, keine
+# ID und keine Bezeichnung steht im Quelltext der Maske. Ohne Liste (``choices=None``) gelten die Sätze von ``tax_groups.MIXED_TAX_RATES`` – die Liste vor 2.8.0.
+#
+# **Was die Maske schickt:** Eine Option trägt nur einen Satz (``Choice.entry_id`` ist ``None``), wenn der bisherige Payload den Eintrag ohne Verlust trägt
+# (``db.tax_rates.legacy_expressible``: die Vorbelegung 19 und 7 Prozent ohne Erlöskonto): Dann geht, was die Maske immer schickte – kein ``taxRateId``. Jeder andere Eintrag
+# (steuerfrei, mit Erlöskonto, mit Nachkommastellen im Satz) schickt seine ID: im Kopf (ohne Häkchen) als letzter Schlüssel des Kopfs, mit dem Häkchen als letzter Schlüssel
+# der Position. Eine Option mit Eintrag trägt ihre Angaben als ``data-``Attribute, eine ohne hat nur ihren Wert – den Satz.
 
 MIXED_RATE_UNSET = '– wählen –'        # die Auswahl einer Zeile, deren gespeicherter Satz sich nicht lesen lässt: nichts wird still umgedeutet
+GONE_VALUE = 'e0'                      # die Option „gespeichert …“: eine Position mit Momentaufnahme, deren Eintrag es nicht mehr gibt – sie schickt ``taxRateId: 0``
+GONE_TEXT = 'gespeichert, in den Stammdaten nicht mehr vorhanden'
+
+# Die Spalten einer gespeicherten Position (``Database.get_invoice_items``, ``SELECT *``): Art, Satz, Satz in Hundertstel Prozent, Grund der Befreiung, Erlöskonto
+ITEM_TAX_CATEGORY, ITEM_TAX_RATE, ITEM_TAX_RATE_BP, ITEM_TAX_EXEMPT_REASON, ITEM_REVENUE_COA = 9, 10, 11, 12, 13
 
 
 def rate_key(value):
@@ -98,37 +110,171 @@ def mixed_rate_choices():
     return [(key, rate_label(key)) for key in keys if key is not None]
 
 
-def mixed_default_key(head):
-    """Der Satz, den eine neue Zeile bekommt: der Satz des Belegs (``head``, in jeder Schreibweise), wenn die Liste ihn kennt, sonst der erste der Liste."""
-    choices = mixed_rate_choices()
-    key = rate_key(head)
-    if any(key == value for value, _label in choices):
-        return key
-    return choices[0][0] if choices else ''
+class Choice(NamedTuple):
+    """Eine wählbare Option der Maske. ``value``: ihr Wert – der Satz selbst (``'19'``, ``'5.5'``), wenn sie nur einen Satz trägt, sonst ``'e<ID>'``; ``label``: die
+    Beschriftung; ``rate``: der Satz als Prozentzahl (``rate_key``). ``entry_id``: die ID, die das Speichern als ``taxRateId`` mitschickt – ``None`` bei einer Option, die nur
+    einen Satz trägt (die Vorbelegung und jeder Satz ohne Eintrag: der Payload von früher); ``0`` bei „gespeichert …“ (der Server lehnt sie immer ab). ``exempt`` und
+    ``reason``: steuerfrei und der Grund der Befreiung, der auf der Rechnung steht. ``entry``: der Eintrag der Stammdaten, zu dem die Option gehört (damit sich eine gespeicherte
+    Position ihm zuordnen lässt), sonst ``None``."""
+    value: str
+    label: str
+    rate: str
+    entry_id: Optional[int] = None
+    exempt: bool = False
+    reason: str = ''
+    entry: Optional[object] = None
 
 
-def mixed_select_html(selected, disabled=''):
-    """Das Auswahlfeld „USt“ einer Zeile: die wählbaren Sätze, davon ``selected`` (der gespeicherte Satz der Position, in jeder Schreibweise) gewählt. Steht er
-    nicht in der Liste, kommt er als eigene, gewählte Option dazu – nichts wird still umgedeutet, der Server lehnt beim Speichern ab und sagt es; ein Satz, der
-    sich nicht lesen lässt, steht als leere Auswahl da. ``disabled``: ``' disabled'`` (gesperrte Rechnung) oder leer."""
-    choices = mixed_rate_choices()
-    key = rate_key(selected)
+def legacy_choices():
+    """Die Sätze von ``tax_groups.MIXED_TAX_RATES`` als Optionen ohne Eintrag der Stammdaten – die Liste vor 2.8.0 und die Vorgabe der Funktionen dieses Abschnitts."""
+    return [Choice(value, label, value) for value, label in mixed_rate_choices()]
+
+
+def entry_choices(db):
+    """Die wählbaren Steuersätze aus den Stammdaten (``db.fetch_tax_rates(active_only=True)``: aktiv und gültig, in der Reihenfolge der Stammdaten) als Optionen. Ein Eintrag, den
+    der bisherige Payload trägt (``legacy_expressible``), bekommt als Wert seinen Satz und schickt keine ID; jeder andere den Wert ``e<ID>`` und seine ID."""
+    choices = []
+    for entry in db.fetch_tax_rates(active_only=True):
+        rate = rate_key(bp_pct(entry.bp))
+        if legacy_expressible(entry):
+            choices.append(Choice(rate, entry.label, rate, entry=entry))
+        else:
+            exempt = entry.kind == EXEMPT
+            choices.append(Choice(f'e{entry.id}', entry.label, rate, entry.id, exempt, (entry.reason or '') if exempt else '', entry))
+    return choices
+
+
+def choice_json(choice):
+    """Die Option für das Skript (``MIX_RATES``): Wert und Beschriftung – bei einer Option mit Eintrag dazu Satz und ID, bei einer steuerfreien auch der Grund."""
+    data = {'value': choice.value, 'label': choice.label}
+    if choice.entry_id is not None:
+        data.update(rate=choice.rate, id=choice.entry_id)
+        if choice.exempt:
+            data.update(exempt=True, reason=choice.reason)
+    return data
+
+
+def item_snapshot(item):
+    """Die Momentaufnahme einer gespeicherten Position – ``(Art, Satz in Hundertstel Prozent, Grund, Erlöskonto)`` – oder ``None``, wenn sie keine trägt (``TaxRateBp`` leer: der
+    Bestand und jede Position, die ihr Satz allein beschreibt; ein Wert, der keine ganze Zahl ist, gilt als keine)."""
+    if len(item) <= ITEM_REVENUE_COA or type(item[ITEM_TAX_RATE_BP]) is not int:
+        return None
+    return item[ITEM_TAX_CATEGORY], item[ITEM_TAX_RATE_BP], item[ITEM_TAX_EXEMPT_REASON], item[ITEM_REVENUE_COA]
+
+
+def _entry_snapshot(entry):
+    """Die Momentaufnahme, die ein Speichern mit diesem Eintrag an eine Position schriebe, in der Form von ``item_snapshot``."""
+    stored = entry_snapshot(entry)
+    return stored['tax_category'], stored['tax_rate_bp'], stored['tax_exempt_reason'], stored['revenue_coa_id']
+
+
+def _choice_state(choice):
+    """Was eine Position speichert, die diese Option gewählt hat: ``(Satz, Momentaufnahme)`` – ohne Momentaufnahme bei einer Option, die nur einen Satz trägt."""
+    return (choice.rate, None) if choice.entry_id is None else (choice.rate, _entry_snapshot(choice.entry))
+
+
+def _attributes(choice):
+    """Die Angaben einer Option mit Eintrag als Attribute (maskiert), das Skript liest sie von der gewählten Option; leer bei einer Option, die nur einen Satz trägt."""
+    if choice.entry_id is None:
+        return ''
+    html = f' data-rate="{_html.escape(choice.rate, quote=True)}" data-entry="{int(choice.entry_id)}"'
+    if choice.exempt:
+        html += f' data-exempt="1" data-reason="{_html.escape(choice.reason, quote=True)}"'
+    return html
+
+
+def entry_options(choices, rate, snapshot=None):
+    """Die Optionen eines Auswahlfelds als ``(Wert, Beschriftung, Attribute)`` und der gewählte Wert – zu dem, was eine Position speichert: ``rate`` (ihr Satz, in jeder Schreibweise)
+    und ``snapshot`` (ihre Momentaufnahme, ``item_snapshot``; ``None`` ohne). **Nichts wird still umgedeutet:**
+
+    * Mit Momentaufnahme gilt der Eintrag der Liste, der dieselbe Momentaufnahme schriebe (Satz, Art, Grund, Erlöskonto – ``db.tax_rates.entry_snapshot``); gibt es ihn nicht mehr,
+      kommt die Option „gespeichert …“ dazu und ist gewählt (Wert ``e0``): Sie schickt ``taxRateId: 0``, der Server lehnt ab, bis der Nutzer neu wählt.
+    * Ohne Momentaufnahme gilt die Option, die nur den Satz trägt; kennt die Liste ihn nicht (ein Bestandsbeleg mit 16 %), kommt er als eigene, gewählte Option dazu (der Payload
+      von früher, ohne ID); ein Satz, der sich nicht lesen lässt, steht als leere Auswahl da."""
+    options = [(choice.value, choice.label, _attributes(choice)) for choice in choices]
+    if snapshot is not None:
+        for choice in choices:
+            if choice.entry is not None and _entry_snapshot(choice.entry) == snapshot:
+                return options, choice.value
+        category, bp, reason, _coa = snapshot
+        exempt = category == 'E'
+        gone = Choice(GONE_VALUE, f'{group_label(bp_pct(bp), exempt)} – {GONE_TEXT}', rate_key(bp_pct(bp)) or '', 0, exempt, (reason or '') if exempt else '')
+        return options + [(gone.value, gone.label, _attributes(gone))], gone.value
+    key = rate_key(rate)
     if key is None:
-        choices.insert(0, ('', MIXED_RATE_UNSET))
-        key = ''
-    elif not any(key == value for value, _label in choices):
-        choices.append((key, rate_label(key)))
-    options = ''.join(f'<option value="{_html.escape(value, quote=True)}"{" selected" if value == key else ""}>'
-                      f'{_html.escape(label)}</option>' for value, label in choices)
-    return f'<select class="item-tax"{disabled}>{options}</select>'
+        return [('', MIXED_RATE_UNSET, '')] + options, ''
+    for choice in choices:
+        if choice.entry_id is None and choice.rate == key:
+            return options, choice.value
+    return options + [(key, rate_label(key), '')], key
+
+
+def default_choice(choices, head):
+    """Die Option, die eine neue Zeile (und ein neuer Beleg im Kopf) bekommt: die, die nur den Satz des Belegs (``head``, in jeder Schreibweise) trägt, wenn die Liste sie kennt, sonst die
+    erste der Liste (``None`` bei einer leeren Liste)."""
+    key = rate_key(head)
+    for choice in choices:
+        if choice.entry_id is None and choice.rate == key:
+            return choice
+    return choices[0] if choices else None
+
+
+def mixed_default_key(head, choices=None):
+    """Der Wert, den eine neue Zeile bekommt: die Option für den Satz des Belegs (``head``, in jeder Schreibweise), wenn die Liste ihn kennt, sonst die erste der Liste
+    (``choices``: Vorgabe die Sätze von ``tax_groups.MIXED_TAX_RATES``)."""
+    found = default_choice(legacy_choices() if choices is None else choices, head)
+    return found.value if found is not None else ''
+
+
+def mixed_select_html(selected, disabled='', choices=None, snapshot=None, opening='<select class="item-tax"'):
+    """Das Auswahlfeld „USt“ einer Zeile: die wählbaren Steuersätze (``choices``: die Einträge der Stammdaten, ``entry_choices(db)``; Vorgabe die Sätze von
+    ``tax_groups.MIXED_TAX_RATES`` ohne Eintrag), davon gewählt, was die Position speichert – ``selected`` (ihr Satz, in jeder Schreibweise) und ``snapshot`` (ihre Momentaufnahme,
+    ``item_snapshot``; ``None`` ohne). Steht der Satz nicht in der Liste, kommt er als eigene, gewählte Option dazu – nichts wird still umgedeutet, der Server lehnt beim Speichern
+    ab und sagt es; ein Satz, der sich nicht lesen lässt, steht als leere Auswahl da; zu einer Momentaufnahme, deren Eintrag es nicht mehr gibt, kommt „gespeichert …“
+    (``entry_options``). ``disabled``: ``' disabled'`` (gesperrte Rechnung) oder leer; ``opening``: der Anfang des ``<select>``-Tags (das Feld im Kopf nimmt einen anderen)."""
+    rendered, key = entry_options(legacy_choices() if choices is None else choices, selected, snapshot)
+    chosen = next((i for i, (value, _label, _extra) in enumerate(rendered) if value == key), -1)       # nur die erste mit diesem Wert ist gewählt
+    options = ''.join(f'<option value="{_html.escape(value, quote=True)}"{attributes}{" selected" if i == chosen else ""}>'
+                      f'{_html.escape(label)}</option>' for i, (value, label, attributes) in enumerate(rendered))
+    return f'{opening}{disabled}>{options}</select>'
 
 
 MIXED_HEAD_CELL = '<th class="mixedTaxCol">USt</th>'
+HEAD_SELECT_OPENING = '<select id="tax_choice" class="taxChoice" onchange="mixHeadChange()"'
 
 
-def mixed_cell_html(selected, disabled=''):
+def mixed_cell_html(selected, disabled='', choices=None, snapshot=None):
     """Die Zelle „USt“ einer Zeile der Positionstabelle (sichtbar nur mit dem Häkchen: ``buch.css``, Klasse ``mixedTaxOn`` an der Tabelle)."""
-    return f'<td class="mixedTaxCol">{mixed_select_html(selected, disabled)}</td>'
+    return f'<td class="mixedTaxCol">{mixed_select_html(selected, disabled, choices, snapshot)}</td>'
+
+
+class HeadSelect(NamedTuple):
+    """Das Auswahlfeld „Mehrwertsteuer“ im Kopf: ``html`` das Feld, ``rate`` der Satz (Prozent) für das versteckte Feld ``#tax_rate``, ``row_state`` was eine neue Zeile speichert
+    (``(Satz, Momentaufnahme)``, wie ``mixed_select_html`` es nimmt)."""
+    html: str
+    rate: float
+    row_state: tuple
+
+
+def head_select(choices, items, tax_pct, loaded, show_tax, disabled=''):
+    """Das Auswahlfeld „Mehrwertsteuer“ im Kopf (``#tax_choice``) von Rechnung und Angebot: Es ersetzt das Zahlenfeld, das versteckte Feld ``#tax_rate`` behält seine ID und trägt den Satz.
+
+    Ein geladener Beleg (``loaded``: Bearbeiten, Kopie, Angebot → Rechnung, Ersatzrechnung) mit Steuerausweis zeigt, was er speichert: Satz ``tax_pct`` (der Satz im Kopf) und die
+    Momentaufnahme der ersten Position mit diesem Satz – bei einem Beleg mit einem Satz also die der ersten Position, bei einem mit Satz je Position (der Kopf ist dort der höchste Satz)
+    die der ersten Position zu diesem. Ein neuer Beleg und einer ohne Steuerausweis (dort bleibt der Satz im Feld die Vorbelegung) starten mit der Vorgabe (``default_choice``).
+    ``items``: die gespeicherten Positionen."""
+    if loaded and show_tax:
+        probe = next((item for item in items if rate_key(item[ITEM_TAX_RATE]) == rate_key(tax_pct)), None)
+        rate, snapshot = (probe[ITEM_TAX_RATE], item_snapshot(probe)) if probe is not None else (tax_pct, None)
+        head_rate = tax_pct
+    else:
+        start = default_choice(choices, tax_pct)
+        rate, snapshot = _choice_state(start) if start is not None else (tax_pct, None)
+        head_rate = float(start.rate) if start is not None else tax_pct
+    _rendered, value = entry_options(choices, rate, snapshot)
+    chosen = next((choice for choice in choices if choice.value == value), None)       # „gespeichert …“, ein fremder Satz und die leere Auswahl sind keine Vorgabe für eine neue Zeile
+    row = _choice_state(chosen if chosen is not None else default_choice(choices, tax_pct)) if choices else (tax_pct, None)
+    return HeadSelect(mixed_select_html(rate, disabled, choices, snapshot, HEAD_SELECT_OPENING), head_rate, row)
 
 
 def mixed_checkbox_html(checked, disabled):
@@ -137,12 +283,122 @@ def mixed_checkbox_html(checked, disabled):
             + ' onchange="mixToggle()"> Steuersatz je Position</label>')
 
 
+# Der Link zu den Stammdaten (hinter dem Häkchen „Steuersatz je Position“, in derselben Zeile) und der Hinweis zum Grund einer Steuerbefreiung (das Skript füllt ihn: ``mixNote``)
+# – beide in der Zelle der Häkchen, die Zeile ist ``no-pdf``. Der Link öffnet in einem neuen Tab: Ein Beleg, der noch nicht gespeichert ist, ginge bei einem Wechsel der Seite
+# verloren. Feste Zeichenfolgen, kein Wert aus der Datenbank.
+TAX_LINK_HTML = '<small class="hint"><a href="/masterdata/taxrates" target="_blank" rel="noopener">Steuersätze verwalten</a></small>'
+TAX_NOTE_HTML = '<p class="hint" id="tax_note" hidden></p>'
+
+
 # Die Bausteine im Browser: Auswahl je Zeile, Häkchen, Summenzeilen je Satz. Nur var und function, Werte nur über .value, .textContent und createElement (nie als
 # HTML-Text). Der Block steht VOR dem Skript der Seite und ruft dessen Funktionen (calculateTotals, fmtDe, parseDe) erst beim Aufruf. ``__MIX_RATES__`` ist die
-# Liste der wählbaren Sätze als JSON (``script_json``).
+# Liste der wählbaren Steuersätze als JSON (``script_json``).
+#
+# Zwei Teile in EINEM Block (``mixed_tax_script``): ``MIXED_ENTRY_JS`` liest die Angaben der Einträge der Stammdaten von den Optionen (Satz, ID, steuerfrei, Grund) und
+# trägt, was nur mit ihnen zu tun hat – das Feld „Mehrwertsteuer“ im Kopf, den Hinweis zum Befreiungsgrund, die ID für den Payload; ``MIXED_TAX_JS`` ist der Steuersatz je
+# Position (2.7.0) und nimmt seine Sätze von den Optionen, nicht mehr von ihrem Wert.
+MIXED_ENTRY_JS = r'''
+        // Steuersätze aus den Stammdaten (seit 2.8.0). Eine Option der Auswahl trägt, was ihr Eintrag mitbringt, in Attributen: data-rate (der Satz als Prozentzahl), data-entry
+        // (die ID des Eintrags; 0: der gespeicherte Stand, dessen Eintrag es nicht mehr gibt – der Server lehnt ihn immer ab), data-exempt und data-reason (steuerfrei und sein
+        // Grund). Eine Option ohne diese Attribute trägt nur einen Satz: ihr Wert (so schickt die Maske den Payload von früher, ohne ID).
+
+        // Der Satz einer Option als Text (Prozentzahl).
+        function mixOptionRate(option) {
+            var rate = option.getAttribute('data-rate');
+            return rate === null ? option.value : rate;
+        }
+
+        // Die ID des Eintrags einer Option (0: gespeicherter Stand) oder null: Die Option trägt nur einen Satz.
+        function mixOptionEntry(option) {
+            var entry = option.getAttribute('data-entry');
+            return entry === null ? null : parseInt(entry, 10);
+        }
+
+        function mixOptionExempt(option) {
+            return option.hasAttribute('data-exempt');
+        }
+
+        // Die gewählte Option eines Auswahlfelds oder null.
+        function mixChosen(select) {
+            return select ? (select.options[select.selectedIndex] || null) : null;
+        }
+
+        // Gibt es unter den Optionen der Liste eine mit diesem Wert?
+        function mixListed(value) {
+            for (var i = 0; i < MIX_RATES.length; i++) {
+                if (MIX_RATES[i].value === value) return true;
+            }
+            return false;
+        }
+
+        // Das Feld „Mehrwertsteuer“ im Kopf (ohne das Häkchen „Steuersatz je Position“): die gewählte Option, ihre ID für den Payload und der Satz im versteckten Feld.
+        function mixHeadChosen() {
+            return mixChosen(document.getElementById('tax_choice'));
+        }
+
+        // Die ID des Eintrags, den der Kopf gewählt hat, oder null (ein Satz ohne Eintrag): Nur sie geht als taxRateId mit.
+        function mixHeadEntry() {
+            var option = mixHeadChosen();
+            return option ? mixOptionEntry(option) : null;
+        }
+
+        // Die ID des Eintrags einer Zeile oder null.
+        function mixRowEntry(row) {
+            var option = mixChosen(row.querySelector('.item-tax'));
+            return option ? mixOptionEntry(option) : null;
+        }
+
+        // Wählt der Nutzer im Kopf einen Eintrag, trägt das versteckte Feld seinen Satz, und die Summen ziehen nach.
+        function mixHeadChange() {
+            var option = mixHeadChosen();
+            var field = document.getElementById('tax_rate');
+            if (option && field) field.value = mixOptionRate(option);
+            calculateTotals();
+        }
+
+        // Der Hinweis unter den Auswahlfeldern: der Grund jedes gewählten steuerfreien Eintrags, so wie er auf der Rechnung steht (ohne Umsatzsteuerausweis nichts).
+        function mixNote() {
+            var note = document.getElementById('tax_note');
+            if (!note) return;
+            var tax = document.getElementById('show_tax');
+            var chosen = [];
+            if (tax && tax.checked) {
+                if (mixOn()) {
+                    var rows = document.querySelectorAll('.invoice-item-row');
+                    for (var i = 0; i < rows.length; i++) chosen.push(mixChosen(rows[i].querySelector('.item-tax')));
+                } else {
+                    chosen.push(mixHeadChosen());
+                }
+            }
+            var reasons = [];
+            for (var j = 0; j < chosen.length; j++) {
+                var reason = chosen[j] && mixOptionExempt(chosen[j]) ? chosen[j].getAttribute('data-reason') : '';
+                if (reason && reasons.indexOf(reason) < 0) reasons.push(reason);
+            }
+            note.textContent = reasons.length ? 'Grund der Steuerbefreiung (steht so auf der Rechnung): ' + reasons.join(' | ') : '';
+            note.hidden = !reasons.length;
+        }
+
+        // Ohne das Häkchen mit einem Eintrag im Kopf (er schickt eine ID: ein Satz mit Nachkommastellen, steuerfrei, mit eigenem Erlöskonto): Die Steuer ist die einer Gruppe mit
+        // Momentaufnahme – das Netto mal der Satz, EINMAL auf den Cent gerundet (EN 16931). Ein Satz ohne Eintrag bleibt bei der Rechnung von calculateTotals, wie sie war.
+        function mixHeadTotals() {
+            var option = mixHeadChosen();
+            var tax = document.getElementById('show_tax');
+            if (!option || !tax || !tax.checked || mixOptionEntry(option) === null) return;
+            var net = Math.round((parseDe(document.getElementById('sum_net').textContent) || 0) * 100);
+            var cents = mixTax(net, parseFloat(mixOptionRate(option)), true);
+            document.getElementById('tax_amount').textContent = fmtDe(cents / 100) + ' €';
+            var gross = document.getElementById('sum_gross');
+            gross.textContent = '';
+            var strong = document.createElement('strong');
+            strong.textContent = fmtDe((net + cents) / 100) + ' €';
+            gross.appendChild(strong);
+        }
+'''
+
 MIXED_TAX_JS = r'''
-        // Steuersatz je Position: Bausteine für die Masken von Rechnung und Angebot. Die wählbaren Sätze kommen vom Server
-        // (tax_groups.MIXED_TAX_RATES), hier steht kein Satz im Quelltext: [{value: '<Satz>', label: '<Satz> %'}, …]
+        // Steuersatz je Position: Bausteine für die Masken von Rechnung und Angebot. Die wählbaren Steuersätze kommen vom Server (die Einträge der Stammdaten), hier steht
+        // kein Satz im Quelltext: [{value, label}, …] – bei einem Eintrag, den der Satz allein nicht trägt, dazu rate, id und – steuerfrei – exempt und reason
         var MIX_RATES = __MIX_RATES__;
 
         // Ist „Steuersatz je Position“ eingeschaltet? Das Häkchen gilt nur zusammen mit „Umsatzsteuer ausweisen“.
@@ -161,27 +417,33 @@ MIXED_TAX_JS = r'''
             return String(Math.round(number * 100) / 100);
         }
 
+        // Kennt die Liste diesen Satz als Option, die nur einen Satz trägt (ohne ID: die Vorbelegung)? Nur so eine lässt sich über den Satz allein wählen – einen Eintrag mit
+        // eigenem Konto oder Grund wählt der Nutzer selbst.
         function mixKnown(key) {
             for (var i = 0; i < MIX_RATES.length; i++) {
-                if (MIX_RATES[i].value === key) return true;
+                if (MIX_RATES[i].id === undefined && MIX_RATES[i].value === key) return true;
             }
             return false;
         }
 
-        // Der Satz, den eine neue Zeile bekommt: der des Felds „Mehrwertsteuer“, wenn die Liste ihn kennt, sonst der erste der Liste.
+        // Der Wert, den eine neue Zeile bekommt: die Option, die das Feld „Mehrwertsteuer“ im Kopf gewählt hat (auch ein Eintrag mit ID), solange das versteckte Feld noch ihren
+        // Satz trägt; sonst die Option für den Satz im Feld, wenn die Liste ihn kennt, sonst die erste der Liste.
         function mixDefaultRate() {
             var field = document.getElementById('tax_rate');
             var key = field ? mixKey(field.value) : '';
+            var head = mixHeadChosen();
+            if (head && mixListed(head.value) && mixKey(mixOptionRate(head)) === key) return head.value;
             if (mixKnown(key)) return key;
             return MIX_RATES.length ? MIX_RATES[0].value : '';
         }
 
-        // Der Satz einer Artikelzeile: der des Artikels (vom Server als Auswahlwert geliefert), wenn die Liste ihn kennt, sonst wie eine neue Zeile.
+        // Der Wert einer Artikelzeile: die Option für den Satz des Artikels (vom Server als Satz geliefert), wenn die Liste ihn kennt, sonst wie eine neue Zeile.
         function mixArticleRate(article) {
             var key = article.mixRate;
             return (key && mixKnown(key)) ? key : mixDefaultRate();
         }
 
+        // Die Zelle „USt“ einer neuen Zeile: dieselben Optionen wie die Zeilen, die der Server schreibt, mit denselben Attributen; ``key`` ist der Wert der gewählten.
         function mixAddCell(row, key) {
             var select = document.createElement('select');
             select.className = 'item-tax';
@@ -189,6 +451,14 @@ MIXED_TAX_JS = r'''
                 var option = document.createElement('option');
                 option.value = MIX_RATES[i].value;
                 option.textContent = MIX_RATES[i].label;
+                if (MIX_RATES[i].id !== undefined) {
+                    option.setAttribute('data-rate', MIX_RATES[i].rate);
+                    option.setAttribute('data-entry', String(MIX_RATES[i].id));
+                }
+                if (MIX_RATES[i].exempt) {
+                    option.setAttribute('data-exempt', '1');
+                    option.setAttribute('data-reason', MIX_RATES[i].reason);
+                }
                 select.appendChild(option);
             }
             select.value = key;
@@ -247,21 +517,28 @@ MIXED_TAX_JS = r'''
             return rest * 2 >= divisor ? quotient + 1 : quotient;
         }
 
-        // Die Steuer einer Satzgruppe in Cent: Nettosumme (Cent) mal Satz, kaufmännisch gerundet (halb weg von null) – so, wie der Server es tut, in zwei
-        // Schritten (money.tax_from_net rundet auf Minor Units, round_minor danach auf den Cent), und nur mit ganzen Zahlen, nie mit Zwischenwerten als Kommazahl.
-        function mixTax(net, percent) {
+        // Die Steuer einer Satzgruppe in Cent: Nettosumme (Cent) mal Satz, kaufmännisch gerundet (halb weg von null) – so, wie der Server es tut, und nur mit ganzen Zahlen, nie mit
+        // Zwischenwerten als Kommazahl. Zweistufig (money.tax_from_net rundet auf Minor Units, round_minor danach auf den Cent) für eine Gruppe ohne Eintrag der Stammdaten, wie
+        // immer; EINMAL gerundet (``exact``, EN 16931: das Netto mal der Satz, dann auf den Cent) für eine Gruppe, deren Positionen die Momentaufnahme eines Eintrags tragen.
+        function mixTax(net, percent, exact) {
             if (isNaN(percent)) return 0;
-            var minor = mixRoundDiv(Math.abs(net) * Math.round(percent * 100), 100);
-            var cents = mixRoundDiv(minor, 100);
+            var basis = Math.round(percent * 100);
+            var cents = exact ? mixRoundDiv(Math.abs(net) * basis, 10000) : mixRoundDiv(mixRoundDiv(Math.abs(net) * basis, 100), 100);
             return net < 0 ? -cents : cents;
         }
 
+        // Die Beschriftung des Satzes der gewählten Option in der Summenzeile: „steuerfrei“ für einen steuerfreien Eintrag, sonst der Satz mit Komma (ohne lesbaren Satz der Text
+        // der Option, bei der leeren Auswahl „– wählen –“).
         function mixLabel(select) {
-            var option = select.options[select.selectedIndex];
-            return option ? option.textContent : '';
+            var option = mixChosen(select);
+            if (!option) return '';
+            if (mixOptionExempt(option)) return 'steuerfrei';
+            var rate = mixOptionRate(option);
+            return isNaN(parseFloat(rate)) ? option.textContent : rate.replace('.', ',') + ' %';
         }
 
-        // Die Satzgruppen, nach Satz absteigend; Beträge in Cent (ganze Zahlen). Das Netto einer Position ist die Zahl, die ihre Zeile zeigt.
+        // Die Satzgruppen, nach Satz absteigend; Beträge in Cent (ganze Zahlen). Das Netto einer Position ist die Zahl, die ihre Zeile zeigt. Eine Gruppe rechnet einstufig
+        // (``exact``), wenn jede ihrer Positionen die Momentaufnahme eines Eintrags trägt (die Option hat eine ID) – wie der Server.
         function mixGroups() {
             var rows = document.querySelectorAll('.invoice-item-row');
             var byKey = {};
@@ -269,17 +546,19 @@ MIXED_TAX_JS = r'''
             for (var i = 0; i < rows.length; i++) {
                 var select = rows[i].querySelector('.item-tax');
                 if (!select) continue;
-                var key = select.value;
+                var option = mixChosen(select);
+                var key = option ? mixOptionRate(option) : select.value;
                 if (!Object.prototype.hasOwnProperty.call(byKey, key)) {
-                    byKey[key] = {key: key, percent: parseFloat(key), label: mixLabel(select), net: 0, tax: 0};
+                    byKey[key] = {key: key, percent: parseFloat(key), label: mixLabel(select), net: 0, tax: 0, exact: true};
                     groups.push(byKey[key]);
                 }
+                if (!option || mixOptionEntry(option) === null) byKey[key].exact = false;
                 byKey[key].net += Math.round((parseDe(rows[i].querySelector('.item-total').textContent) || 0) * 100);
             }
             groups.sort(function (a, b) {
                 return (isNaN(b.percent) ? -1e9 : b.percent) - (isNaN(a.percent) ? -1e9 : a.percent);
             });
-            for (var j = 0; j < groups.length; j++) groups[j].tax = mixTax(groups[j].net, groups[j].percent);
+            for (var j = 0; j < groups.length; j++) groups[j].tax = mixTax(groups[j].net, groups[j].percent, groups[j].exact);
             return groups;
         }
 
@@ -289,7 +568,7 @@ MIXED_TAX_JS = r'''
             var name = document.createElement('td');
             name.setAttribute('colspan', '6');
             name.setAttribute('data-span', '5');
-            name.textContent = 'Mehrwertsteuer ' + group.label + ' auf ' + fmtDe(group.net / 100) + ' € netto:';
+            name.textContent = (group.label === 'steuerfrei' ? group.label.charAt(0).toUpperCase() + group.label.slice(1) : 'Mehrwertsteuer ' + group.label) + ' auf ' + fmtDe(group.net / 100) + ' € netto:';
             var amount = document.createElement('td');
             var strong = document.createElement('strong');
             strong.textContent = fmtDe(group.tax / 100) + ' €';
@@ -304,6 +583,8 @@ MIXED_TAX_JS = r'''
 
         // Der Summenblock, den calculateTotals am Ende ruft: Mit dem Häkchen steht an der Stelle der einen Steuerzeile je Satz eine Zeile; Netto, Steuer und
         // Gesamtbetrag kommen aus den Gruppen (die Steuer je Gruppe auf den Cent gerundet, nie je Position). Das ist nur die Anzeige: Maßgeblich rechnet der Server.
+        // Ohne das Häkchen bleibt die Steuerzeile, wie calculateTotals sie rechnet – nur ein Eintrag im Kopf (``mixHeadTotals``) rechnet sie einstufig; der Hinweis zum Grund
+        // einer Steuerbefreiung (``mixNote``) folgt in beiden Fällen dem Stand.
         function mixTotals() {
             mixSync();
             var table = document.querySelector('.invoice-items');
@@ -311,7 +592,16 @@ MIXED_TAX_JS = r'''
             var old = table.querySelectorAll('.mixRateRow');
             for (var i = 0; i < old.length; i++) old[i].parentNode.removeChild(old[i]);
             var anchor = document.getElementById('tax_row');
-            if (!mixOn() || !anchor) return;
+            mixNote();
+            var selects = table.querySelectorAll('.item-tax');
+            for (var k = 0; k < selects.length; k++) {         // eine lange Bezeichnung zeigt das Feld nur zum Teil: ganz im Tooltip
+                var chosen = mixChosen(selects[k]);
+                selects[k].title = chosen ? chosen.textContent : '';
+            }
+            if (!mixOn() || !anchor) {
+                mixHeadTotals();
+                return;
+            }
             anchor.style.display = 'none';
             var groups = mixGroups();
             var net = 0;
@@ -333,7 +623,9 @@ MIXED_TAX_JS = r'''
 
         // Der Satz einer Zeile als Zahl (Prozent), so, wie das Formular ihn schickt – ohne Wahl NaN (im JSON null: der Server fragt dann nach).
         function mixRowRate(row) {
-            return parseFloat(row.querySelector('.item-tax').value);
+            var select = row.querySelector('.item-tax');
+            var option = mixChosen(select);
+            return parseFloat(option ? mixOptionRate(option) : select.value);
         }
 
         // Beim Laden: Eine Rechnung mit Steuersatz je Position behält die Sätze ihrer Zeilen, auch wenn das Häkchen aus- und wieder eingeschaltet wird.
@@ -346,10 +638,11 @@ MIXED_TAX_JS = r'''
 '''
 
 
-def mixed_tax_script():
-    """Der Skriptblock mit den Bausteinen für „Steuersatz je Position“ (``MIXED_TAX_JS``) und der Liste der wählbaren Sätze, vor dem Skript der Maske."""
-    rates = script_json([{'value': value, 'label': label} for value, label in mixed_rate_choices()])
-    return '<script>' + MIXED_TAX_JS.replace('__MIX_RATES__', rates) + '    </script>\n'
+def mixed_tax_script(choices=None):
+    """Der Skriptblock mit den Bausteinen für die Steuersätze der Stammdaten (``MIXED_ENTRY_JS``) und für „Steuersatz je Position“ (``MIXED_TAX_JS``) und der Liste der wählbaren
+    Steuersätze (``choices``: ``entry_choices(db)``; Vorgabe die Sätze von ``tax_groups.MIXED_TAX_RATES`` ohne Eintrag), vor dem Skript der Maske."""
+    rates = script_json([choice_json(choice) for choice in (legacy_choices() if choices is None else choices)])
+    return '<script>' + MIXED_ENTRY_JS + MIXED_TAX_JS.replace('__MIX_RATES__', rates) + '    </script>\n'
 
 
 # Stornieren (db/invoice_storno.py): Rückfrage mit Stornodatum; eine Stornorechnung lässt sich nicht kopieren
@@ -458,7 +751,7 @@ def _revenue_coa_select(db, tax_rate, selected=None, field_id='revenueCoa'):
     return f'<select name="revenue_coa_id" id="{_html.escape(field_id, quote=True)}" required>{options}</select>'
 
 
-def revenue_coa_choice(db, tax_rate, selected=None, teaches=True, mixed=False):
+def revenue_coa_choice(db, tax_rate, selected=None, teaches=True, mixed=False, entry=False):
     """Pflichtfeld „Erlöskonto“ für eine Rechnungszahlung – nur, wenn für den Steuersatz der
     Rechnung kein Erlöskonto hinterlegt ist (``Database.revenue_coa_choice_needed``, z. B. 5 %
     oder 16 %), sonst ``None``: Dann ergibt sich die Kontierung aus der Rechnung.
@@ -469,8 +762,11 @@ def revenue_coa_choice(db, tax_rate, selected=None, teaches=True, mixed=False):
 
     ``mixed``: Die Rechnung trägt einen Steuersatz je Position (``Invoices.MixedTaxRates``). Dann gibt es nie eine Auswahl (immer ``None``): Ihr
     Kopfsatz ist nur ein Platzhalter, und jeder Satz hat sein Erlöskonto – fehlt eines, lehnt die Zahlung mit einem festen Satz ab
-    (``MIXED_NO_REVENUE_COA``), ein Konto wählen lässt sich nicht."""
-    if mixed or tax_rate is None or not db.revenue_coa_choice_needed(tax_rate):
+    (``MIXED_NO_REVENUE_COA``), ein Konto wählen lässt sich nicht.
+
+    ``entry``: Die Rechnung trägt ein Erlöskonto aus den Stammdaten (``Database.invoice_entry_accounts``, die Momentaufnahme eines Steuersatzes, 2.8.0). Dann
+    gilt dieses Konto, und es gibt nie eine Auswahl (immer ``None``): Eine Wahl widerspräche dem Konto, das die Rechnung beim Versenden zugesichert hat."""
+    if mixed or entry or tax_rate is None or not db.revenue_coa_choice_needed(tax_rate):
         return None
     percent = tax_rate * 100 if tax_rate <= 1 else tax_rate
     percent_text = f'{percent:g}'.replace('.', ',')
@@ -570,7 +866,8 @@ def _refund_box_html(db, invoice_id, invoice, refunds, credit):
         # verschiedenen Erlöskonten – dann sagt der Satz, warum. Bei einem Steuersatz je Position (Kennzeichen der Stornorechnung)
         # gibt es nie eine Wahl: Das Erlöskonto je Satz ist das der Zahlungen (``refund_revenue_coas_differ`` ist dort immer falsch)
         choice = revenue_coa_choice(db, invoice[35], teaches=False,
-                                    mixed=has_mixed_rates(invoice[InvoiceCol.MIXED_TAX_RATES]))
+                                    mixed=has_mixed_rates(invoice[InvoiceCol.MIXED_TAX_RATES]),
+                                    entry=db.invoice_entry_accounts(invoice_id))
         if db.refund_revenue_coas_differ(invoice_id):
             choice = (_revenue_coa_select(db, invoice[35]), _html.escape(MIXED_REVENUE_MESSAGE))
         if choice:
@@ -710,16 +1007,17 @@ function rebuildPayments(invId, execute) {
 """
 
 
-def _rebuild_box_html(db, invoice_id, tax_rate, mixed=False):
+def _rebuild_box_html(db, invoice_id, tax_rate, mixed=False, entry=False):
     """Der Neuaufbau der Zuordnung unter der Befundliste einer Rechnung (``Database.rebuild_invoice_payments``): der Knopf für den
     Probelauf, der Kasten für den Plan (ihn zeichnet das Skript) und – nur wenn für den Steuersatz kein Erlöskonto hinterlegt ist
     (die Reparatur legt nie eines an) – die Auswahl des Erlöskontos. Das Feld hat eine eigene ID (``rebuildRevenueCoa``): Die
     Zahlung („Verknüpfen“) trägt ihre eigene Auswahl. Die ID der Rechnung steht als Ganzzahl, sonst kein Wert aus der Datenbank.
 
     ``mixed``: Die Rechnung trägt einen Steuersatz je Position (``Invoices.MixedTaxRates``). Dann gibt es nie eine Auswahl: Ihr Kopfsatz ist nur
-    ein Platzhalter, und der Neuaufbau rechnet für sie nur den offenen Betrag neu – er braucht kein Erlöskonto."""
+    ein Platzhalter, und der Neuaufbau rechnet für sie nur den offenen Betrag neu – er braucht kein Erlöskonto. ``entry``: Die Rechnung trägt ein
+    Erlöskonto aus den Stammdaten (``Database.invoice_entry_accounts``): ebenso – der Neuaufbau rechnet nur den offenen Betrag neu (Grund ``tax_entry``)."""
     h = ''
-    if not mixed and db.resolve_revenue_coa(tax_rate, create=False) is None:
+    if not mixed and not entry and db.resolve_revenue_coa(tax_rate, create=False) is None:
         h += ('        <p class="hint">Für den Neuaufbau ist kein Erlöskonto hinterlegt – bitte wählen.</p>\n'
               f'        <p><label>Erlöskonto: {_revenue_coa_select(db, tax_rate, field_id="rebuildRevenueCoa")}</label></p>\n')
     return h + ('        <p><button type="button" class="coloredButton btn-sm bg-blue" '
@@ -1117,6 +1415,10 @@ def _invoice_form_html(db: Database, invoice_id=None, copy_from=None, payment_er
     lock_attr = ' disabled' if locked else ''
     closed_attr = ' disabled' if closed else ''
     mixed_attr = lock_attr if show_tax else ' disabled'      # das Häkchen „Steuersatz je Position“: ohne Steuerausweis gesperrt, in einer gesperrten Rechnung auch
+    # Die wählbaren Steuersätze aus den Stammdaten und das Feld „Mehrwertsteuer“ im Kopf; eine neue Zeile startet wie das Feld
+    choices = entry_choices(db)
+    head = head_select(choices, existing_items, tax_pct, bool(existing_invoice), show_tax, lock_attr)
+    tax_pct = head.rate
     # Eine Rechnung, die schon einmal versendet war, behält ihre Nummer auch als Entwurf (der Kunde kennt sie)
     number_kept = is_edit_mode and group == EDITABLE and db.was_sent_before(invoice_id)
     number_attr = lock_attr or (' readonly' if number_kept else '')
@@ -1443,7 +1745,7 @@ function copyInvoiceAsNew(invId) {{
                     <td><input type="number" class="item-quantity" value="{quantity}" min="0" step="0.01" style="width: 60px;"{lock_attr}></td>
                     <td><input type="text" class="item-unit" value="{unit}" style="width: 60px;"{lock_attr}></td>
                     <td><input type="text" class="item-description" value="{description}" style="width: 100%;"{lock_attr}></td>
-                    {mixed_cell_html(item[10], lock_attr)}
+                    {mixed_cell_html(item[ITEM_TAX_RATE], lock_attr, choices, item_snapshot(item))}
                     <td><input type="number" class="item-price" value="{price}" min="0" step="0.01" style="width: 80px;"{lock_attr}> €</td>
                     <td class="item-total" style="text-align: right;">{fmt_eur(total)}</td>
                     <td class="no-pdf"><button type="button" onclick="removeRow(this)" style="color: red;"{lock_attr}>✕</button></td>
@@ -1455,7 +1757,7 @@ function copyInvoiceAsNew(invId) {{
                     <td><input type="number" class="item-quantity" value="1" min="0" step="0.01" style="width: 60px;"></td>
                     <td><input type="text" class="item-unit" value="Stk." style="width: 60px;"></td>
                     <td><input type="text" class="item-description" style="width: 100%;"></td>
-                    ''' + mixed_cell_html(mixed_default_key(tax_pct)) + '''
+                    ''' + mixed_cell_html(head.row_state[0], '', choices, head.row_state[1]) + '''
                     <td><input type="number" class="item-price" value="0" min="0" step="0.01" style="width: 80px;"> €</td>
                     <td class="item-total" style="text-align: right;">0,00 €</td>
                     <td class="no-pdf"><button type="button" onclick="removeRow(this)" style="color: red;">✕</button></td>
@@ -1474,13 +1776,14 @@ function copyInvoiceAsNew(invId) {{
                     <td colspan="7" style="text-align: right; border: none;">
                         <label><input type="checkbox" id="show_tax" __SHOW_TAX_CHECKED__''' + lock_attr + ''' onchange="calculateTotals()"> Umsatzsteuer ausweisen</label>
                         <small style="color:#888;">(aus = Kleinunternehmer §&nbsp;19 UStG; der Hinweis darauf wird automatisch gedruckt)</small>
-                        ''' + mixed_checkbox_html(mixed_on, mixed_attr) + '''
+                        ''' + mixed_checkbox_html(mixed_on, mixed_attr) + ' ' + TAX_LINK_HTML + '''
                         __TAX_PREFILL_NOTE__
+                        ''' + TAX_NOTE_HTML + '''
                     </td>
                 </tr>
                 <tr class="totals-row" id="tax_row">
-                    <td colspan="4" style="text-align: right; border: none;">Mehrwertsteuer</td>
-                    <td style="text-align: right; border: none;"><input type="number" id="tax_rate" value="__TAX_PCT__" min="0" max="100" step="0.1" style="width: 50px;"''' + lock_attr + '''>% auf <span id="tax_base">0,00</span> € netto:</td>
+                    <td colspan="4" style="text-align: right; border: none;">Mehrwertsteuer ''' + head.html + '''<input type="hidden" id="tax_rate" value="__TAX_PCT__"''' + lock_attr + '''></td>
+                    <td style="text-align: right; border: none;">auf <span id="tax_base">0,00</span> € netto:</td>
                     <td id="tax_amount" style="text-align: right; font-weight: bold;">0,00 €</td>
                     <td class="no-pdf" style="border: none;"></td>
                 </tr>
@@ -1643,7 +1946,7 @@ function copyInvoiceAsNew(invId) {{
             </table>
         </div>
     </div>
-    ''' + mixed_tax_script() + '''
+    ''' + mixed_tax_script(choices) + '''
     <script>
         // Own company data from server
         const ownCompaniesData = '''
@@ -2240,7 +2543,7 @@ function copyInvoiceAsNew(invId) {{
             document.querySelectorAll('.invoice-item-row').forEach((row, index) => {
                 const description = row.querySelector('.item-description').value;
                 if (description) {  // Only include rows with description
-                    items.push({
+                    const item = {
                         position: index + 1,
                         quantity: parseFloat(row.querySelector('.item-quantity').value) || 1,
                         unit: row.querySelector('.item-unit').value,
@@ -2248,7 +2551,10 @@ function copyInvoiceAsNew(invId) {{
                         unitPrice: parseFloat(row.querySelector('.item-price').value) || 0,
                         totalPrice: parseDe(row.querySelector('.item-total').textContent) || 0,
                         taxRate: mixed ? mixRowRate(row) : taxRate
-                    });
+                    };
+                    // Ein Steuersatz aus den Stammdaten, den der Satz allein nicht trägt, geht mit seiner ID mit (als letzter Schlüssel der Position)
+                    if (mixed && mixRowEntry(row) !== null) item.taxRateId = mixRowEntry(row);
+                    items.push(item);
                 }
             });
             
@@ -2312,6 +2618,8 @@ function copyInvoiceAsNew(invId) {{
             if (isEdit) {
                 invoiceData.invoiceId = parseInt(invoiceId);
             }
+            // Ohne das Häkchen schickt der Kopf den Eintrag, den der Satz allein nicht trägt, als letzten Schlüssel (alle Positionen tragen ihn); ohne Steuerausweis nie
+            if (!mixed && showTax && mixHeadEntry() !== null) invoiceData.taxRateId = mixHeadEntry();
 
             sendInvoice(invoiceData, isEdit, invoiceId);
         }
@@ -2437,7 +2745,8 @@ function copyInvoiceAsNew(invId) {{
                   + '        </ul>Alle Rechnungen mit Unstimmigkeiten zeigt die Prüfung unter '
                   '<a href="/miscellaneous?check_payments=1">Sonstiges</a>.</div>\n')
             s += _rebuild_box_html(db, invoice_id, existing_invoice[35],
-                                   mixed=has_mixed_rates(existing_invoice[InvoiceCol.MIXED_TAX_RATES]))
+                                   mixed=has_mixed_rates(existing_invoice[InvoiceCol.MIXED_TAX_RATES]),
+                                   entry=db.invoice_entry_accounts(invoice_id))
             rebuild_script = _REBUILD_SCRIPT.replace('__CONFIRM__', script_json(REBUILD_CONFIRM_QUESTION))
         if existing_payments:
             total_paid = sum(p[3] for p in existing_payments)
@@ -2494,7 +2803,8 @@ function copyInvoiceAsNew(invId) {{
             # Ist für den Steuersatz kein Erlöskonto hinterlegt (z. B. 5 %, 16 %), wählt der
             # Nutzer es hier – für „Verknüpfen“ und, per Adresse mitgegeben, für die Maske
             choice = revenue_coa_choice(db, existing_invoice[35],
-                                        mixed=has_mixed_rates(existing_invoice[InvoiceCol.MIXED_TAX_RATES]))
+                                        mixed=has_mixed_rates(existing_invoice[InvoiceCol.MIXED_TAX_RATES]),
+                                        entry=db.invoice_entry_accounts(invoice_id))
             if choice:
                 s += (f'        <p class="hint">{choice[1]}</p>\n'
                       f'        <p><label>Erlöskonto: {choice[0]}</label></p>\n')

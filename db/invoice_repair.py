@@ -39,7 +39,9 @@ nichts. Storno-Paare (die Rechnung hat eine Stornorechnung oder ist eine) und Re
 bekommen nur den neu gerechneten offenen Betrag (D); alles andere wird gemeldet (``skipped``), nicht angefasst. Ein Beleg mit
 Steuersatz je Position (``MixedTaxRates``) gehört dazu (Grund ``mixed``): Zuordnungen und Sätze baut diese Version für ihn nicht neu auf – R1
 verlangt EIN Erlöskonto und genau EINE Forderung der App; je Satz zu verallgemeinern wäre eine neue Regel, und die Bedingungen von C werden
-nicht gelockert –, nur sein offener Betrag wird aus den Zuordnungen neu gerechnet (Probelauf und Ausführung, wie bei jedem Beleg).
+nicht gelockert –, nur sein offener Betrag wird aus den Zuordnungen neu gerechnet (Probelauf und Ausführung, wie bei jedem Beleg). Ebenso eine
+Rechnung mit einem Erlöskonto aus den Stammdaten (``InvoiceItems.RevenueCoaId``, seit 2.8.0; Grund ``tax_entry``): R1 sucht das Erlöskonto des Satzes
+(``resolve_revenue_coa``) und baut damit neu auf – für das Konto der Momentaufnahme wäre es dieselbe Verallgemeinerung.
 ``_booking_snapshot_unchanged`` prüft das mechanisch: Hat ein Baustein trotzdem einen vorhandenen Satz der Rechnung oder ihrer
 Bewegungen verändert (etwa den Status einer aufgelösten Forderung), wird alles zurückgenommen und nur gemeldet. Ein zweites Netz
 liest die Prüfliste nach dem Schreiben noch einmal: Nennt sie eine Kategorie, die sie vorher nicht nannte (etwa
@@ -104,6 +106,8 @@ REBUILD_WARNING = ('Die neuen Buchungssätze tragen das Datum der jeweiligen Ban
 REBUILD_SKIP_REASONS = {
     'mixed': ('Die Rechnung trägt mehrere Steuersätze – ihre Zuordnungen werden in dieser Version nicht automatisch neu aufgebaut; '
               'nur der offene Betrag wird neu gerechnet.'),
+    'tax_entry': ('Die Rechnung trägt einen Steuersatz mit eigenem Erlöskonto aus den Stammdaten – ihre Zuordnungen werden in dieser Version nicht '
+                  'automatisch neu aufgebaut; nur der offene Betrag wird neu gerechnet.'),
     'storno_pair': 'Die Rechnung gehört zu einem Storno-Paar – Zahlungen und Erstattungen werden nicht automatisch neu aufgebaut.',
     'status': 'Bei diesem Status der Rechnung wird nichts neu aufgebaut (nur versendet, überfällig, teilweise oder ganz bezahlt).',
     'amount': 'Die Rechnung hat keinen positiven Betrag – es wird nichts neu aufgebaut.',
@@ -191,7 +195,7 @@ class InvoiceRepairMixin:
     def _rebuild_prerequisites(self, invoice_id, revenue_coa_id):
         """Was die Transaktion von außen braucht, gelesen in eigenen Verbindungen und ohne zu schreiben: das Erlöskonto der
         Rechnung (``None``, wenn keines hinterlegt ist und der Nutzer keines gewählt hat – nie wird eines angelegt; bei einem Beleg mit Steuersatz je
-        Position immer ``None``), das SKR-Konto
+        Position und bei einem mit einem Erlöskonto aus den Stammdaten immer ``None``), das SKR-Konto
         jedes Bankkontos ihrer Zuordnungen und die eigenen Bankkonten. Returns ein Kontext-dict oder ein :class:`RebuildResult`
         (Rechnung unbekannt, gewähltes Konto kein Erlöskonto)."""
         invoice = self.get_document(invoice_id, 'invoice')
@@ -200,6 +204,9 @@ class InvoiceRepairMixin:
         if has_mixed_rates(invoice[55] if len(invoice) > 55 else None):          # Spalte 55: MixedTaxRates
             # Beleg mit Steuersatz je Position: Der Satz im Kopf ist nur ein Platzhalter und die Reparatur baut nichts neu (nur D) – kein Erlöskonto
             # zu suchen, keines zu wählen (``revenueCoaId`` gilt nie)
+            revenue_coa = None
+        elif self.invoice_entry_accounts(invoice_id):
+            # Ein Erlöskonto aus den Stammdaten (Momentaufnahme eines Steuersatzes): Die Reparatur baut auch hier nichts neu (nur D) – kein Erlöskonto zu suchen
             revenue_coa = None
         else:
             revenue_coa = self.resolve_revenue_coa(invoice[35], create=False)    # Spalte 35: TaxRate
@@ -257,6 +264,10 @@ class InvoiceRepairMixin:
             # Ein Beleg mit Steuersatz je Position: A–C bräuchten die Sätze je Zuordnung (R1 verlangt EIN Erlöskonto und genau EINE Forderung der App) –
             # das gibt es in dieser Version nicht; D rechnet nur den offenen Betrag aus den Zuordnungen neu und schreibt keinen Satz
             skip('mixed')
+        elif self._entry_accounts(conn, invoice_id):
+            # Ebenso ein Beleg mit einem Erlöskonto aus den Stammdaten: R1 baut mit dem Erlöskonto des Satzes neu auf (``resolve_revenue_coa``) – das Konto der
+            # Momentaufnahme je Zuordnung zu verallgemeinern ist dieselbe neue Regel; D rechnet nur den offenen Betrag neu
+            skip('tax_entry')
         elif paired:
             skip('storno_pair')
         elif status not in REBUILD_STATUSES:

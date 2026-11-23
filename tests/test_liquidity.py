@@ -823,13 +823,31 @@ def test_an_unbalanced_split_next_to_a_transfer_stands_under_the_transfers(tmp_d
     check_against_sources(other, report)
 
 
-def test_a_tax_rate_the_euer_does_not_know_leaves_its_tax_in_not_assigned(tmp_db):
-    """Ein Satz mit 10 % Steuer: Die Zeilen der EÜR führen Vorsteuer nur zu den Sätzen 5, 7, 16 und 19 % – seine Steuer steht dort nicht, das Konto hat sie
-    bezahlt: −10."""
+def test_a_tax_rate_outside_the_four_fixed_rates_has_its_input_tax_on_the_unassigned_line(tmp_db):
+    """Ein Satz mit 10 % Steuer: Seit 2.8.0 führt die EÜR die Vorsteuer jedes Satzes – ohne Vorsteuerkonto in den Stammdaten auf der Zeile 1409 „Vorsteuer ohne
+    Steuerkonto“ (Gruppe „Gezahlte Vorsteuer“). Bis 2.7.0 fehlte sie und stand mit −10 in „Nicht zugeordnet“: Das Konto hat 110 bezahlt, davon 10 Vorsteuer, und die
+    Überleitung erklärt jetzt alles – das Ergebnis ist −110, „Nicht zugeordnet“ 0."""
     two_banks(tmp_db)
     mask(tmp_db, 'Probe-Giro', 6815, '-110.00', '2026-03-08', '10', '-10.00')
     report = at(tmp_db, 2026, 3)
-    assert shown(report) == {'result': eur('-100'), 'computed': eur('-100'), 'unassigned': eur('-10'), 'actual': eur('-110')}
+    assert shown(report) == {'result': eur('-110'), 'computed': eur('-110'), 'actual': eur('-110')} and balanced(report)
+    assert (1409, 'Vorsteuer ohne Steuerkonto', -10.0) in tmp_db.get_euer_data('2026-03-01', '2026-03-31')
+    assert [(account.number, account.name) for account in tmp_db.get_bwa(2026, 3, 'jahr').line('input_vat').accounts] == [(1409, 'Vorsteuer ohne Steuerkonto')]
+    check_against_sources(tmp_db, report)
+
+
+def test_a_tax_rate_with_an_input_tax_account_in_the_master_data_has_its_input_tax_on_that_account(tmp_db):
+    """Derselbe Fall mit einem Eintrag der Steuersätze, der für 10 % ein Vorsteuerkonto nennt (ein Testkonto im Bereich 1400–1439): Die Zeile steht auf dem Konto, es gibt keine
+    Zeile 1409, und die Werte der Überleitung sind dieselben."""
+    two_banks(tmp_db)
+    assert tmp_db.insert_chart_of_accounts(4, 1430, 'Vorsteuer Testsatz', 'Test', is_standard=0)
+    tmp_db.insert_tax_rate(label='Zehn Prozent (erfunden)', bp=1000, revenue_coa_id=coa(tmp_db, 4400), input_tax_coa_id=coa(tmp_db, 1430))
+    mask(tmp_db, 'Probe-Giro', 6815, '-110.00', '2026-03-08', '10', '-10.00')
+    report = at(tmp_db, 2026, 3)
+    assert shown(report) == {'result': eur('-110'), 'computed': eur('-110'), 'actual': eur('-110')} and balanced(report)
+    rows = tmp_db.get_euer_data('2026-03-01', '2026-03-31')
+    assert (1430, 'Vorsteuer Testsatz', -10.0) in rows and 1409 not in [number for number, _name, _total in rows]
+    assert [(account.number, account.name) for account in tmp_db.get_bwa(2026, 3, 'jahr').line('input_vat').accounts] == [(1430, 'Vorsteuer Testsatz')]
     check_against_sources(tmp_db, report)
 
 

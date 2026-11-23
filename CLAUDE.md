@@ -701,7 +701,10 @@ kein Subagent darauf:
   Rahmen + Nummer vergeben), nennt `Database.missing_standard_accounts()` (rein lesend, Hinweis auf der Seite des
   Kontenrahmens); angelegt wird es allein über `POST /masterdata/skr/add_standard` (`add_missing_standard_accounts`: eine
   Transaktion, `INSERT OR IGNORE`, kein UPDATE, keine `overrides`, keine privaten Konten ohne Standard-Haken). `?added=` wird nur
-  als Zahl gelesen (0 bis `ADDED_MAX`), die Meldung ist fester Text
+  als Zahl gelesen (0 bis `ADDED_MAX`), die Meldung ist fester Text. Seit 2.8.0 führt der Standard-Kontenrahmen zusätzlich 1400 „Abziehbare Vorsteuer“, 4100 „Steuerfreie
+  Umsätze § 4 Nr. 8 ff. UStG“, 4180 „Erlöse, die mit den Durchschnittssätzen des § 24 UStG versteuert werden“, 5170 und 5505 (Einkauf mit 5,5% Vorsteuer) – keine Auswertung hat eine
+  Sonderregel für diese Nummern (`tests/test_standard_accounts_purchase.py`: alle Auswertungen und der DATEV-Stapel sind mit und ohne sie gleich). Konten, deren Bezeichnung einen
+  jährlich wechselnden Durchschnittssatz nennt (5171, 5540), gehören nicht hinein; 1409 nie (die Nummer der rechnerischen EÜR-Zeile, siehe *EÜR-Ansicht*)
 
 ### Buchungssätze
 - Bankbewegung = Zeile `BookingType='bank'`; ihre Buchungssätze sind Kinder
@@ -879,6 +882,16 @@ kein Subagent darauf:
   jedem Komma des Textes, falls jemand die Datei mit dem Komma als Trenner öffnet, und auch vor den breiten Schreibweisen dieser Zeichen (verglichen wird
   die Grundform, NFKC); sonst führte eine Tabellenkalkulation einen Kontonamen als Formel aus; nicht aufweichen).
   `tests/test_bwa.py`, `tests/test_bwa_pdf.py`, `tests/test_report_csv.py`
+- **Vorsteuer in der EÜR (seit 2.8.0, `get_euer_data`):** Die Vorsteuer aus einer Ausgabe steht für JEDEN Satz in der EÜR – bis 2.7.0 fehlte sie bei jedem Satz außer 5, 7, 16 und 19 %
+  (das Ergebnis war um sie zu hoch). Reihenfolge: (1) wie bisher 1401 (5/7 %) bzw. 1406 (16/19 %), der Vergleich `abs(Satz − x) < 0,0001` wörtlich, wenn der Kontenrahmen das Konto
+  führt; (2) ein als Prozentzahl gespeicherter Satz über die feste Tabelle der Summen- und Saldenliste; (3) das Vorsteuerkonto des ersten Stammdaten-Eintrags mit Konto für diesen
+  Satz (`db.tax_rates.select_report_tax_accounts`: nach Reihenfolge und ID, aktiv oder nicht; ungültige Zeilen, Satz 0, die festen vier Sätze und Konten außerhalb des Bereichs
+  zählen nicht); (4) sonst die rechnerische Zeile **1409 „Vorsteuer ohne Steuerkonto“** (`reporting.EUER_INPUT_TAX_UNASSIGNED`, ab 1 Cent, Gruppe „Gezahlte Vorsteuer“ der BWA) – auch
+  für einen Steuerbetrag ohne Satz und für 19/7 % bei gelöschtem 1406/1401. Die Umsatzsteuer bleibt EINE virtuelle Zeile 3806 (das Umsatzsteuerkonto eines Eintrags wirkt nur in der
+  Summen- und Saldenliste). **Gelesen wird der Stand der Stammdaten von heute:** Wer einem Eintrag ein Steuerkonto gibt oder nimmt, verschiebt die Steuer auch früherer Zeiträume
+  zwischen Sammelzeile und Konto; Summen und Ergebnis bleiben gleich. Für Bestände ohne solche Ausgaben ändert sich kein Zeichen (alle Schnappschüsse bleiben). Bekannte Grenzen: Die
+  Einordnung 6884–6892 (EÜR liest den Steueranteil als Vorsteuer, die Liste als Umsatzsteuer) gilt jetzt für jeden Satz; Zweckkonten, die kein Aufwand sind (Privat, Darlehen), führen
+  ihre Steuer wie bisher bei 19 % als Vorsteuer. `tests/test_tax_accounts_reports.py`
 - **EÜR-Ansicht (seit 2.5.16, `db/euer.py`, `server/pages_euer.py`, `export/pdf_euer.py`; `GET /euer`, `GET /euer/pdf`):** EINE Aufbereitung für den
   Kasten der EÜR im Dashboard und die Seite (`db.euer.euer_statement`: die Zeilen von `get_euer_data` nach `reporting.euer_section` in Einnahmen,
   Ausgaben und „Sonstige Ausgaben“; Summen aus Minor Units, nie als Summe von `float`; die echte und die virtuelle 3806 bleiben zwei Zeilen;
@@ -909,7 +922,7 @@ kein Subagent darauf:
   Exports (Konto, Gegenkonto, S/H, Betrag). **Buchungsregel** (`entry_postings`, rein, in Minor Units): Betrag ohne Vorzeichen, Soll/Haben nach der Form (`purpose_first`: positiv Gegenkonto im Soll,
   `liquid_first`/`transfer`/`mirror_coa`: positiv Konto im Soll, `mirror_counter`: positiv Gegenkonto im Soll); `mirror_legacy` bucht nie (Lesart unbekannt – wie beim Abgleich nie gedeutet, Hinweis); der
   **gespeicherte** Steuerbetrag wird aus der Seite des Zweckkontos herausgerechnet (nichts nachgerechnet) und steht auf 1401/1406 (Vorsteuer) bzw. 3801/3806 (Umsatzsteuer; 16 % und 5 % auf den Konten von 19 % und 7 %,
-  `TAX_ACCOUNTS`; ein anderer Satz auf „Steuer ohne Steuerkonto“; ein Steuerkonto, das der Kontenrahmen nicht führt, mit dem Zusatz „(nicht im Kontenrahmen)“ – der Standard-Kontenrahmen führt 3801 seit 2.6.1,
+  `TAX_ACCOUNTS`; ein anderer Satz seit 2.8.0 auf dem Umsatzsteuer- bzw. Vorsteuerkonto, das die Stammdaten für ihn führen (`SusaContext.tax_accounts`, die feste Tabelle gilt zuerst und der Export kennt diese Konten nicht), sonst auf „Steuer ohne Steuerkonto“; ein Steuerkonto, das der Kontenrahmen nicht führt, mit dem Zusatz „(nicht im Kontenrahmen)“ – der Standard-Kontenrahmen führt 3801 seit 2.6.1,
   ein älterer Bestand bekommt es über „fehlende Standardkonten“ und trägt bis dahin den Zusatz), die Seite bestimmt `tax_side` nach der Art; die
   Forderung einer Rechnung und die Gegenbuchung der Stornorechnung (Debitor auf einer Seite) werden nie zerlegt. **Kontenklassen und Vortrag stehen an EINER Stelle** (`GROUPS`, `group_key`, `is_carried`):
   Bestandskonten und die Wartekonten 4340/4345/4405 (eigene Gruppe „Offene Posten“) tragen vor, Erfolgskonten 4000–7999 beginnen bei 0 – ihre Summe der Vorjahre steht auf dem virtuellen Konto „Ergebnis der
@@ -970,7 +983,7 @@ kein Subagent darauf:
   heißt exakt 0 Minor Units; ein Rest unter einem halben Cent steht als 0,00 da und wird auf der Seite als Rundungsrest genannt, nie geglättet. Pflicht-Tests (`tests/test_liquidity.py`): Im Demobestand und in Beständen aus Zufall über
   Wege der App (`tests/liquidity_helpers.random_books`) ist sie in jedem Monat und aufgelaufen 0; in der SuSa-Welt (März +20,00, ab März aufgelaufen) und der Testwelt (April −70,00, Mai −55,00, Juni −1,00) stehen feste Werte als Maßstab –
   an ihnen darf sich nichts verschieben; für jeden benannten Fall ist festgehalten, was dort landet: ein Satz über das Verrechnungskonto 1460 in einem anderen Monat als seine Bankseite, ein Satz mit anderem Datum als seine Bankbewegung über eine
-  Monatsgrenze, ein unstimmiger Split, ein Steuersatz außer 5, 7, 16 und 19 %, der Status `resolved`, eine Zahlung auf ein Bestandskonto ohne Gegenumbuchung,
+  Monatsgrenze, ein unstimmiger Split, ein Steuersatz außer 5, 7, 16 und 19 % (seit 2.8.0: seine Vorsteuer steht in der EÜR auf dem Stammdaten-Konto bzw. auf „Vorsteuer ohne Steuerkonto“ und nicht mehr in „Nicht zugeordnet“ – der feste Wert des Tests ist seitdem Ergebnis −110 statt −100), der Status `resolved`, eine Zahlung auf ein Bestandskonto ohne Gegenumbuchung,
   eine Umbuchung Anlage ↔ Erfolgskonto mit der Kasse als `Account_ID`, ein Spiegel alter Art mit 1460 und ein Rundungsrest. Es gehen auf (je ein Test, auch ihr Kontennachweis): die direkt bezahlte Sofortabschreibung
   „6260 an Bank“ (bleibt im Ergebnis; auch neben der AfA der App im selben Monat und auf demselben Konto 6220), die Umbuchung „6815 an 0520“ (Zeile 3a), ein Abgang über das Verrechnungskonto („6895 an 1460“ und „1460 an 0520“:
   Aufwand und Anlagenzugang heben sich auf) und die Umbuchung unter einer Bankbewegung (der Restbuchwert im Split des Verkaufs, „0670 an Bank“ mit „6260 an 0670“ in einem Beleg, eine im Editor zugeordnete AfA; trägt die Bewegung NUR
@@ -1357,7 +1370,8 @@ kein Subagent darauf:
   über den Weg der Maske (`handlers._invoice_fields`, `allocate_invoice_number`, `set_invoice_status`). PDF/E-Rechnung gibt es
   nur für die letzten 30 Tage (`documents_days`), und **in den letzten 14 Tagen legt der Erzeuger keine Rechnung an** – das
   E-Rechnungs-Beispiel (`tools/make_einvoice_samples.py`) bleibt die jüngste 19-%-Rechnung des Szenarios – nie ein Beleg mit Steuersatz
-  je Position. **Genau eine solche Rechnung** (7 % und 19 % auf einem Beleg, in zwei Raten bezahlt, `taxMode: mixed` im Formular) gibt es
+  je Position. **Genau zwei solche Rechnungen** (7 % und 19 % auf einem Beleg, `mixed_example`; seit 2.8.0 dazu 19 % und eine steuerfreie Position aus den Stammdaten,
+  `tax_entry_example`, samt zwei Einträgen in den Steuersätzen – steuerfrei und 5,5 % –, die `DemoScenario.load_tax_entries` vor den Rechnungen anlegt; je in zwei Raten bezahlt, `taxMode: mixed` im Formular) gibt es
   **nur im Profil `full`** (`profiles.full.mixed_example` der Tabelle, `demo_history._mixed_invoice`): 45 Tage vor dem Stichtag auf einem Werktag, nie
   im ersten Jahr, ohne Dokumente (älter als 30 Tage); das Profil `test` – der Bestand der fest gepinnten Werte (EÜR-Schnappschüsse, Summen- und
   Saldenliste, Liquidität) – und das handgepflegte Szenario bleiben ohne sie. Das erste Jahr ist ein
@@ -1441,7 +1455,7 @@ kein Subagent darauf:
   Kennzeichen am Bankkonto** (`Accounts.BusinessOnly`, Schema 2005): `selectable` = Konto gefunden UND
   `Database.account_allows_selection` (streng gelesen: nur die ganze Zahl 0 = gemischt genutzt; **Standard und jeder andere
   gespeicherte Wert – NULL, Text, 2 – ist „reines Geschäftskonto“, die Kasse nie**; `db.accounts.is_business_only`). Ohne Auswahl
-  (reines Geschäftskonto) sieht die Karte aus wie vorher; mit ihr: Kästchen je Zeile (Standard: jede importierbare angehakt, Duplikate und
+  (reines Geschäftskonto) sieht die Karte aus wie vorher (Knopf „Alle Einzelbuchungen“, Liste zugeklappt); mit ihr steht die Liste beim Anzeigen aufgeklappt (Knopf „Umsätze auswählen“, er klappt sie weiter zu und auf), darin: Kästchen je Zeile (Standard: jede importierbare angehakt, Duplikate und
   unvollständige deaktiviert), Suchfeld, „Alle“/„Keine“ (nur auf sichtbare, auswählbare Zeilen), „Importieren (n ausgewählt)“, bei 0
   gesperrt. `/confirm_transactions` nimmt das Feld `selection` (JSON-Objekt `{"<file_index>": [<index>, …]}`): ein Beleg MIT Eintrag
   legt nur die genannten Umsätze an, einer OHNE wird ganz importiert. **Streng und vor dem ersten Schreiben geprüft** (`_import_selection`):
@@ -1467,7 +1481,9 @@ kein Subagent darauf:
   des anderen oder leer, verglichen ohne Leerraum, mit `casefold` und ohne führendes „Storno:“): nur ein
   Hinweis, der Import bleibt beim Maximum.
   Ein Umsatz ohne Datum oder Betrag ist in Vorschau und Import gleich behandelt – nicht importierbar
-  (Befund `incomplete`; je Datei `skipped_invalid`), weder neu noch Duplikat
+  (Befund `incomplete`; je Datei `skipped_invalid`), weder neu noch Duplikat; ein Betrag von 0,00 € ist dagegen kein Befund (`amount` heißt nur
+  „Betrag fehlt“, also `None`): Die Zeile ist ein gewöhnlicher, importierbarer Umsatz und zählt bei den Duplikaten wie jede andere
+  (`tests/test_import_zero_amount.py`)
 
 ### WISO-Datenübernahme
 - Zwei Wege: die **Textexporte** (`db/wiso_import.py`, CSV) und die
@@ -1694,7 +1710,7 @@ kein Subagent darauf:
   (2) mit Steuerausweis ohne `taxMode` ist der Kopf eine Zahl von 0 bis 100 Prozent (nie negativ: −1 ist der Platzhalter von Regel 1), alle Positionen tragen GENAU denselben Satz, und er ist
   der des Kopfs (bis auf das Rauschen der Kommazahl – die Maske schickt den Kopf als Bruch, 100 % als 1); ein Satz zwischen 0 und 1 Prozent lässt sich nicht eindeutig lesen und wird abgelehnt
   (2.6.x rechnete dort still mit dem Hundertfachen) – für jeden anderen Satz des Formulars von heute ändert sich in der Datenbank nichts;
-  (3) mit `'mixed'` braucht jede Position GENAU einen Satz aus `tax_groups.MIXED_TAX_RATES` (19 und 7 % – die EINE Stelle der erlaubten Sätze; kein Code nimmt „zwei Sätze“ oder „19 und 7“
+  (3) mit `'mixed'` braucht jede Position GENAU einen Satz aus `tax_groups.MIXED_TAX_RATES` (19 und 7 % – die Sätze, die ohne Eintrag der Stammdaten gelten; seit 2.8.0 daneben jeder wählbare Eintrag der Stammdaten über `taxRateId`, siehe *Steuersätze aus den Stammdaten*; kein Code nimmt „zwei Sätze“ oder „19 und 7“
   fest an): alle gleich ist ein gewöhnlicher Beleg (Kopf = dieser Satz, Kennzeichen NULL), sonst ist der Kopf der höchste Satz und das Kennzeichen 1. Jede Ablehnung hat einen festen Klartext
   (`TAX_*` in `handlers.py`) und kommt vor dem ersten Schreiben (nichts gespeichert, keine Nummer verbraucht). Eine versendete Rechnung schickt keine Positionen; der Satz einer Position
   ist gesperrt (`_items_differ`), das Kennzeichen ein abgeleitetes, nie für sich verglichenes Feld (`invoice_lock.FIELDS`). Angebot → Rechnung (`convert_quote_to_invoice`),
@@ -1754,12 +1770,79 @@ kein Subagent darauf:
   `xrechnung-mischsatz.xml` (`tools/make_einvoice_samples.py`; sein Normalfall ist nie ein Beleg mit dem Kennzeichen, seine Kopien nehmen es mit). **Maske (Rechnung und Angebot):** Das Häkchen
   „Steuersatz je Position“ (`#mixed_tax`, unter „Umsatzsteuer ausweisen“; nur mit Steuerausweis, in einer gesperrten Rechnung gesperrt, vorbelegt aus `has_mixed_rates`) schaltet die Spalte „USt“
   ein (Klasse `mixedTaxOn` an der Positionstabelle, `buch.css`) und im Summenblock eine Zeile je Satz (nur Anzeige, in ganzen Cent und zweistufig gerundet wie `money`; maßgeblich bleibt der Server).
-  Die Sätze der Auswahl kommen vom Server aus `tax_groups.MIXED_TAX_RATES` (über `script_json`), im Skript steht kein Satz. Ohne Häkchen schickt das Speichern genau den bisherigen Payload, mit Häkchen
+  Die Auswahl kommt vom Server (über `script_json`), seit 2.8.0 aus den Einträgen der Stammdaten (`entry_choices(db)`; ohne Liste aus `tax_groups.MIXED_TAX_RATES`), im Skript steht kein Satz. Ohne Häkchen schickt das Speichern genau den bisherigen Payload, mit Häkchen
   zusätzlich `taxMode: 'mixed'` und je Position den Satz ihrer Auswahl. Ein gespeicherter Satz außerhalb der Liste erscheint als eigene, gewählte Option (nichts wird still umgedeutet, der Server lehnt
   beim Speichern ab); die Zeilen eines als gemischt geladenen Belegs behalten ihre Sätze, wenn das Häkchen aus- und wieder eingeschaltet wird. EIN Skriptblock für beide Masken (`MIXED_TAX_JS` in
   `server/pages_invoice.py`, nur `var`/`function`, Präfix `mix`).
   `tests/test_mixed_tax_save.py`, `tests/test_mixed_tax_locks.py`, `tests/test_mixed_tax_bookings.py`, `tests/test_mixed_tax_reports.py`, `tests/test_tax_groups_split.py`,
   `tests/test_mixed_tax_documents.py`, `tests/test_mixed_tax_mask.py`
+- **Steuersätze aus den Stammdaten (seit 2.8.0, Schema 2008):** Weitere Sätze (5,5 % …) und steuerfreie Leistungen wählt eine Rechnung oder ein Angebot aus der
+  Liste Stammdaten → Steuersätze (`TaxRates`, Seite `/masterdata/taxrates`, `db/tax_rates.py`: `TaxRatesMixin`, `TaxEntry`, `TaxRateRefused`; Handler im eigenen Abschnitt am
+  Ende von `handlers.py`) – für den ganzen Beleg oder je Position, mit 19 % und 7 % mischbar. **Eintrag:** Bezeichnung, Satz in Hundertstel Prozent (`RateBp`: 1900 = 19 %,
+  550 = 5,5 %; aus Text nur über `tax_groups.parse_rate_bp`, als Prozentzahl `bp_pct`), Art (`standard` oder `exempt` = steuerfrei, nur mit Satz 0 und Pflicht-Grund),
+  Erlöskonto (Pflicht außer bei 19 % und 7 % ohne eigene Angabe: `has_default_revenue`), freiwillig Umsatzsteuer- und Vorsteuerkonto (nur 3800–3849 bzw. 1400–1439, nie bei
+  Satz 0 und nie bei den Sätzen mit festen Steuerkonten 19/16/7/5 %, `FIXED_TAX_BPS`), Reihenfolge, „wählbar“. Vorbelegt sind 19 % und 7 % – genau einmal, beim Anlegen der
+  Tabelle (aus `tax_groups.MIXED_TAX_RATES`); wer alle Einträge löscht, bekommt keinen zurück. **Die Regeln eines Eintrags stehen an EINER Stelle**
+  (`tax_groups.check_tax_entry`, feste Sätze `TAX_ENTRY_*`; ein Satz zwischen 0 und 1 % gilt nicht, Bezeichnung und Grund ohne Steuer-/Formatzeichen) und gelten beim Schreiben wie
+  beim Lesen (`TaxEntry.valid`; wählbar = gültig UND aktiv; eine ungültige Zeile aus der SQL-Konsole steht in keiner Auswahl, die Liste nennt sie „ungültig“). Der letzte wählbare
+  Eintrag bleibt (`TAX_ENTRY_LAST_ACTIVE`); sonst lässt sich jeder Eintrag frei ändern und löschen – **kein Beleg verweist auf ihn**. Es gibt keinen Befreiungscode (BT-121).
+  **Momentaufnahme:** Die Position trägt nie die ID, sondern den Stand des Eintrags beim Speichern: `InvoiceItems.TaxRateBp` (Index 11), `TaxExemptReason` (12),
+  `RevenueCoaId` (13, ohne Fremdschlüssel; `coa_is_referenced` schützt das Konto) und `TaxCategory` (9: `'E'` = steuerfrei) – `db.invoice_payments.ITEM_SNAPSHOT_KEYS`,
+  gebaut nur vom Server (`db.tax_rates.entry_snapshot`). **Das Merkmal ist `TaxRateBp IS NOT NULL`** – nie `'E'` allein (das § 19-Beispiel des Beispielwerkzeugs schreibt `'E'`
+  ohne Momentaufnahme); gültig ist 0 oder 100 bis 10000 und gleich `rate_pct(TaxRate)` × 100 (`invoice_payments.valid_rate_bp`, `einvoice_model.item_bp` – ein Test hält beide
+  gleich). Stornorechnung, Ersatzrechnung und Angebot → Rechnung kopieren alle vier Spalten; **jeder neue Kopierweg einer Position muss es auch tun**
+  (`tests/test_tax_rates_schema_2008.py`). Änderungen der Stammdaten wirken nur auf neue und neu gespeicherte Entwürfe.
+  **Speichern** (`handlers._tax_fields(db, data, items)`, EINE Stelle für Rechnung und Angebot): `taxRateId` im Kopf (nur ohne `taxMode`: der Eintrag gilt für alle Positionen,
+  das Kennzeichen bleibt NULL – so entsteht ein ganz steuerfreier Beleg mit Kopf 0) oder je Position (nur mit `taxMode: 'mixed'`); der Eintrag muss jetzt wählbar sein, der Satz
+  des Formulars der des Eintrags, `0` ist immer eine Ablehnung („gespeicherter Stand, Eintrag nicht mehr vorhanden“), ohne Steuerausweis gibt es keine ID (`TAX_CHOICE_*`).
+  **Je Satz trägt ein Beleg höchstens EINE Momentaufnahme – auch „mit“ gegen „ohne“** (`TAX_SAME_RATE_TWICE`): nie zwei 0-%-Arten, nie zwei Befreiungsgründe, nie eine Gruppe mit
+  gemischter Rundung; Dokumente und Buchen verlassen sich darauf – nicht lockern. Ein Payload ohne `taxRateId` wird gespeichert wie vor 2.8.0 (auch der freie Kopfsatz; ein Entwurf
+  verliert dabei seine Momentaufnahmen). „Position n“ in den `TAX_*`-Meldungen ist `item['position']`. Die Sperre versendeter Rechnungen vergleicht die vier Spalten mit
+  (`invoice_lock.stored_items`, `_items_differ`).
+  **Maske (Rechnung und Angebot):** Im Kopf wählt `#tax_choice` (Klasse `taxChoice`) den Eintrag, mit dem Häkchen „Steuersatz je Position“ die Spalte „USt“ je Zeile; `#tax_rate` bleibt als
+  verstecktes Feld mit der Prozentzahl (bei einer gesperrten Rechnung `disabled`), `#tax_choice` schreibt bei `change` den Satz hinein und ruft `calculateTotals()`. Die Liste ist
+  `entry_choices(db)` (wählbare Einträge in der Reihenfolge der Stammdaten, als `MIX_RATES` über `script_json`; im Skript steht kein Satz, keine ID, keine Bezeichnung). Ein Eintrag, den
+  der bisherige Payload trägt (`legacy_expressible`: Standard, ohne Erlöskonto, ganzzahliger Satz – die Vorbelegung), hat als Optionswert seinen Satz und schickt keine ID: **der Payload
+  für 19 % und 7 % bleibt Zeichen für Zeichen der von 2.7.0** (`tests/test_mixed_tax_mask.py`); jeder andere hat den Wert `e<ID>` und schickt `taxRateId` als letzten Schlüssel des Kopfs
+  bzw. der Position. **Ein geladener Beleg wählt den Eintrag nach seiner Momentaufnahme** (`entry_snapshot` gleich Art, Satz, Grund, Erlöskonto – auch bei „Als neu kopieren“, Angebot →
+  Rechnung und Ersatzrechnung; nur ein umbenannter Eintrag bleibt derselbe); gibt es ihn nicht mehr, steht die gewählte Option `e0` „… – gespeichert, in den Stammdaten nicht mehr
+  vorhanden“ da (`taxRateId: 0`, der Server lehnt ab, bis neu gewählt ist). Ohne Momentaufnahme gilt die Vorbelegung nach Satz, sonst der Satz als eigene Option ohne ID. Die Anzeige
+  rechnet eine Gruppe, deren Zeilen alle einen Eintrag mit ID tragen, einstufig (maßgeblich bleibt der Server), eine steuerfreie Gruppe heißt „Steuerfrei auf … netto“, und der
+  Befreiungsgrund des gewählten Eintrags steht als Text unter den Häkchen (`#tax_note`, `textContent`). Zwei Skriptkonstanten in EINEM Block (`MIXED_ENTRY_JS` vor `MIXED_TAX_JS`; die
+  Funktionsinventur des alten Tests gilt `MIXED_TAX_JS`). `buch.css`: `.invoice-items .item-tax` wächst mit der längsten Bezeichnung (höchstens 130px), `.taxChoice` höchstens 260px.
+  `tests/test_tax_entries_mask.py`
+  **Rundung – zwei Regeln, eine Stelle** (`tax_groups.group_tax(net, pct, exact)`): Eine Satzgruppe, deren Positionen ALLE eine Momentaufnahme tragen, rechnet einstufig (Netto × Satz,
+  EINMAL auf den Cent, halb weg von null – EN 16931, BR-CO-17); jede andere zweistufig wie vor 2.8.0, Bit für Bit. Beide sind gleich bei ganzzahligem Satz und Netto in ganzen Cent
+  (bewiesen und aufgezählt in `tests/test_tax_entries_pure.py`); 5,5 % weicht an jedem Betrag mit Cent ≡ 9 (mod 200) ab (0,09 € → 0,00 statt 0,01 €). `rate_groups`, `item_groups`
+  und `mixed_groups` nehmen dafür ein drittes Element (`exact` bzw. `bp`); `recompute_invoice_totals(items, default, snapshots)` rechnet die gespeicherten Summen so. Jede Stelle, die
+  Gruppen aus Positionen liest, liest `TaxRateBp` mit – sonst laufen Summen, Dokument und Buchung auseinander. Sätze in Texten nur über `pct_text`/`group_label` (aus `bp_pct` ist
+  10 % `Decimal('10')`, aus `rate_pct` `1E+1`).
+  **Buchen:** Das Erlöskonto der Momentaufnahme gilt bei Zahlung und Erstattung immer – nie 4185, nie ein gelerntes Konto, keine Wahl des Nutzers (`revenue_coa_choice(…, entry=…)`);
+  eine Rechnung mit Stammdaten-Erlöskonto lehrt keines (`_learned_revenue_coa`). Ist es kein Erlöskonto (mehr), lehnt `TAX_PAYMENT_NO_REVENUE` ab; **das Versenden prüft es vorab**
+  (`_entry_revenue_blocker`, 409 `TAX_SEND_NO_REVENUE`, vor dem Anlegen von Konten und vor dem ersten Schreiben – ein abgelehntes Versenden legt nie ein Konto an). **Wartekonten
+  bleiben fest:** 19 % → 4405, 7 % → 4345, Satz 0 (steuerfrei wie 0 %) → 4340, und zwar genau (`_group_waiting_entry`, bei einer Momentaufnahme nie das gerundete `_tax_rate_key`);
+  jeder andere Satz hat keines – der ganze Beleg bucht dann keine Forderung, jede Zahlung „Erlöskonto an Bank“ je Satz, und die Antwort des Versendens trägt `NO_WAITING_HINT`
+  (ein Wartekonto je Eintrag gibt es bewusst nicht: EÜR, Summen- und Saldenliste, DATEV-Kette und Storno erkennen Wartekonten an festen Nummern). **Widersprüche der Momentaufnahme**
+  (verschiedene Angaben in einer Gruppe, teils mit/teils ohne, halbe Angabe, `'E'` mit Satz ≠ 0, unlesbarer oder nicht passender Satz, Kopf passt nicht – nur an der App vorbei erreichbar)
+  lehnen Versenden, Zahlung und Stornieren vor dem ersten Schreiben ab (`TAX_ENTRY_CONTRADICTION`; `MIXED_GROUPS_MISMATCH` bleibt für „Positionen ≠ Summen“); die **Erstattung prüft sie
+  bewusst nicht** und folgt den Zahlungssätzen (ein Guthaben muss sich auch aus so einem Stand erstatten lassen). Der Umzug der Zahlungen auf die Ersatzrechnung unterbleibt, sobald
+  eine der beiden Rechnungen ein Stammdaten-Erlöskonto trägt (`MOVE_ENTRY_HINT`), „Zuordnung neu aufbauen“ rechnet dann nur den offenen Betrag (Grund `tax_entry`) – die Bedingungen
+  beider Wege sind nicht gelockert. Prüfliste: `tax_entry_mismatch` (feste Sätze `TAX_ENTRY_FINDINGS`, ohne Beträge; `'E'` ohne Angaben ist kein Befund, die halbe Angabe schon). In
+  Meldungen heißt die steuerfreie Gruppe „steuerfreie Leistungen“ (`rate_sentence`), in Listen und im PDF „steuerfrei“ (`group_label`).
+  **Dokumente:** Satz der Position aus der Momentaufnahme; steuerfrei ist Kategorie E mit dem Befreiungsgrund als BT-120 – aus EINER Funktion für PDF und XML
+  (`einvoice_model.exempt_reason`: erster nicht leerer Grund der steuerfreien Positionen, bereinigt, höchstens `MAX_REASON_LENGTH` Zeichen plus „…“), nie der § 19-Text; fehlt er, meldet
+  `einvoice_gaps` „Grund der Steuerbefreiung“ und das UBL entsteht nicht. PDF: Summenzeile „steuerfrei auf 80,00 EUR:“ für eine ganz steuerfreie 0-%-Gruppe, der Grund unter dem
+  Summenblock (gesetzt mit den Breiten der eingebetteten Schrift, höchstens 12 Zeilen), ein Beleg ganz mit einem Stammdaten-Satz druckt „zzgl. 5,5% MwSt.:“ mit Komma. Ein Beleg OHNE
+  Momentaufnahme ergibt Byte für Byte dieselben Dokumente wie vor 2.8.0. Beispiele für die Prüfung: `zugferd-satz-5-5`, `zugferd-steuerfrei-gemischt`, `zugferd-steuerfrei`
+  (`tools/make_einvoice_samples.py`; der Validator nimmt auch die zweistufig gerundete Steuer an – die Einstufig-Regel hält `tests/test_tax_entries_demo_samples.py`).
+  **Auswertungen:** siehe *EÜR-Ansicht* und *Summen- und Saldenliste* (Steuerkonten der Stammdaten, Zeile „Vorsteuer ohne Steuerkonto“). DATEV: Ein Satz außerhalb von 19/16/7/5 %
+  bekommt keinen BU-Schlüssel (Schlüssel 0, bei Umsatzsteuer der Satz in Spalte 40); der Export zählt solche Zeilen (`export_to_datev(rates_without_key=…)`, `DatevStack.hint`), und
+  unter dem DATEV-Formular steht ein fester Hinweis, sobald die Stammdaten so einen Satz führen (`DATEV_RATE_NOTE`) – der Stapel bleibt Byte für Byte gleich.
+  **Bekannte Grenzen:** kein Wartekonto für weitere Sätze (ein Beleg mit 5,5 % bucht für keinen Satz eine Forderung); ein Eintrag mit genau 100 % lässt sich speichern, der Beleg aber nicht
+  versenden; Reverse Charge, innergemeinschaftliche Lieferung und Ausfuhr gibt es nicht (`docs/aufgaben.md`). Keine Steuerberatung in den Texten.
+  `tests/test_tax_entries_pure.py`, `test_tax_rates_schema_2008.py`, `test_tax_rates_db.py`, `test_tax_rates_page.py`, `test_tax_entries_save.py`, `test_tax_entries_storno.py`,
+  `test_tax_entries_bookings.py`, `test_tax_entries_reports.py`, `test_tax_entries_documents.py`, `test_tax_entries_demo_samples.py`, `test_tax_accounts_reports.py`,
+  `test_standard_accounts_purchase.py`
 - **Schriften:** Liberation Sans (2.x, OFL 1.1) aus `export/fonts/` – metrisch
   = Helvetica, daher Layout unverändert; als Untermenge per `fontTools`
   eingebettet, Content-Streams bleiben WinAnsi. sRGB-ICC für den OutputIntent
@@ -2183,7 +2266,7 @@ kein Subagent darauf:
   Versionsstelle und `PRAGMA user_version` ziehen automatisch mit; PATCH dabei auf 0.
   Der neue Migrationsschritt prüft gegen die neue Zahl (`if from_version < 2001:`)
 - In der Datenbank steht `SCHEMA_VERSION = MAJOR × 1000 + SCHEMA_STEP` (2.0.x → 2000,
-  2.1.x → 2001, 2.2.x → 2002, 2.3.x → 2003, 2.4.x → 2004, 2.5.x → 2005, 2.6.x → 2006, 2.7.x → 2007); Datenbanken aus 1.x tragen 0 bis 6. Eine Datenbank mit höherer Zahl
+  2.1.x → 2001, 2.2.x → 2002, 2.3.x → 2003, 2.4.x → 2004, 2.5.x → 2005, 2.6.x → 2006, 2.7.x → 2007, 2.8.x → 2008); Datenbanken aus 1.x tragen 0 bis 6. Eine Datenbank mit höherer Zahl
   als das Programm wird nicht geöffnet (`db.SchemaTooNewError`) – nie zurückstempeln
 - Sonstige Änderungen ohne DB-Bezug: nur `PATCH` +1; große Umbrüche: `MAJOR` +1,
   `SCHEMA_STEP` und `PATCH` auf 0
@@ -2232,6 +2315,12 @@ kein Subagent darauf:
   Transaktion. **Der Bestand behält überall NULL** und wird weiter allein nach `Invoices.TaxRate` gelesen, nichts wird umgedeutet (ob alte Belege
   Positionssätze tragen, die vom Kopf abweichen, ist unbekannt – eine Ableitung aus den Positionen buchte sie plötzlich als gemischt); frische und
   migrierte Datenbank haben dieselbe Spaltenreihenfolge. `tests/test_mixed_tax_schema_2007.py`
+- Migration auf 2.8.0 (`TAX_RATES_SCHEMA`, Schema 2008): legt `TaxRates` an (`ID, Label, RateBp, Kind, ExemptReason, RevenueCoaId, VatCoaId, InputTaxCoaId, Active, SortOrder,
+  CreatedAt`; ohne CHECK-Regeln – was ein Eintrag tragen darf, prüft `tax_groups.check_tax_entry`) und hängt `InvoiceItems` `TaxRateBp` (Index 11), `TaxExemptReason` (12) und
+  `RevenueCoaId` (13) an, dazu der Index `idx_invoiceitems_invoice` – nach der Sicherung und in EINER Transaktion (`_ensure_tax_rates_schema` und der Schritt in `_run_migrations`).
+  **Der Bestand behält überall NULL** (keine Momentaufnahme: Der Satz steht allein in `TaxRate`), nichts wird abgeleitet; frische und migrierte Datenbank sind gleich (auch ohne
+  Fremdschlüssel an `InvoiceItems.RevenueCoaId`). Die Vorbelegung (19 % und 7 %) entsteht genau einmal beim Anlegen der Tabelle – oder beim nächsten Versuch, wenn der erste nach dem
+  Anlegen abbrach und die Datenbank noch auf dem alten Stand ist. `tests/test_tax_rates_schema_2008.py`, `tests/entry_form_world.to_state_2007`
 - Anzeige auf der About-Seite
 
 ---

@@ -27,6 +27,9 @@ Logik zeigen wie bei echten Daten:
   Erzeuger.
 * Dokumente (PDF/E-Rechnung) entstehen mit ``documents_days`` nur für Rechnungen der letzten Tage – für ältere gilt die
   Regel „eingefroren, aber keine Datei vorhanden“ („PDF + E-Rechnung“ erzeugt sie später).
+* Steuersätze aus den Stammdaten (seit 2.8.0, nur mit Vorgaben des Erzeugers, die welche nennen – das Profil ``full``): ``load_tax_entries`` legt die Einträge
+  vor den Rechnungen an (``Database.insert_tax_rate``, nur in dem Bestand, den die Demo gerade füllt); eine Position der Vorgaben, die einen nennt
+  (``tax_entry``), schickt seine ID wie die Maske (``taxRateId``) – der Server prüft sie und schreibt die Momentaufnahme.
 
 Die fest datierten Testrechnungen aus ``test_invoices.json`` werden im Demo-Modus bewusst nicht geladen
 (``load_test_seed_data(include_invoices=False)``): sie sind als bezahlt markiert, haben aber keine Zahlungen; ebenso die fest
@@ -169,6 +172,7 @@ class DemoScenario:
         self.bank_coa = db.get_coa_id_by_account_number(skr)
         self.coa = {n: db.get_coa_id_by_account_number(n) for n in self._coa_numbers()}
         self.savings_id = self.savings_coa = self.cash_id = self.cash_coa = None
+        self.tax_entries = {}                  # Schlüssel der Vorgaben → ID des Eintrags der Steuersätze (``load_tax_entries``)
         names = self.extra.get("accounts", {})
         if "savings" in names:
             self.savings_id, self.savings_coa = self._account(names["savings"])
@@ -283,6 +287,18 @@ class DemoScenario:
                 self._entry(bid, d, r["amount"], r["coa"], r.get("tax_rate"),
                             s["recipient"], r["text"], doc, tax_amount=r.get("tax_amount"))
 
+    # ── Steuersätze der Stammdaten ───────────────────────────────────────
+    def load_tax_entries(self):
+        """Die Einträge der Steuersätze, die die Vorgaben nennen (``extra['tax_entries']``), über ``Database.insert_tax_rate`` – mit den Regeln der Stammdaten
+        (``tax_groups.check_tax_entry``, ``TaxRateRefused`` bricht das Laden ab). Das Erlöskonto ist eines des Standard-Kontenrahmens, gesucht nach seiner Nummer –
+        fehlt es, bricht das Laden ab. Die IDs stehen danach in ``self.tax_entries`` für ``_form_data``."""
+        for spec in self.extra.get("tax_entries", []):
+            coa_id = self.db.get_coa_id_by_account_number(spec["revenue_account"])
+            if coa_id is None:
+                raise RuntimeError(f"Demo-Steuersatz ‚{spec['label']}‘: Das Erlöskonto {spec['revenue_account']} fehlt im Kontenrahmen")
+            self.tax_entries[spec["key"]] = self.db.insert_tax_rate(
+                label=spec["label"], bp=spec["bp"], kind=spec["kind"], reason=spec.get("reason"), revenue_coa_id=coa_id)
+
     # ── Rechnungen + Zahlungen ───────────────────────────────────────────
     def load_invoices(self):
         """Alle Rechnungsereignisse über EINE Warteschlange, sortiert nach (Datum, laufende Nr.): Ein Ereignis legt die
@@ -370,7 +386,9 @@ class DemoScenario:
         rate = max((item["tax_rate"] for item in items), default=0)
         form_items = [{"position": index + 1, "description": item["description"], "quantity": item["quantity"],
                        "unit": item["unit"], "unitPrice": item["price_per_unit"],
-                       "taxRate": item["tax_rate"] if show_tax else 0} for index, item in enumerate(items)]
+                       "taxRate": item["tax_rate"] if show_tax else 0,
+                       **({"taxRateId": self.tax_entries[item["tax_entry"]]} if item.get("tax_entry") else {})}   # der Eintrag der Stammdaten, wie ihn die Maske wählt
+                      for index, item in enumerate(items)]
         data = {
             "invoiceNumber": number, "invoiceDate": day.isoformat(), "customerId": customer[0],
             "ownCompanyId": self._contacts().own[0], "paymentTerms": spec["payment_terms"], "dueDate": due,
@@ -660,6 +678,7 @@ class DemoScenario:
 
     def load_all(self):
         with _without_sync(self.db):
+            self.load_tax_entries()
             self.load_invoices()
             self.load_expenses()
             self.load_trips()

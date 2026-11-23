@@ -8,6 +8,7 @@ import os
 import json
 from decimal import Decimal
 from money import to_minor, from_minor
+from tax_groups import MIXED_TAX_RATES, pct_text
 from .accounts import DEFAULT_CASH_ACCOUNT
 from .matching import read_entry_form
 
@@ -90,6 +91,14 @@ DOCUMENT_READINGS_SCHEMA = 2006
 #: Kopf (``Invoices.TaxRate``) ist dann nur ein Platzhalter: der höchste Satz der Positionen. Der Bestand behält überall NULL
 #: und wird weiter allein nach ``Invoices.TaxRate`` gelesen – nichts wird umgedeutet.
 MIXED_TAX_SCHEMA = 2007
+
+#: Ab dieser Schema-Zahl (Version 2.8.0) gibt es die Steuersätze der Stammdaten (``TaxRates``: Bezeichnung, Satz in Hundertstel Prozent,
+#: Art ``standard``/``exempt``, Befreiungsgrund, Erlöskonto) – vorbelegt beim Anlegen der Tabelle mit den Sätzen aus
+#: ``tax_groups.MIXED_TAX_RATES`` – und eine Position kann die Momentaufnahme eines solchen Eintrags tragen (``InvoiceItems.TaxRateBp``,
+#: ``TaxExemptReason``, ``RevenueCoaId``, dazu die schon vorhandene ``TaxCategory``: ``'E'`` = steuerfrei). Der Bestand behält überall NULL
+#: (bzw. ``'S'``) – der Satz steht dort allein in ``InvoiceItems.TaxRate``, nichts wird umgedeutet. Die Tabelle entsteht in
+#: ``_ensure_tax_rates_schema`` (in der Transaktion der Umstellung), die Spalten fügt ``_run_migrations`` an.
+TAX_RATES_SCHEMA = 2008
 
 
 class SchemaMixin:
@@ -204,6 +213,14 @@ class SchemaMixin:
             # Datenbank; der Bestand behält überall NULL (= ein Satz für den ganzen Beleg, ``Invoices.TaxRate`` gilt wie bisher) –
             # nichts wird umgedeutet.
             self._add_column_if_missing(cursor, 'Invoices', 'MixedTaxRates', 'INTEGER')
+        if from_version < TAX_RATES_SCHEMA:
+            # 2.8.0: Momentaufnahme eines Steuersatzes aus den Stammdaten an der Position. Die Spalten kommen in der Reihenfolge ans
+            # Ende (Index 11 bis 13), in der sie auch das CREATE TABLE der frischen Datenbank führt; der Bestand behält überall NULL
+            # (= keine Momentaufnahme: der Satz steht allein in ``TaxRate``) – nichts wird umgedeutet. Die Tabelle ``TaxRates`` und der
+            # Index entstehen in ``_ensure_tax_rates_schema``.
+            self._add_column_if_missing(cursor, 'InvoiceItems', 'TaxRateBp', 'INTEGER')
+            self._add_column_if_missing(cursor, 'InvoiceItems', 'TaxExemptReason', 'TEXT')
+            self._add_column_if_missing(cursor, 'InvoiceItems', 'RevenueCoaId', 'INTEGER')
 
     def _correct_tax_keys(self, cursor):
         """Die Zeilen von ``TAX_KEY_CORRECTIONS`` in ``TaxKeys`` berichtigen (eine abweichende Zeile wird überschrieben,
@@ -756,6 +773,14 @@ class SchemaMixin:
                 TotalNet INTEGER NOT NULL,
                 TaxCategory TEXT DEFAULT 'S',
                 TaxRate REAL NOT NULL,
+
+                -- Momentaufnahme eines Steuersatzes aus den Stammdaten (Schema 2008, Index 11-13; Reihenfolge wie die ALTER TABLE
+                -- der Migration): NULL = keine Momentaufnahme, der Satz steht allein in TaxRate (der ganze Bestand); TaxCategory
+                -- bleibt wie bisher ('S') und heißt mit der Momentaufnahme eines steuerfreien Eintrags 'E'
+                TaxRateBp INTEGER,                             -- Satz in Hundertstel Prozent (1900 = 19 %, 550 = 5,5 %)
+                TaxExemptReason TEXT,                          -- Grund der Steuerbefreiung (nur bei TaxCategory 'E')
+                RevenueCoaId INTEGER,                          -- Erlöskonto des Eintrags; ohne Fremdschlüssel (frisch = migriert), das Löschen eines Kontos prüft coa_is_referenced
+
                 FOREIGN KEY (InvoiceId) REFERENCES Invoices(ID) ON DELETE CASCADE,
                 FOREIGN KEY (ArticleId) REFERENCES Articles(ID)
             )
@@ -892,6 +917,7 @@ class SchemaMixin:
             self._ensure_invoice_version_schema(cursor)
             self._ensure_invoice_payment_index(cursor)
             self._ensure_document_readings_schema(cursor)
+            self._ensure_tax_rates_schema(cursor)
 
             # Schema-Version in der DB hinterlegen (MAJOR × 1000 + SCHEMA_STEP, siehe
             # version.py). Bei jeder Schema-Änderung SCHEMA_STEP dort erhöhen.
@@ -996,6 +1022,44 @@ class SchemaMixin:
             )
         """)
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_documentreadings_gross ON DocumentReadings(GrossMinor)")
+
+    def _ensure_tax_rates_schema(self, cursor):
+        """Die Steuersätze der Stammdaten (2.8.0, Schema 2008): ``TaxRates`` und ein Index auf den Positionen eines Belegs. Läuft bei der
+        Umstellung in deren Transaktion (nach dem Anfügen der Spalten an ``InvoiceItems``), bei einer frischen Datenbank gleich beim Anlegen.
+
+        **Vorbelegt wird genau einmal: beim Anlegen der Tabelle** (oder beim nächsten Versuch, wenn der erste nach dem Anlegen abbrach) – je Satz aus ``tax_groups.MIXED_TAX_RATES`` ein Eintrag der Art
+        ``standard`` ohne Erlöskonto (19 % und 7 % haben ihr Standardkonto). Wer später alle Einträge löscht, bekommt beim nächsten Öffnen
+        keinen zurück (anders als die Seeds der Kategorien und Steuerschlüssel, die eine leere Tabelle wieder füllen). Die Sätze nennt nur
+        ``MIXED_TAX_RATES``; ``RateBp`` ist der Satz in Hundertstel Prozent (1900 = 19 %), ``Label`` der Text der Auswahl (``19 %``). Es gibt
+        keine CHECK-Regeln im Schema (wie sonst im Repo): Was ein Eintrag tragen darf, prüft die Anwendung, nicht die Datenbank.
+
+        Der Index auf ``InvoiceItems.InvoiceId`` (einen gab es bisher nicht) beschleunigt, was die Positionen eines Belegs liest und – über
+        ``ON DELETE CASCADE`` – mit dem Beleg löscht; er ändert keine Daten."""
+        created = not self._table_exists(cursor, 'TaxRates')
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS TaxRates (
+                ID INTEGER PRIMARY KEY AUTOINCREMENT,
+                Label TEXT NOT NULL,                           -- Bezeichnung in Auswahl und Liste
+                RateBp INTEGER NOT NULL,                       -- Satz in Hundertstel Prozent: 1900 = 19 %, 550 = 5,5 %
+                Kind TEXT NOT NULL DEFAULT 'standard',         -- 'standard' | 'exempt' (steuerfrei)
+                ExemptReason TEXT,                             -- Grund der Steuerbefreiung (nur bei 'exempt')
+                RevenueCoaId INTEGER REFERENCES ChartOfAccounts(ID),   -- Erlöskonto; NULL = das Standardkonto des Satzes (19 %, 7 %)
+                VatCoaId INTEGER REFERENCES ChartOfAccounts(ID),       -- Umsatzsteuerkonto des Satzes (freiwillig; für Auswertungen)
+                InputTaxCoaId INTEGER REFERENCES ChartOfAccounts(ID),  -- Vorsteuerkonto des Satzes (freiwillig; für Auswertungen)
+                Active INTEGER NOT NULL DEFAULT 1,             -- 1 = wählbar, 0 = inaktiv
+                SortOrder INTEGER NOT NULL DEFAULT 0,          -- Reihenfolge in der Auswahl (dann ID)
+                CreatedAt DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        # Bricht der Prozess nach dem CREATE und vor dem Abschluss ab, steht die Tabelle leer da, die Datenbank aber noch auf dem alten Stand:
+        # Dann wird beim nächsten Versuch vorbelegt. Eine Datenbank im Stand 2008 mit geleerter Tabelle bleibt leer.
+        unfinished = (not created and getattr(self, '_migrate_from_version', TAX_RATES_SCHEMA) < TAX_RATES_SCHEMA
+                      and cursor.execute('SELECT 1 FROM TaxRates LIMIT 1').fetchone() is None)
+        if created or unfinished:
+            for number, rate in enumerate(MIXED_TAX_RATES, 1):
+                cursor.execute("INSERT INTO TaxRates (Label, RateBp, Kind, Active, SortOrder) VALUES (?, ?, 'standard', 1, ?)",
+                               (f'{pct_text(rate)} %', int(rate * 100), number * 10))
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_invoiceitems_invoice ON InvoiceItems(InvoiceId)")
 
     def ensure_kasse_exists(self):
         """Ensure the default 'Kasse' account exists and cannot be deleted.
