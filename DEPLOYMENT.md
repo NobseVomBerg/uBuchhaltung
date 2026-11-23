@@ -62,7 +62,7 @@ ausgeschaltet, enden die bestehenden Sitzungen.
 
 **Größe von Anfragen:** Der Server lehnt Anfragen ab, die größer sind als 64 KB (vor der Anmeldung),
 10 MB (Formulare) bzw. 200 MB (Uploads von Kontoauszügen, Belegen und WISO-Textexporten; Logos 5 MB).
-Die WISO-Datenbank (*Sonstiges → Import aus der Datenbank*) wird als Datei hochgeladen und darf je Datei
+Die WISO-Datenbank (*Daten → Import aus der Datenbank*) wird als Datei hochgeladen und darf je Datei
 bis 2 GB groß sein; der Server nimmt sie nur an, wenn im Datenverzeichnis danach noch 64 MB frei bleiben,
 und löscht sie nach dem Import wieder. Ein Reverse-Proxy davor hat oft eine eigene, kleinere Grenze für
 Uploads (nginx: `client_max_body_size`, Standard 1 MB) – für den Import der WISO-Datenbank muss sie
@@ -157,7 +157,7 @@ openssl req -x509 -newkey rsa:2048 -nodes -keyout key.pem -out cert.pem \
   Die Dateien der Seite *Belege* liegen unter `Belege/<Jahr>/` und gehören zur Datensicherung.
 - Für ein Backup genügt es, das gesamte `data/`-Verzeichnis zu sichern.
 - Die Sicherungen eines Benutzers (die Archive der App und die Kopien der Datenbank vor einer Programm-Umstellung) lassen sich über
-  die Oberfläche herunterladen: *Sonstiges → Datensicherung*. Eine große Datei liefert der Server direkt aus, in Stücken und nicht
+  die Oberfläche herunterladen: *Daten → Datensicherung*. Eine große Datei liefert der Server direkt aus, in Stücken und nicht
   über den Speicher; ein Reverse-Proxy davor darf die Antwort nicht nach kurzer Zeit abbrechen (nginx: `proxy_read_timeout`).
 - Die Wiederherstellung in der App prüft das Archiv, bevor sie am Datenverzeichnis etwas
   ändert. Während sie läuft, beantwortet der Server andere Anfragen desselben Benutzers mit einem
@@ -171,7 +171,7 @@ openssl req -x509 -newkey rsa:2048 -nodes -keyout key.pem -out cert.pem \
 - Das Löschen eines Nutzers in der Benutzerverwaltung entfernt nur das Login;
   das zugehörige Datenverzeichnis bleibt erhalten und kann bei Bedarf manuell
   entfernt werden.
-- Die SQL-Konsole (*Sonstiges*) steht nur Administratoren zur Verfügung und
+- Die SQL-Konsole (Seite *About*, ganz unten) steht nur Administratoren zur Verfügung und
   arbeitet immer nur auf der eigenen Datenbank des angemeldeten Nutzers. Wer sie
   braucht, bekommt in der Benutzerverwaltung das Administratorrecht. Sie läuft nur
   lesend, solange „Schreiben erlauben“ nicht angekreuzt ist; mit Haken laufen alle

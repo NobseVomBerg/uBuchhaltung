@@ -2631,7 +2631,7 @@ def test_the_page_masks_the_asset_name_in_the_composition_and_rest_hints(db_with
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# Die Seite „Verschiedenes“
+# Die Seite „Daten“
 # ═════════════════════════════════════════════════════════════════════════════
 
 NOTICE_SUBACCOUNTS = ('{} Buchungen stehen aus einem älteren Import noch auf dem Basiskonto statt auf dem '

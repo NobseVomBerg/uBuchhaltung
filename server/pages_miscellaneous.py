@@ -2,7 +2,8 @@
 # SPDX-FileCopyrightText: 2026 unsix IT Engineering
 # Kommerzielle Lizenz ohne AGPL-Pflichten verfügbar – Kontakt: office@unsix.com
 """
-Sonstiges page – database overview, SQL console, misc tools.
+Seite „Daten“ (Adresse ``/miscellaneous``) – Datensicherung, vorhandene Sicherungen, Wiederherstellung, DATEV-Export, WISO-Importe und die
+Prüfung der Zahlungszuordnungen. Die Datenbank-Übersicht, die SQL-Konsole und der DB-Export stehen auf der About-Seite (``pages.PageAbout``).
 """
 import html as _html
 import re
@@ -337,7 +338,7 @@ def _import_notices(result):
 
 def PageMiscellaneous(db: Database, check_payments: bool = False, datev_confirm: bool = False,
                       datev_from=None, datev_to=None, datev_check=None, msg=None):
-    """Generate Sonstiges page (database overview, SQL console, misc tools).
+    """Generate the Daten page (backup and restore, DATEV export, WISO imports, check of the payment assignments).
 
     ``check_payments``: die Prüfliste der Zahlungszuordnungen mit anzeigen. Sie läuft nur auf
     Klick (``?check_payments=1``), nicht bei jedem Laden der Seite – bei einem großen Bestand
@@ -360,172 +361,9 @@ def PageMiscellaneous(db: Database, check_payments: bool = False, datev_confirm:
     s += '<script>var miscMsg = ' + _script_json(msg[:MSG_MAX_LENGTH] if isinstance(msg, str) else '') + ';</script>'
 
     s += '<div class="grid3Cols gridMain">'
-    # ── Database statistics ───────────────────────────────────────────────────
-    s += '\t<div class="rectRounded">'
-    stats = db.get_table_statistics()
-    s += "\t\t<h2>Datenbank-Übersicht</h2>"
-    s += "\t\t<table>"
-    s += "\t\t\t<tr><th>Tabelle</th><th>Anzahl Einträge</th></tr>"
-    for table_name, count in stats:
-        s += f"\t\t\t<tr><td>{table_name}</td><td style='text-align: right;'>{count}</td></tr>"
-    s += "\t\t</table>"
-    s += '\t</div>'
-    # ── SQL Input Field ───────────────────────────────────────────────────────
-    import auth as _auth
-    if _auth.sql_console_allowed():
-        s += '\t<div class="rectRounded" style="grid-column: span 2">'
-        s += '''
-        <h2>SQL-Befehle ausführen</h2>
-        Gib hier SQL-Befehle ein (mehrere Befehle durch Semikolon getrennt). Eine Anfrage läuft höchstens 60 Sekunden, sehr große Ausgaben werden gekürzt:<br>
-        <textarea id="sql_input" rows="15" cols="100" class="textareaSql" placeholder="SELECT * FROM ChartOfAccounts WHERE AccountNumber = 6805;"></textarea>
-        <div class="rowWithObjects">
-            <label><input type="checkbox" id="sql_write" autocomplete="off">&nbsp;Schreiben erlauben</label>
-        </div>
-        <p class="hint">Ohne Haken läuft die Konsole nur lesend. Mit Haken laufen alle Befehle in einer Transaktion: Scheitert einer, wird nichts geändert.</p>
-        <div>
-            <button type="button" onclick="executeSql()" class="coloredButton bg-orange">SQL ausführen</button>
-            <span style="color: red; margin-left: 20px;">⚠️ Achtung: SQL-Befehle werden direkt ausgeführt!</span>
-        </div>
-        <br><br>
-        <h3>Zeitbereich löschen</h3>
-            <div>Erzeugt ein Lösch-Skript für Belege, Buchungen, Rechnungen und Angebote im Zeitraum und fügt es oben ins SQL-Feld ein.
-                Zum Ausführen „Schreiben erlauben“ ankreuzen und obigen Button klicken. Dateien im Dateisystem bleiben erhalten.</div>
-        <div>
-            <label>Von:&nbsp;<input type="date" id="range_del_from"></label>
-            <label>Bis:&nbsp;<input type="date" id="range_del_to"></label>
-            <button type="button" onclick="buildRangeDeleteSql()" class="coloredButton bg-blue">SQL erzeugen</button>
-        </div>
-        <script>
-        function buildRangeDeleteSql() {
-            const from = document.getElementById('range_del_from').value;
-            const to   = document.getElementById('range_del_to').value;
-            if (!from || !to) { sqlStatus([['errorColor', 'Bitte Von- und Bis-Datum angeben.']]); return; }
-            if (from > to)    { sqlStatus([['errorColor', 'Von-Datum liegt nach dem Bis-Datum.']]); return; }
-            const b = "SELECT ID FROM Bookings  WHERE DateBooking BETWEEN '" + from + "' AND '" + to + "'";
-            const d = "SELECT ID FROM Documents WHERE Date        BETWEEN '" + from + "' AND '" + to + "'";
-            const i = "SELECT ID FROM Invoices  WHERE InvoiceDate BETWEEN '" + from + "' AND '" + to + "'";
-            const sql =
-                "-- Zeitbereich löschen: " + from + " bis " + to + "\\n" +
-                "-- Reihenfolge beachtet Fremdschlüssel. Dateien im Dateisystem bleiben erhalten.\\n" +
-                "DELETE FROM InvoicePayments WHERE InvoiceID IN (" + i + ") OR BookingID IN (" + b + ");\\n" +
-                "DELETE FROM InvoiceItems WHERE InvoiceId IN (" + i + ");\\n" +
-                "DELETE FROM InvoiceCorrections WHERE InvoiceID IN (" + i + ");\\n" +
-                "DELETE FROM InvoiceDocumentVersions WHERE InvoiceID IN (" + i + ");\\n" +
-                "UPDATE Invoices SET SourceQuoteId = NULL WHERE SourceQuoteId IN (" + i + ");\\n" +
-                "UPDATE Invoices SET CancelsInvoiceId = NULL WHERE CancelsInvoiceId IN (" + i + ");\\n" +
-                "UPDATE Invoices SET ReplacesInvoiceId = NULL WHERE ReplacesInvoiceId IN (" + i + ");\\n" +
-                "DELETE FROM Invoices WHERE InvoiceDate BETWEEN '" + from + "' AND '" + to + "';  -- Rechnungen UND Angebote\\n" +
-                "DELETE FROM BookingDocuments WHERE Booking_ID IN (" + b + ") OR Document_ID IN (" + d + ");\\n" +
-                "UPDATE Assets SET Booking_ID = NULL WHERE Booking_ID IN (" + b + ");\\n" +
-                "UPDATE Assets SET Document_ID = NULL WHERE Document_ID IN (" + d + ");\\n" +
-                "UPDATE AssetDepreciations SET Booking_ID = NULL, Status = 'planned', BookedAt = NULL WHERE Booking_ID IN (" + b + ");\\n" +
-                "UPDATE Trips SET DocumentID = NULL WHERE DocumentID IN (" + d + ");\\n" +
-                "DELETE FROM DocumentReadings WHERE Document_ID IN (" + d + ");\\n" +
-                "-- Sätze außerhalb des Zeitraums unter einer Bankbewegung des Zeitraums bleiben erhalten (abgehängt, wie im Buchungssatz-Editor).\\n" +
-                "UPDATE Bookings SET ParentBooking_ID = NULL, Status = CASE WHEN Status = 'resolved' THEN NULL ELSE Status END WHERE ParentBooking_ID IN (" + b + ") AND DateBooking NOT BETWEEN '" + from + "' AND '" + to + "';\\n" +
-                "DELETE FROM Bookings WHERE DateBooking BETWEEN '" + from + "' AND '" + to + "';\\n" +
-                "DELETE FROM Documents WHERE Date BETWEEN '" + from + "' AND '" + to + "';";
-            document.getElementById('sql_input').value = sql;
-            sqlStatus([['', 'Lösch-Skript eingefügt — bitte prüfen, „Schreiben erlauben“ ankreuzen und „SQL ausführen“ klicken.']]);
-        }
-        </script>
-        <div id="sql_status" style="margin-top: 10px;"></div>
-        <textarea id="sql_output" rows="20" cols="100" readonly class="textareaSql" style="display: none;"></textarea>
-        <script>
-        // Meldungen nur über textContent: Fehlertexte kommen aus der Datenbank bzw. dem Server
-        function sqlStatus(parts) {
-            const status = document.getElementById('sql_status');
-            status.textContent = '';
-            parts.forEach(function(part) {
-                const span = document.createElement('span');
-                if (part[0]) span.className = part[0];
-                span.textContent = part[1];
-                status.appendChild(span);
-                status.appendChild(document.createTextNode(' '));
-            });
-        }
-        async function sendSql(input, write) {
-            const output = document.getElementById('sql_output');
-            sqlStatus([['', '⏳ Wird ausgeführt...']]);
-            try {
-                const resp = await fetch('/execute_sql', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-                    body: 'sql_commands=' + encodeURIComponent(input) + (write ? '&write=1' : '')
-                });
-                const data = await resp.json();
-                const parts = [];
-                if (data.success_count > 0) parts.push(['successColor', data.success_count + ' von ' + data.total + ' Befehlen erfolgreich.']);
-                if (data.errors && data.errors.length) parts.push(['errorColor', data.errors.join('; ')]);
-                if (data.warnings && data.warnings.length) parts.push(['warnColor', data.warnings.join('; ')]);
-                sqlStatus(parts);
-                if (data.output) {
-                    output.style.display = 'block';
-                    output.value = data.output;
-                } else {
-                    output.style.display = 'none';
-                    output.value = '';
-                }
-            } catch(e) {
-                sqlStatus([['errorColor', 'Fehler: ' + e.message]]);
-            } finally {
-                if (write) document.getElementById('sql_write').checked = false;
-            }
-        }
-        function executeSql() {
-            const input = document.getElementById('sql_input').value;
-            if (!input.trim()) { sqlStatus([['errorColor', 'Keine SQL-Befehle eingegeben.']]); return; }
-            if (!document.getElementById('sql_write').checked) return sendSql(input, false);
-            appConfirm('Die Befehle können Daten ändern oder löschen. Vorher eine Datensicherung anlegen. Ausführen?',
-                       function() { return sendSql(input, true); });
-        }
-        </script>
-        '''
-        s += '\t</div>'
-    else:
-        s += '\t<div class="rectRounded" style="grid-column: span 2">'
-        s += ('<h2>SQL-Befehle ausführen</h2>'
-              '<p>Die SQL-Konsole steht nur Administratoren zur Verfügung.</p>')
-        s += '\t</div>'
-
-    # Both Exports together in one DIV
+    # Zwei Kästen in einem DIV: DATEV-Export und Zahlungszuordnungen (die Datenbank-Übersicht, die SQL-Konsole und der
+    # DB-Export stehen auf der About-Seite, siehe ``pages.PageAbout``)
     s += '\t<div class="grid1Col gridMiddle">'
-    # ── DB Export as SQL ──────────────────────────────────────────────────────
-    s += '\t\t<div class="rectRounded">'
-    s += '''
-        <h2>DB-Export</h2>
-        <p>Exportiert alle Tabelleninhalte als INSERT-Statements in die Datei
-        <code>db-export.sql</code> im Datenverzeichnis.'''
-    if _auth.sql_console_allowed():
-        s += '''
-        Ein kleinerer Export lässt sich im SQL-Konsolenbereich einfügen (mit „Schreiben erlauben“);
-        für ganze Bestände gibt es die Datensicherung.'''
-    s += '''</p>
-        <form method="POST" action="/db_export">
-            <button type="submit" class="coloredButton bg-blue">&#x1F4BE; DB-Export</button>
-        </form>
-        '''
-    # Show export result message if redirected back with status
-    s += '''
-        <script>
-        (function() {
-            const p = new URLSearchParams(window.location.search);
-            const status = p.get('export');
-            if (status === 'ok') {
-                const div = document.createElement('div');
-                div.style = 'margin-top:10px; padding:8px 14px; background:#d4edda; color:#155724; border-radius:4px; display:inline-block;';
-                div.textContent = '✅ Export erfolgreich: ' + p.get('tables') + ' Tabellen, ' + p.get('rows') + ' Zeilen.';
-                document.currentScript.parentNode.insertBefore(div, document.currentScript);
-            } else if (status === 'error') {
-                const div = document.createElement('div');
-                div.style = 'margin-top:10px; padding:8px 14px; background:#f8d7da; color:#721c24; border-radius:4px; display:inline-block;';
-                div.textContent = '❌ Fehler beim Export: ' + miscMsg;
-                document.currentScript.parentNode.insertBefore(div, document.currentScript);
-            }
-        })();
-        </script>
-        '''
-    s += '\t\t</div>'
     # ── DATEV Export ──────────────────────────────────────────────────────────
     s += '\t\t<div class="rectRounded">'
     import datetime
@@ -1098,12 +936,14 @@ def PageMiscellaneous(db: Database, check_payments: bool = False, datev_confirm:
     from server.backup import downloadable_backups as _downloadable_backups, list_backups as _list_backups
     _backups = _list_backups(_userctx.user_data_dir())
 
-    s += '\t<div class="rectRounded">'
+    # Zwei Spalten breit: Die Liste der Sicherungen (Name, Art, Datum, Größe, Herunterladen, Löschen) bricht in einer einzelnen Spalte
+    # jeden Dateinamen mitten im Wort um; mit der Wiederherstellung daneben ist die letzte Zeile des Rasters voll
+    s += '\t<div class="rectRounded box2">'
     s += '''
         <h2>&#x1F4BE; Datensicherung</h2>
         <p>Sichert die Daten des angemeldeten Benutzers als Archiv in den Ordner <code>backup/</code> des Datenordners
         (7-Zip, ohne 7-Zip als <code>.zip</code>). Die Datenbank wird dabei als konsistenter Snapshot gesichert.
-        Vorhandene Sicherungen lassen sich unten herunterladen.</p>
+        Vorhandene Sicherungen stehen unten in der Liste.</p>
         <form method="POST" action="/backup/create">
             <div class="rowWithObjects">
                 <label><input type="radio" name="scope" value="db"> nur DB</label>
@@ -1112,22 +952,32 @@ def PageMiscellaneous(db: Database, check_payments: bool = False, datev_confirm:
             </div>
         </form>
         '''
-    # Vorhandene Sicherungen zum Herunterladen: Archive und Kopien vor einer Programm-Umstellung (Positivliste in
-    # ``backup.downloadable_backups``). Jeder Wert aus dem Dateisystem wird maskiert; der Link trägt den Namen prozentkodiert.
+    # Vorhandene Sicherungen zum Herunterladen und Löschen: Archive und Kopien vor einer Programm-Umstellung (Positivliste in
+    # ``backup.downloadable_backups``, dieselbe für beide Wege). Jeder Wert aus dem Dateisystem wird maskiert; der Link trägt den Namen
+    # prozentkodiert, der Knopf „Löschen“ den Namen als JSON (``appConfirmPost`` schickt ihn im Formularfeld ``file``). Im Demo-Modus
+    # teilen alle Besucher ein Verzeichnis: Dort gibt es den Knopf nicht (``POST /backup/delete`` ist 403).
     _entries = _downloadable_backups(_userctx.user_data_dir())
+    _can_delete = not _demo.is_active()
     if _entries:
         s += ('<h3>Vorhandene Sicherungen</h3><table class="backupTable"><tr><th>Datei</th><th>Art</th><th>Angelegt</th>'
               '<th class="num">Größe</th><th></th></tr>')
         for _entry in _entries:
             _kind = 'Sicherung' if _entry.kind == 'archive' else f'vor Umstellung auf {_entry.version} (nur Datenbank)'
             _link = _html.escape('/backup/download?file=' + _quote(_entry.name, safe=''), quote=True)
+            _delete = ''
+            if _can_delete:
+                _note = '' if _entry.kind == 'archive' else ' Über sie führt der Weg zurück auf die Version vor der Umstellung.'
+                _question = _html.escape(_script_json(f'Sicherung {_entry.name} wirklich löschen?{_note}'), quote=True)
+                _file = _html.escape(_script_json(_entry.name), quote=True)
+                _delete = (' <button type="button" class="coloredButton btn-sm bg-red" '
+                           f'onclick="appConfirmPost(\'/backup/delete\', {_question}, {{file: {_file}}})">Löschen</button>')
             s += (f'<tr><td>{_html.escape(_entry.name)}</td><td>{_html.escape(_kind)}</td>'
                   f'<td>{_html.escape(_date_label(_entry.mtime))}</td>'
                   f'<td class="num">{_html.escape(_size_label(_entry.size))}</td>'
-                  f'<td><a href="{_link}">Herunterladen</a></td></tr>')
+                  f'<td><a href="{_link}">Herunterladen</a>{_delete}</td></tr>')
         s += '</table>'
         if any(_entry.kind == 'migration' for _entry in _entries):
-            s += ('<p class="hint">Sicherungen vor einer Programm-Umstellung lassen sich nur herunterladen; '
+            s += ('<p class="hint">Sicherungen vor einer Programm-Umstellung stehen nicht im Formular der Wiederherstellung; '
                   'zurückspielen wie im README beschrieben.</p>')
     else:
         s += '<p class="muted">Noch keine Sicherungen vorhanden.</p>'
@@ -1145,6 +995,14 @@ def PageMiscellaneous(db: Database, check_payments: bool = False, datev_confirm:
                 text = 'Backup fehlgeschlagen: ' + miscMsg; type = 'error';
             }
             document.addEventListener('DOMContentLoaded', () => appMsg(text, type));
+        })();
+        (function() {
+            // Löschen einer Sicherung: Der Vorspann steht fest, vom Server kommt nur der Name bzw. der Grund der Ablehnung
+            const status = new URLSearchParams(window.location.search).get('backup_delete');
+            if (!status || !miscMsg) return;
+            const ok = status === 'ok';
+            const text = (ok ? 'Sicherung gelöscht: ' : 'Sicherung nicht gelöscht: ') + miscMsg;
+            document.addEventListener('DOMContentLoaded', () => appMsg(text, ok ? 'success' : 'error'));
         })();
         </script>
         '''

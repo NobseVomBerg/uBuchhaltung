@@ -54,7 +54,7 @@ MIXED_GROUP_NOT_POSITIVE = ('Eine Rechnung mit mehreren Steuersätzen lässt sic
 MIXED_NO_REVENUE_COA = ('Für {rate} % ist kein Erlöskonto hinterlegt – bei einer Rechnung mit mehreren Steuersätzen lässt es sich '
                         'nicht wählen. Bitte das Erlöskonto für {rate} % im Kontenrahmen anlegen.')
 MIXED_RECEIVABLE_MISMATCH = ('Die Forderungsbuchungen dieser Rechnung passen nicht zu ihren Steuersätzen – bitte die Forderung prüfen '
-                             '(Prüfung unter Sonstiges).')
+                             '(Prüfung unter Daten).')
 MIXED_ALLOCATION_UNREADABLE = ('Die bisherigen Zahlungen dieser Rechnung lassen sich nicht nach Steuersätzen aufteilen (eine Zuordnung '
                                'ohne die Buchungssätze der App, oder sie wurden von Hand geändert) – bitte die Zuordnungen prüfen.')
 # Die Erstattung einer Stornorechnung zu einem Beleg mit Steuersatz je Position (``assign_storno_refund``) und der Umzug der Zahlungen
@@ -90,14 +90,14 @@ MOVE_ENTRY_HINT = ('Die Zahlungen der stornierten Rechnung {number} ({amount}) b
 # ``{rate}``: der Satz der Gruppe, mit ``rate_sentence`` eingesetzt („19 %“, „5,5 %“, „steuerfreie Leistungen“). Auch die Erstattung nennt ihn, wenn die Zahlungen eines
 # Belegs mit Momentaufnahme auf einem Konto liegen, das keines (mehr) ist (``_refund_revenue_coas_by_rate``)
 TAX_PAYMENT_NO_REVENUE = ('Das Erlöskonto, das diese Rechnung für {rate} trägt, ist kein Erlöskonto (mehr) – die Zahlung lässt sich nicht kontieren. '
-                          'Bitte das Konto im Kontenrahmen prüfen (Prüfung unter Sonstiges).')
+                          'Bitte das Konto im Kontenrahmen prüfen (Prüfung unter Daten).')
 # Die Angaben aus den Stammdaten an den Positionen eines Belegs (die Momentaufnahmen eines Steuersatzes, 2.8.0) widersprechen sich – ein fester Satz für JEDEN Widerspruch
 # der Momentaufnahme (``InvoicePaymentsMixin._read_snapshots``, ``_single_snapshot``): verschiedene Angaben in einer Satzgruppe, teils mit, teils ohne, die Art „steuerfrei“ mit
 # einem Satz über 0, ein Satz in Hundertstel Prozent, der keiner ist oder nicht der der Position, Angaben ohne den Satz dazu, ein Kopfsatz, der nicht passt. Kein Beleg mit
 # einem solchen Widerspruch lässt sich buchen: Versenden, Zahlung und Stornieren lehnen vor dem ersten Schreiben ab. ``MIXED_GROUPS_MISMATCH`` bleibt für das, was er sagt
 # (die Positionen passen nicht zu den Summen)
 TAX_ENTRY_CONTRADICTION = ('Die Angaben aus den Stammdaten an den Positionen dieser Rechnung widersprechen sich – sie lässt sich so nicht buchen '
-                           '(Prüfung unter Sonstiges).')
+                           '(Prüfung unter Daten).')
 # Die Befunde der Kategorie ``tax_entry_mismatch`` der Prüfliste (``_tax_entry_findings``), nach Art: feste Sätze ohne Beträge. ``{rate} %`` wird mit
 # ``rate_sentence`` zum Satz der Gruppe („19 %“, „5,5 %“, „steuerfreie Leistungen“), ``{position}`` und ``{head}`` sind Sätze, wie sie dastehen
 TAX_ENTRY_FINDINGS = {

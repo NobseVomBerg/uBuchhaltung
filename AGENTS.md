@@ -13,7 +13,7 @@ Pragmatische Hinweise für KI-/Coding-Agenten in diesem Repository.
 - `db/`: Datenmodell, Import, Matching, EÜR-Ableitung (Domänen-Mixins; Modulüberblick in `.claude/skills/db-navigate/SKILL.md`, Schema in `db/schema.py`)
 - `server/pages_dashboard.py`: Dashboard inkl. EÜR-Tabellen
 - `server/pages_transactions.py`: Transaktionssicht (bank + entry)
-- `server/pages_miscellaneous.py`: WISO-Import, SQL-Konsole
+- `server/pages_miscellaneous.py`: Seite „Daten“ (WISO-Import, DATEV-Export, Sicherung); SQL-Konsole und DB-Export: `server/pages.py` (About)
 - `importers/`: Kontoauszug-Import – CAMT.053 (`camt.py`) und Bank-PDFs (`vbr.py`, `dkb.py`), gemeinsames Modell in `base.py`; `safe_xml.py` liest XML aus Uploads sicher (CAMT und Belegerkennung)
 - `receipt_reading/`: Belegerkennung – E-Rechnung (XML) und PDF-Text lesen; reines Paket (kein `db/`, kein `server/`), gelesen wird je Beleg im Kindprozess (`worker.py`)
 - `server/receipt_reader.py`, `server/pages_receipts.py`: Lesen auslösen, Lesung anzeigen, Vorschläge am Beleg; `db/document_readings.py`, `db/receipt_matching.py`: Lesung (`DocumentReadings`) und Vorschläge Beleg → Buchung

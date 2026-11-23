@@ -183,7 +183,7 @@ Nur über `load_test_seed_data()` geladen: vom Demo-Modus (ohne die Rechnungen u
 | Phone | TEXT | | Telefon |
 | Notes | TEXT | | Notizen |
 | Logo | TEXT | | Pfad zum Firmenlogo |
-| VatMethod | TEXT | | Besteuerungsart der Umsatzsteuer (2.4.0, Schema 2004): `'ist'` (Ist-Versteuerung, vereinnahmte Entgelte) oder `'soll'` (Soll-Versteuerung, vereinbarte Entgelte); NULL = nicht festgelegt, jeder andere Wert gilt als nicht festgelegt (`db.contacts.vat_method`). Nur ein eigener Kontakt (`ContactType='own'`, Firma oder Person) trägt sie (`Database.get_vat_method`: der erste mit gültigem Wert). **Wird nur gespeichert und angezeigt** (Formular des eigenen Kontakts, Hinweis auf *Sonstiges*): Keine Buchung, EÜR, Dashboard und kein Export liest sie – Erlös und Umsatzsteuer entstehen weiter mit der Zahlung (Abschnitt 9a) |
+| VatMethod | TEXT | | Besteuerungsart der Umsatzsteuer (2.4.0, Schema 2004): `'ist'` (Ist-Versteuerung, vereinnahmte Entgelte) oder `'soll'` (Soll-Versteuerung, vereinbarte Entgelte); NULL = nicht festgelegt, jeder andere Wert gilt als nicht festgelegt (`db.contacts.vat_method`). Nur ein eigener Kontakt (`ContactType='own'`, Firma oder Person) trägt sie (`Database.get_vat_method`: der erste mit gültigem Wert). **Wird nur gespeichert und angezeigt** (Formular des eigenen Kontakts, Hinweis auf *Daten*): Keine Buchung, EÜR, Dashboard und kein Export liest sie – Erlös und Umsatzsteuer entstehen weiter mit der Zahlung (Abschnitt 9a) |
 
 #### 3b. ContactAddresses (1:n)
 
@@ -718,7 +718,7 @@ Marke `Status='invoice_payment'`. Es gibt eine Stelle, die Zahlungen zuordnet
   (4000 Bewegungen, 4000 Forderungen, 1000 Zuordnungen: unter einer Sekunde). Die Forderungen der App für die beiden
   Storno-Kategorien liest die Liste einmal für alle Paare und Alt-Stornos (`_app_receivable_amounts`), nicht je
   Rechnung nachgeschlagen – die Zahl der Anweisungen hängt nicht von der Zahl der Paare ab. Die Liste steht auf der
-  Seite *Sonstiges* und läuft **nur auf Klick** („Zahlungszuordnungen prüfen“, `GET
+  Seite *Daten* und läuft **nur auf Klick** („Zahlungszuordnungen prüfen“, `GET
   /miscellaneous?check_payments=1`), nicht bei jedem Laden der Seite; der Hinweis auf der Rechnungsseite
   prüft nur diese eine Rechnung.
 - **Neu aufbauen (seit 2.5.13, `rebuild_invoice_payments`, `db/invoice_repair.py`):** Auf der Seite einer Rechnung lässt sich ihre
@@ -1177,7 +1177,7 @@ importiertes Jahr –, weil die Erweiterung in diesen Buchungen steckt; ohne ein
 
 **WISO-Datenbank-Import, neu angelegte Sätze und Bestand** (seit 2.3.2; `_insert_wiso_bookings`): Der Import ist für einen **leeren Bestand**
 und für **eine** WISO-Datenbank je Bestand gedacht; ist `Bookings` nicht leer (`Database.wiso_import_stock`: `bookings`, `wiso_rows`), zeigt das
-Formular auf *Sonstiges* einen Hinweis und ein Pflicht-Kästchen, und `handle_wiso_fdb_import` importiert ohne Bestätigung
+Formular auf *Daten* einen Hinweis und ein Pflicht-Kästchen, und `handle_wiso_fdb_import` importiert ohne Bestätigung
 (`confirm_existing` = `1`) nichts; die Datenbankmethode `import_wiso_fdb` selbst prüft das nicht. Ein weiterer Import erkennt einen Satz an
 seiner Quellgruppe wieder. Legt WISO Buchungen neu an (neue `ACCOUNTINGID`, sonst gleicher Inhalt), bekommt jeder Satz mit **unbekannter**
 Quellgruppe eine der **verwaisten** Zeilen (`entry` mit Quellgruppe, die in keinem Satz der Datei vorkommt – auch nicht in einem künftigen
@@ -1190,7 +1190,7 @@ Zeile `mirror_legacy` mit dem umgekehrten Betrag, sonst wie (1) bis (3), nicht w
 Treffer ist kein neuer Satz: Nur `SourceGroup` wird gesetzt (Replay-Log), jede andere Spalte bleibt (`regrouped_rows`, bei geändertem Text
 zusätzlich `regrouped_text_differs`); die Zeile gilt für den Rest des Laufs wie eine in ihrer bekannten Gruppe wiedererkannte (auch für den
 AfA-Plan). Was übrig bleibt – in WISO gelöscht oder mit anderem Inhalt neu angelegt –, meldet der Lauf (`orphaned_rows_count`, die ersten 50 in
-`orphaned_rows`) und die Seite *Sonstiges*; es zählt in den Auswertungen weiter mit, gelöscht wird nichts. Eine Änderung innerhalb einer
+`orphaned_rows`) und die Seite *Daten*; es zählt in den Auswertungen weiter mit, gelöscht wird nichts. Eine Änderung innerhalb einer
 weiter bestehenden Buchungsgruppe (anderer Betrag, entfallene Teilbuchung) bemerkt der Import nicht (Details und Grenzen: `PARSER_README.md`).
 
 **WISO-Datenbank-Import** (`import_wiso_fdb`, `_insert_wiso_bookings`, `_insert_wiso_assets`): WISO schreibt den
@@ -1223,7 +1223,7 @@ seiner Gruppe genau, hat die Gruppe aber eine freie Zeile mit einem Datum im Pla
 steht in den Büchern, das Jahr gilt als gebucht, und es wird nichts angelegt (erst bekommt jeder Satz seine genaue Zeile,
 jede Zeile dient höchstens einem Satz). Hat die App ein Jahr schon selbst gebucht (`Booking_ID`
 zeigt auf eine vorhandene Buchung), bleibt die Planzeile unverändert, und der AfA-Satz der WISO-Datenbank für dieses
-Jahr wird nicht angelegt (`depreciation_conflicts`, Seite *Sonstiges*). Zugeordnet wird die Anlage über
+Jahr wird nicht angelegt (`depreciation_conflicts`, Seite *Daten*). Zugeordnet wird die Anlage über
 die Inventarnummer (`Assets.InventoryNumber` = `INVNO`), nur wenn sie in der WISO-Datenbank eindeutig ist; sonst
 steht eine Warnung in `asset_warnings`, und die AfA-Sätze der Anlage nehmen am Abgleich nicht teil. Der Buchungsschritt
 liest die Planjahre der App in seiner schreibenden Transaktion (`BEGIN IMMEDIATE`): Zwischen Lesen und Schreiben bucht
@@ -1643,7 +1643,7 @@ Wörterbücher, je Gruppe einmal sortiert, das Umfeld über Halbierungssuche):
   Zeitraum hinaus; Überträge, die möglicherweise doppelt stehen, mit den ersten fünf und dem Auslöser), exportiert der Handler nur mit `confirm_export` = `1` und `confirmed_check` = der
   Prüfsumme (SHA-256, 16 Zeichen) über den Zeitraum und **alle Einträge aller Hinweise** – je Hinweisart ID, Datum und Betrag in Minor Units, dazu der Auslöser –, **nicht über den
   Wortlaut** (der nennt nur die ersten fünf: Wird eine Bewegung kontiert und kommt eine andere dazu, gilt die alte Bestätigung nicht mehr); sonst leitet er mit `datev_export=confirm` auf
-  *Sonstiges* zurück (Pflicht-Kästchen). Ändert sich Zeitraum oder Bestand, passt die Prüfsumme nicht mehr, und der Hinweis kommt neu. Die Meldungen nennen nie Text oder Empfänger. Die Seite
+  *Daten* zurück (Pflicht-Kästchen). Ändert sich Zeitraum oder Bestand, passt die Prüfsumme nicht mehr, und der Hinweis kommt neu. Die Meldungen nennen nie Text oder Empfänger. Die Seite
   nennt die Regel für Überträge dauerhaft im DATEV-Abschnitt (der Export liefert eine Datei, die kein Skript der Seite sieht).
 - **Grenzen der Zählregel** (belegt durch `tests/test_datev_transfer_enumeration.py`, das alle kleinen Bestände durchspielt – vollständige Kontoauszüge vorausgesetzt). Bis zu 14 Tagen
   Verzögerung zwischen den beiden Seiten eines Übertrags geht kein Übertrag verloren, und jede Doppelung zwischen Spiegel-Sätzen (auch neben einer anders kontierten Seite) wird genannt.

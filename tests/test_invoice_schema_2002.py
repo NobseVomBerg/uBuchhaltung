@@ -32,7 +32,7 @@ import version
 from db import Database, MigrationBackupError, _CoreMixin
 from db.invoices import InvoiceCol
 from server.handlers import handle_execute_sql
-from server.pages_miscellaneous import PageMiscellaneous
+from server.pages import PageAbout
 from tests import installation
 from tests.document_helpers import add_contacts, add_document
 from tests.entry_form_world import to_state_2000, to_state_2001
@@ -335,9 +335,9 @@ def test_one_file_kind_per_version_and_invoice(stock):
 # ── Das Lösch-Skript der SQL-Konsole ─────────────────────────────────────────
 
 def _range_delete_script(db, date_from, date_to):
-    """Das Lösch-Skript „Zeitbereich löschen“ der Seite „Verschiedenes“, so zusammengesetzt, wie das
+    """Das Lösch-Skript „Zeitbereich löschen“ der SQL-Konsole (About-Seite), so zusammengesetzt, wie das
     JavaScript der Seite (``buildRangeDeleteSql``) es tut."""
-    html = PageMiscellaneous(db)
+    html = PageAbout(db)
     start = html.index('function buildRangeDeleteSql()')
     body = html[start:html.index("document.getElementById('sql_input').value = sql;", start)]
     env = {'from': date_from, 'to': date_to}

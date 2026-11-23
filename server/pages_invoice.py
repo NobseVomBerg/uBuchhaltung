@@ -862,7 +862,7 @@ def _refund_box_html(db, invoice_id, invoice, refunds, credit):
         h += ('        <div class="warnColor"><strong>Zahlungszuordnung prüfen:</strong><ul>\n'
               + ''.join(f'            <li>{_html.escape(f["text"])}</li>\n' for f in findings)
               + '        </ul>Alle Rechnungen mit Unstimmigkeiten zeigt die Prüfung unter '
-              '<a href="/miscellaneous?check_payments=1">Sonstiges</a>.</div>\n')
+              '<a href="/miscellaneous?check_payments=1">Daten</a>.</div>\n')
     if credit > 0:
         # Erlöskonto zu wählen: für den Steuersatz ist keines hinterlegt (die Wahl lehrt nichts), oder die Zahlungen liegen auf
         # verschiedenen Erlöskonten – dann sagt der Satz, warum. Bei einem Steuersatz je Position (Kennzeichen der Stornorechnung)
@@ -2747,7 +2747,7 @@ function copyInvoiceAsNew(invId) {{
             s += ('        <div class="warnColor"><strong>Zahlungszuordnung prüfen:</strong><ul>\n'
                   + ''.join(f'            <li>{_html.escape(f["text"])}</li>\n' for f in findings)
                   + '        </ul>Alle Rechnungen mit Unstimmigkeiten zeigt die Prüfung unter '
-                  '<a href="/miscellaneous?check_payments=1">Sonstiges</a>.</div>\n')
+                  '<a href="/miscellaneous?check_payments=1">Daten</a>.</div>\n')
             s += _rebuild_box_html(db, invoice_id, existing_invoice[35],
                                    mixed=has_mixed_rates(existing_invoice[InvoiceCol.MIXED_TAX_RATES]),
                                    entry=db.invoice_entry_accounts(invoice_id))

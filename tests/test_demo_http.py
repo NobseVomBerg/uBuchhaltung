@@ -156,10 +156,14 @@ def test_the_sql_console_is_403_and_runs_nothing(server_port, demo_site):
         assert con.execute("SELECT name FROM sqlite_master WHERE name = 'Hack'").fetchall() == []
 
 
-def test_the_miscellaneous_page_has_no_sql_console(server_port, demo_site):
-    page = get(server_port, "/miscellaneous").text
+@pytest.mark.parametrize("path", ["/about", "/miscellaneous"])
+def test_no_page_has_the_sql_console_or_the_db_export_for_the_visitor(server_port, demo_site, path):
+    """Die Konsole steht auf der About-Seite, und nur dort, wo sie jemand benutzen darf: Der Besucher sieht den Kasten gar nicht (auch keinen
+    Ersatz mit dem Satz „… nur Administratoren …“), und der DB-Export hängt an ihr."""
+    page = get(server_port, path).text
     assert 'id="sql_input"' not in page and "executeSql" not in page
-    assert "nur Administratoren zur Verfügung" in page
+    assert "nur Administratoren zur Verfügung" not in page
+    assert "SQL-Befehle" not in page and "DB-Export" not in page and "/db_export" not in page
 
 
 # ── keine Ersteinrichtung während der Demo ───────────────────────────────────

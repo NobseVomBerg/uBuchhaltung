@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # SPDX-FileCopyrightText: 2026 unsix IT Engineering
 # Kommerzielle Lizenz ohne AGPL-Pflichten verfügbar – Kontakt: office@unsix.com
-"""Meldungen auf der Seite *Sonstiges* (2.5.5): feste Sätze statt Ausnahmetext.
+"""Meldungen auf der Seite *Daten* (früher *Sonstiges*, 2.5.5): feste Sätze statt Ausnahmetext.
 
 Nach Sicherung, Wiederherstellung, DATEV-Export und WISO-Import (``/miscellaneous?…&msg=``) stand der Text der Ausnahme in der
 Adresse und auf der Seite – mit Serverpfaden, der Ausgabe von 7-Zip oder dem Fehler von SQLite. Jetzt:
@@ -274,11 +274,14 @@ def test_the_longest_datev_hint_of_the_program_fits_and_arrives_whole(server_por
 
 def test_the_scripts_of_the_page_show_the_message_only_as_text(server_port, auto_login):
     page = get(server_port, '/miscellaneous').text
-    for use in ("'❌ Fehler beim Export: ' + miscMsg", "'❌ DATEV-Export Fehler: ' + miscMsg", "'⚠️ DATEV-Export: ' + miscMsg",
+    for use in ("'❌ DATEV-Export Fehler: ' + miscMsg", "'⚠️ DATEV-Export: ' + miscMsg",
                 "'\\u274c Fehler: ' + miscMsg", "'Backup fehlgeschlagen: ' + miscMsg", "'Wiederherstellung fehlgeschlagen: ' + miscMsg",
-                "+ miscMsg\n"):
+                "(ok ? 'Sicherung gelöscht: ' : 'Sicherung nicht gelöscht: ') + miscMsg", "+ miscMsg\n"):
         assert use in page, use
-    assert page.count('miscMsg') == 9                                     # die Definition und acht Stellen, die sie anzeigen
+    # die Definition und neun Stellen, die sie anzeigen (der DB-Export steht seit der Seite Daten auf der About-Seite; er meldet sein
+    # Ergebnis dort aus dem Server, ohne ``miscMsg`` – dazu tests/test_data_page_cleanup.py)
+    assert page.count('miscMsg') == 10
+    assert 'miscMsg' not in get(server_port, '/about').text
     for forbidden in ("p.get('msg')", 'decodeURIComponent(p.get'):
         assert forbidden not in page
 

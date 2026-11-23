@@ -36,7 +36,7 @@ from types import SimpleNamespace
 import pytest
 
 from server import handlers
-from server.pages_miscellaneous import PageMiscellaneous
+from server.pages import PageAbout
 from tests.http_client import get
 from tests.test_sql_console import (CONSOLE_DENIED, NOTHING_CHANGED, _post_sql, _query, _run,  # noqa: F401
                                     denied, probe_db)                 # (probe_db: Fixture)
@@ -361,7 +361,7 @@ def test_the_table_called_interrupted_is_simply_missing(probe_db):
 
 def test_the_console_page_names_the_time_limit_in_force(probe_db):
     """Der Hinweis über dem Eingabefeld darf nicht von der Grenze abweichen, die tatsächlich gilt."""
-    html = PageMiscellaneous(probe_db)
+    html = PageAbout(probe_db)
     assert 'id="sql_input"' in html
     assert f"läuft höchstens {handlers._CONSOLE_TIME_LIMIT_S} Sekunden" in html
 

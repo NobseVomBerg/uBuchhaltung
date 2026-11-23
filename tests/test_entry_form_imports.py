@@ -8,7 +8,7 @@ Beide Importe schreiben die Form mit, wie sie das Vorzeichen gesetzt haben: Kont
 (``mirror_coa``), keine → ``transfer`` (WISO meint „Konto im Soll“, auch bei leerem oder
 unbekanntem Gegenkonto). Dazu:
 
-* ``negative_gross`` und ``stock_range_accounts`` im Ergebnis (und auf der Seite *Verschiedenes*):
+* ``negative_gross`` und ``stock_range_accounts`` im Ergebnis (und auf der Seite *Daten*):
   ein negativer Brutto fällt aus WISOs Muster (Wächter), und Konten 1000–1099 sind in SKR04 Vorräte;
 * ``negative_gross`` zählt jeden Satz mit negativem Brutto und genau einer liquiden Seite;
 * kein Import ändert die Form einer vorhandenen Zeile: Ein Spiegel des Bestands (``mirror_legacy``)
@@ -861,7 +861,7 @@ def test_the_database_import_leaves_a_row_alone_that_another_satz_claims_with_it
     assert query(db, 'SELECT Amount FROM Bookings WHERE ID = ?', (old,)) == [(minor('-10.00'),)]
 
 
-# ── die Seite „Verschiedenes“ ────────────────────────────────────────────────
+# ── die Seite „Daten“ ────────────────────────────────────────────────
 
 NOTICE_STOCK = ('Konten 1000&ndash;1099 sind im SKR04 Vorräte; ältere Versionen haben sie als Kasse '
                 'gelesen &ndash; bitte prüfen, ob hier eine Kasse gemeint ist. Buchungen gegen diese '

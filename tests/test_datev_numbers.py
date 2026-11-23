@@ -10,7 +10,7 @@
   Datenbank-Schicht verweigert sie auch.
 * ``update_contact`` verliert sie nicht: Es löscht und schreibt die Firmendaten neu – ohne Angabe bleibt die Nummer.
 * ``get_datev_numbers`` liefert beide oder keine; ein per SQL-Konsole gesetzter anderer Wert gilt als nicht eingetragen.
-* Auf der Seite *Verschiedenes* steht unter dem Exportformular ein Hinweis, solange die Nummern fehlen.
+* Auf der Seite *Daten* steht unter dem Exportformular ein Hinweis, solange die Nummern fehlen.
 
 Alle Namen und Nummern sind erfunden.
 """

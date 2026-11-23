@@ -979,14 +979,14 @@ class SchemaMixin:
         Neue Datenbanken bekommen den Index gleich, bestehende beim Öffnen – aber nur, wenn
         sie keine Dubletten enthalten: Der Index ließe sich sonst nicht anlegen. Dann wird er
         übersprungen (kein Fehler, kein Abbruch); die Prüfliste „Zahlungszuordnungen“ auf
-        *Verschiedenes* meldet die Dubletten, und beim nächsten Start ohne Dubletten entsteht
+        der Seite *Daten* meldet die Dubletten, und beim nächsten Start ohne Dubletten entsteht
         er."""
         if cursor.execute(
                 "SELECT 1 FROM InvoicePayments GROUP BY InvoiceID, BookingID "
                 "HAVING COUNT(*) > 1 LIMIT 1").fetchone():
             print("Hinweis: Der eindeutige Index auf den Zahlungszuordnungen wurde nicht angelegt, "
                   "weil Zahlungen doppelt zugeordnet sind (Prüfliste „Zahlungszuordnungen“ auf "
-                  "Verschiedenes).")
+                  "der Seite Daten).")
             return
         cursor.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS ux_invoicepayments_invoice_booking "

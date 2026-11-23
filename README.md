@@ -139,7 +139,7 @@ Alle Funktionen ausführlich: [Funktionen im Detail](#funktionen-im-detail).
 uBuchhaltung kann vorhandene Daten aus WISO Mein Büro (Desktop) übernehmen –
 direkt aus der Datenbankdatei oder aus den Textexporten:
 
-- **Import aus der Datenbank** (*Sonstiges → Import aus der Datenbank*):
+- **Import aus der Datenbank** (*Daten → Import aus der Datenbank*):
   liest die Firebird-Dateien (`.FDB`) des Mandanten direkt in Python – ohne
   Firebird-Installation, Treiber oder DLL. Die Dateien `DB1.FDB` (Mandant) und,
   optional, `DB0.FDB` (Standard-Kontenrahmen) aus dem DB-Verzeichnis von WISO
@@ -194,18 +194,18 @@ direkt aus der Datenbankdatei oder aus den Textexporten:
   doppelt“: lieber eine sichtbare zweite Buchung als eine still falsch übernommene.
 - Der Datenbank-Import ist für einen **leeren Bestand** und **eine** WISO-Datenbank je Bestand
   gedacht; ein weiterer Import ist möglich, verlangt aber eine ausdrückliche Bestätigung (ein
-  Hinweis auf *Sonstiges* nennt, was schon im Bestand steht). Legt WISO Buchungen neu an (etwa
+  Hinweis auf *Daten* nennt, was schon im Bestand steht). Legt WISO Buchungen neu an (etwa
   nach einem DATEV-Export), erkennt der Import sie an Datum, Konten, Steuersatz, Betrag und Beleg-Nr.
   wieder, hängt die vorhandene Buchung an die neue Kennung um und legt sie nicht doppelt an.
   Buchungen, die es in WISO nicht mehr gibt (gelöscht oder mit anderem Inhalt neu angelegt),
-  bleiben im Bestand stehen und stehen in einer Liste auf *Sonstiges* – gelöscht wird nichts,
+  bleiben im Bestand stehen und stehen in einer Liste auf *Daten* – gelöscht wird nichts,
   das bleibt Handarbeit. Eine nachträgliche Änderung innerhalb einer weiter bestehenden Buchung
   (anderer Betrag, entfallene Teilbuchung) bemerkt der Import nicht.
 
 - Der **BU-Schlüssel** der Buchung (aus der Datenbank `DATEVVATKEY`, aus dem Textexport `SCHLUESSEL`) bleibt am Buchungssatz und geht
   unverändert in den DATEV-Stapel; ein erneuter Import der Datenbank trägt ihn an schon importierten Buchungen nach – nur dort, wo er fehlt
   und die Buchung denselben Steuersatz trägt wie in WISO (sonst leitet der Export den Schlüssel aus dem Satz der App ab; die Seite
-  *Sonstiges* nennt die Zahl solcher Buchungen). Berater- und Mandantennummer übernimmt der Datenbank-Import in die Stammdaten der
+  *Daten* nennt die Zahl solcher Buchungen). Berater- und Mandantennummer übernimmt der Datenbank-Import in die Stammdaten der
   eigenen Firma, wenn beide Felder dort leer sind.
 - Beide Importe melden, was sie nicht sicher lesen können: Sätze mit **negativem Bruttobetrag**
   und genau einem Bank-, Kassen- oder Verrechnungskonto (dort bestimmt die Geldbewegung das
@@ -247,7 +247,7 @@ Empfehlung: den Datenbank-Import mit einer Kopie der Datenbankdatei durchführen
   Bankkonto, eine neue Spalte; alle bestehenden Konten gelten danach als reine Geschäftskonten): Sicherung vor der Umstellung,
   zurück auf 2.4.x nur über sie; es ändert keine Buchung und keine Auswertung.
   **Sicherung zurückspielen** (die Oberfläche bietet das für diese Kopien nicht an; herunterladen lassen sie sich auf der Seite
-  *Sonstiges* im Abschnitt Datensicherung, mit Datum und Größe): uBuchhaltung beenden, die Datei
+  *Daten* im Abschnitt Datensicherung, mit Datum und Größe): uBuchhaltung beenden, die Datei
   `backup/<Datum>_vor_<Version>_buch.db` im Datenordner des Nutzers (`data/users/<Name>/`, im Container
   das eingebundene Datenverzeichnis) über `buch.db` kopieren – liegen daneben Dateien `buch.db-journal`,
   `buch.db-wal` oder `buch.db-shm`, diese vorher löschen – und eine ältere Programmversion starten.
@@ -374,7 +374,7 @@ Professionelle Rechnungserstellung mit PDF, E-Mail-Versand und XRechnung:
 - **Skonto**: Prozent und Frist stehen im PDF (Frist, Abzug und Zahlbetrag ausgerechnet) und in der E-Rechnung; eine Skonto-Buchung bei Zahlung mit Abzug gibt es noch nicht
 - **Rechnungsstatus**: Entwurf → Finalisiert → Versendet → Bezahlt (+ Teilzahlung, Überfällig, Storniert); storniert wird über „Stornieren“ (Stornodatum nicht in der Zukunft): Die **Stornorechnung** entsteht als eigener Beleg mit eigener Nummer (Gutschrift Typ 381, UBL `CreditNote`, PDF „Stornorechnung“), die Forderung bekommt eine Gegenbuchung statt gelöscht zu werden; eine Rechnung ohne positiven Betrag (Gutschrift, 0-€-Rechnung) bekommt keine Stornorechnung und wird über den Status storniert. „Stornieren und neu ausstellen“ legt dazu den Entwurf einer neuen Rechnung mit den Angaben der alten an (auch nachträglich über „Neu ausstellen“ an der stornierten Rechnung); beim Versenden gehen die Zahlungen der stornierten Rechnung auf sie über, was sich nicht eindeutig umschreiben lässt, bleibt dort, und ein Hinweis nennt es. Zahlungen, die an der stornierten Rechnung bleiben, zeigt die App als Guthaben des Kunden (Rechnungsliste, Belegseiten, offene Posten des Kontakts); eine ausgehende Bankbewegung lässt sich auf der Seite der Stornorechnung als Erstattung zuordnen und nimmt den Erlös am Tag der Erstattung zurück; eine Zahlung, die dafür gebraucht wird, lässt sich auf keinem Weg entfernen, solange die Erstattung steht, und auf die Ersatzrechnung zieht höchstens das verbleibende Guthaben um. Eine von Hand stornierte Rechnung bekommt ihre Stornorechnung nachträglich
 - **Nummernkreise**: Format YY[Buchstabe][Präfix]### mit Auto-Inkrementierung
-- **Zahlungsverknüpfung**: Eingehende Bankbewegungen einer versendeten Rechnung zuordnen – ganz, in Teilen (Teilzahlung) oder eine Überweisung auf mehrere Rechnungen (Sammelzahlung); ein Überschuss bleibt als Guthaben beim Kunden stehen. Die Zuordnung legt ihre Buchungssätze selbst an und nimmt sie beim Entfernen wieder mit; eine Prüfliste unter *Sonstiges* zeigt Unstimmigkeiten; auf der Seite einer Rechnung lässt sich die Zuordnung nach einem Probelauf neu aufbauen, wo das ohne Löschen von Buchungssätzen geht – der Rest bleibt ein Hinweis
+- **Zahlungsverknüpfung**: Eingehende Bankbewegungen einer versendeten Rechnung zuordnen – ganz, in Teilen (Teilzahlung) oder eine Überweisung auf mehrere Rechnungen (Sammelzahlung); ein Überschuss bleibt als Guthaben beim Kunden stehen. Die Zuordnung legt ihre Buchungssätze selbst an und nimmt sie beim Entfernen wieder mit; eine Prüfliste unter *Daten* zeigt Unstimmigkeiten; auf der Seite einer Rechnung lässt sich die Zuordnung nach einem Probelauf neu aufbauen, wo das ohne Löschen von Buchungssätzen geht – der Rest bleibt ein Hinweis
 - **Offene Posten**: Mit dem Status *Versendet* wird die Rechnung als Forderung
   gebucht (10000 Debitoren an Wartekonto 4405 / 4345 / 4340 je nach Steuersatz);
   die Zahlung erzeugt zwei Buchungssätze – *Zahlung* (Bank an Debitoren) und
@@ -453,9 +453,8 @@ Anlagenverwaltung mit AfA-Plan:
 - **Buchungsintegration**: AfA-Buchung als Umbuchung „Aufwand an Anlagekonto“ (direkte Abschreibung, je Anlage und Jahr nur einmal, ohne Bankkonto; Aufwandskonto = Erfolgskonto, Anlagekonto = Anlagekonto, nach dem Abgang der Anlage keine AfA mehr); Löschen der Buchung gibt das Jahr wieder frei, eine Anlage mit gebuchter AfA lässt sich nicht löschen – eine Erweiterung auch dann nicht, sobald die Hauptanlage seit ihrem Jahr AfA gebucht hat (die Erweiterung steckt in diesen Buchungen). Wer ein GWG schon beim Kauf auf das Aufwandskonto 6260 (Sofortabschreibung) gebucht hat, darf die AfA nicht zusätzlich buchen – sie zählte doppelt, das Programm prüft das nicht
 - **Erweiterungen**: Sub-Anlagen über Parent_ID. Nachträgliche Anschaffungskosten erhöhen den Anschaffungswert der Hauptanlage und werden mit ihr über die Restnutzungsdauer abgeschrieben: Im Jahr, in dem die Kosten entstehen (Datum der Erweiterung, nicht der Zahlung), zählen sie wie zu Jahresbeginn aufgewendet, im Anschaffungsjahr der Hauptanlage ab deren Kaufmonat – die App rechnet so; ob das steuerlich passt, klärt das Steuerbüro. Eine Erweiterung hat keinen eigenen Plan, keinen eigenen Abgang und wird nicht einzeln gebucht; Nutzungsdauer, Methode und Anlagekonto der Hauptanlage gelten. Eine Unter-Anlage mit eigener AfA-Zeile (Bestand) oder unter einer Hauptanlage ohne Plan (Preis, Kaufdatum oder Nutzungsdauer fehlen) bleibt eine eigene Anlage. Der AfA-Plan einer verkauften Anlage endet mit dem Abgangsjahr
 
-### 13. Sonstiges (`/miscellaneous`)
-- **Datenbank-Übersicht**: Tabellenstatistiken
-- **DB-Export**: INSERT-Statements nach `db-export.sql` im Datenverzeichnis des Benutzers (`data/users/<Name>/`)
+### 13. Daten (`/miscellaneous`)
+Import, Export, Sicherung und Wiederherstellung. Datenbank-Übersicht, SQL-Konsole und DB-Export stehen auf der Seite *About*.
 - **WISO Import**: Automatische Format-Erkennung (Original + Tabellen-Export)
   - BU-Schlüssel → Steuersatz (zuerst die Regeln des Exports, sonst TaxKeys-Tabelle) und am Buchungssatz gespeichert (`Bookings.DatevKey`)
   - Automatische TaxAmount-Berechnung (Brutto → MwSt-Anteil)
@@ -466,7 +465,7 @@ Anlagenverwaltung mit AfA-Plan:
 - **DATEV-Export** (`export/datev.py`): Buchungsstapel als DATEV-CSV (nur Entry-Buchungen); das Soll/Haben-Kennzeichen richtet sich danach, ob das Zweck- oder das Geldkonto im Feld „Konto“ steht
   - Der Stapel **bildet den nach, den WISO Mein Büro schreibt** (gemessen an einem Datenbestand) – nicht mehr und nicht weniger: Ob das Steuerbüro ihn so annimmt, klärt es selbst; eine Zusicherung gibt es nicht
   - BU-Schlüssel: der an der Buchung gespeicherte (Import), sonst abgeleitet nach der Art des Zweckkontos und dem Steuersatz – Vorsteuer 401/402 (19/7 %), Umsatzsteuer 101/102, im zweiten Halbjahr 2020 mit den vertauschten Sätzen 16/5 %; die Rechnungskette (Forderung, Wartekonto→Erlöskonto) trägt keinen Schlüssel, aber den Steuersatz in Spalte 40
-  - Berater- und Mandantennummer stehen im Kontaktformular der eigenen Firma (sonst Platzhalter im Vorlauf; die Seite *Sonstiges* weist darauf hin)
+  - Berater- und Mandantennummer stehen im Kontaktformular der eigenen Firma (sonst Platzhalter im Vorlauf; die Seite *Daten* weist darauf hin)
   - Exportiert wird je Kalenderjahr (der Stapel kennt nur Tag und Monat); ein Zeitraum über den Jahreswechsel wird abgelehnt
   - Bankbewegungen ohne Buchungssatz stehen nicht im Stapel: Gibt es im Zeitraum welche (die kein Übertrag zwischen eigenen Konten deckt), nennt der Export Anzahl und Beträge und exportiert erst nach ausdrücklicher Bestätigung
   - Ein Übertrag zwischen zwei eigenen Konten, der auf beiden Bankbewegungen kontiert ist, steht nur einmal im Stapel (die Zeile der Ausgangsseite). Wo das nicht sicher zu erkennen ist, bleibt jede Zeile stehen und der Export weist auf die mögliche Doppelung hin; läuft ein Übertrag über die Grenze des Zeitraums, sagt er auch das. Die Erkennung zählt gleich hohe Bewegungen zwischen denselben Konten im Umkreis weniger Tage; sie setzt vollständig eingelesene Kontoauszüge voraus
@@ -475,21 +474,13 @@ Anlagenverwaltung mit AfA-Plan:
     Betrag und Rest abgelehnt. Umbuchungen (Wartekonto→Erlöskonto,
     Privatanteil) zählen dabei nicht mit, Bankbewegungen ohne Buchungssatz
     blockieren nicht
-- **SQL-Konsole**: Direkte SQL-Ausführung (Entwickler-Tool), auf die eigene Datenbank
-  beschränkt und nur für Administratoren. Ohne den Haken „Schreiben erlauben“ läuft sie
-  nur lesend. Mit Haken (und nach einer Rückfrage) laufen alle Befehle einer Anfrage in
-  einer Transaktion mit eingeschalteten Fremdschlüsseln: Scheitert einer, wird nichts
-  geändert; was geändert wurde, steht danach im SQL-Protokoll. Inkl. **Zeitbereich löschen**
-  (generiert ein FK-sicheres Lösch-Skript für Belege/Buchungen/Rechnungen/Angebote
-  eines Zeitraums ins SQL-Feld; Buchungssätze außerhalb des Zeitraums, die unter einer
-  Bankbewegung des Zeitraums hängen, bleiben erhalten und werden abgehängt)
 - **Datensicherung**: Backup nach `<UserDir>/backup/JJJJMMTT_Backup.7zip`
   (7-Zip, ohne 7-Zip als `.zip`; wahlweise nur DB oder alle Daten; DB als
   konsistenter Snapshot) + **Wiederherstellung** (überschreiben oder vorher löschen; während sie läuft,
   beantwortet der Server andere Anfragen dieses Benutzers mit einem Hinweis, bis sie fertig ist);
   der Zwischenordner für Uploads (`upload_tmp/`) gehört nicht zur Sicherung. Vorhandene Sicherungen
   (auch die Kopien der Datenbank vor einer Programm-Umstellung) listet die Seite mit Datum und Größe und
-  bietet sie zum **Herunterladen** an – große Dateien gehen in Stücken hinaus, nicht über den Speicher
+  bietet sie zum **Herunterladen** und zum **Löschen** an (Löschen nach Rückfrage, nicht im Demo-Modus) – große Dateien gehen in Stücken hinaus, nicht über den Speicher
 - **SQL-Audit-Logs**: `sql_operations.log/.sql` werden ab 5 MB automatisch
   rotiert und komprimiert archiviert (`JJJJMMTT-HHMMSS_sql_operations.*`)
 
@@ -532,7 +523,17 @@ Anlagenverwaltung mit AfA-Plan:
 - Details zu LAN/HTTPS-Betrieb: siehe [DEPLOYMENT.md](DEPLOYMENT.md)
 
 ### 18. About (`/about`)
-Informationen über die Anwendung (Version aus `version.py`).
+Informationen über die Anwendung (Version aus `version.py`), „Projekt in Zahlen“ und die Datenbank-Übersicht (Tabellen mit der Zahl ihrer Einträge).
+Ganz unten, nur für Administratoren sichtbar:
+- **SQL-Konsole**: Direkte SQL-Ausführung (Entwickler-Tool), auf die eigene Datenbank
+  beschränkt und nur für Administratoren. Ohne den Haken „Schreiben erlauben“ läuft sie
+  nur lesend. Mit Haken (und nach einer Rückfrage) laufen alle Befehle einer Anfrage in
+  einer Transaktion mit eingeschalteten Fremdschlüsseln: Scheitert einer, wird nichts
+  geändert; was geändert wurde, steht danach im SQL-Protokoll. Inkl. **Zeitbereich löschen**
+  (generiert ein FK-sicheres Lösch-Skript für Belege/Buchungen/Rechnungen/Angebote
+  eines Zeitraums ins SQL-Feld; Buchungssätze außerhalb des Zeitraums, die unter einer
+  Bankbewegung des Zeitraums hängen, bleiben erhalten und werden abgehängt)
+- **DB-Export**: INSERT-Statements nach `db-export.sql` im Datenverzeichnis des Benutzers (`data/users/<Name>/`)
 
 ---
 
@@ -725,7 +726,7 @@ uBuchhaltung/
 │   ├── pages_users.py         # Benutzerverwaltung (Admin)
 │   ├── pages_receipts.py      # Belege (Upload, Bearbeiten, gelesene Werte, Vorschläge)
 │   ├── receipt_reader.py      # Belege lesen: Kindprozess starten, Lesung speichern und anzeigen
-│   ├── pages_miscellaneous.py # DB-Export, SQL-Konsole, WISO-Import, Backup
+│   ├── pages_miscellaneous.py # Seite „Daten“: WISO-Import, DATEV-Export, Backup
 │   ├── handlers.py            # POST-Handler (Formulare, PDF, Import)
 │   ├── upload_handler.py      # File-Upload mit PDF-Parsing
 │   ├── wiso_upload.py         # Zwischenablage für den Upload der WISO-Datenbank
@@ -783,7 +784,7 @@ uBuchhaltung/
 | `server/pages_users.py` | Benutzerverwaltung (Admin) |
 | `server/pages_receipts.py` | Belege (Upload, Bearbeiten, gelesene Werte, Vorschläge) |
 | `server/receipt_reader.py` | Belege lesen: Kindprozess starten, Lesung speichern und anzeigen |
-| `server/pages_miscellaneous.py` | DB-Export, SQL-Konsole, WISO-Import, Backup |
+| `server/pages_miscellaneous.py` | Seite „Daten“: WISO-Import, DATEV-Export, Backup |
 | `server/handlers.py` | POST-Handler |
 | `server/upload_handler.py` | File-Upload |
 | `server/wiso_upload.py` | Zwischenablage für den Upload der WISO-Datenbank |

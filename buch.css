@@ -158,7 +158,7 @@ button.active			{ background-color: #4facfe; color: #FFF; }	/* aktiver Jahres-/M
 /* Seite Buchungen: der Kasten „Zahlungseingänge zu offenen Rechnungen“ (#paySuggest, Tabelle .refundTable) – Datum und Beträge brechen nicht um */
 #paySuggest td:first-child, #paySuggest td.num	{ white-space: nowrap; }
 
-/* Seite Sonstiges: vorhandene Sicherungen – lange Namen brechen um, Größe rechtsbündig, der Link bleibt in einer Zeile */
+/* Seite Daten: vorhandene Sicherungen – lange Namen brechen um, Größe rechtsbündig, Link und Knopf „Löschen“ bleiben in einer Zeile */
 .backupTable td			{ vertical-align: top; }
 .backupTable td:first-child	{ overflow-wrap: anywhere; }
 .backupTable th.num, .backupTable td.num	{ text-align: right; white-space: nowrap; }

@@ -162,11 +162,11 @@ def Header1(active_page=None):
     else:
         nav_items.append('<a href="/worktime">Zeiten</a>')
 
-    # Sonstiges
+    # Daten (Sicherung, Wiederherstellung, DATEV-Export, WISO-Import; die Adresse bleibt /miscellaneous)
     if active_page == 'miscellaneous':
-        nav_items.append('<span id="ActivePage">Sonstiges</span>')
+        nav_items.append('<span id="ActivePage">Daten</span>')
     else:
-        nav_items.append('<a href="/miscellaneous">Sonstiges</a>')
+        nav_items.append('<a href="/miscellaneous">Daten</a>')
     
     # About
     if active_page == 'about':
@@ -270,8 +270,8 @@ function appPost(url, fields) {
   document.body.appendChild(f);
   f.submit();
 }
-function appConfirmPost(url, text) {
-  appConfirm(text, function() { appPost(url); });
+function appConfirmPost(url, text, fields) {
+  appConfirm(text, function() { appPost(url, fields); });
 }
 function appMsg(text, type) {
   type = type || 'info';
@@ -389,8 +389,187 @@ def _about_stats():
     return s
 
 
-def PageAbout():
-    """Generate about page"""
+#: Meldung der About-Seite, wenn der DB-Export gescheitert ist (``/about?export=error``): fest, der volle Fehler steht im Server-Log.
+DB_EXPORT_FAILED_TEXT = 'Der DB-Export ist fehlgeschlagen – Einzelheiten stehen im Server-Log.'
+
+
+def _digits(query, name):
+    """Der Wert des Query-Parameters ``name`` als Zahl: genau ein Wert aus 1 bis 18 ASCII-Ziffern, sonst ``None``."""
+    values = query.get(name, [])
+    if len(values) == 1 and values[0].isascii() and values[0].isdigit() and len(values[0]) <= 18:
+        return int(values[0])
+    return None
+
+
+def export_message(query):
+    """Meldung zum DB-Export aus der Query der Weiterleitung (``Database.export_to_sql``, ``handlers.handle_db_export``): ``(Text, Art)``
+    für ``appMsg`` bei ``?export=ok&tables=…&rows=…`` (beide Zahlen streng gelesen: der Text ist fest, die Zahlen kommen nur als Zahlen
+    hinein) bzw. ``?export=error`` (``DB_EXPORT_FAILED_TEXT``); ``None``, wenn die Adresse keine nennt oder sie nicht streng passt."""
+    status = query.get('export', [])
+    if len(status) != 1:
+        return None
+    if status[0] == 'error':
+        return DB_EXPORT_FAILED_TEXT, 'error'
+    tables, rows = _digits(query, 'tables'), _digits(query, 'rows')
+    if status[0] == 'ok' and tables is not None and rows is not None:
+        return f'Export erfolgreich: {tables} Tabellen, {rows} Zeilen.', 'success'
+    return None
+
+
+def _about_database_overview(db):
+    """Der Abschnitt „Datenbank-Übersicht“ der About-Seite (bis dahin auf der Seite Sonstiges): je Tabelle die Zahl der Einträge
+    (``Database.get_table_statistics``), für jeden angemeldeten Benutzer. Jeder Wert steht maskiert da."""
+    rows = ''.join(f'<tr><td>{_html.escape(str(name), quote=True)}</td><td class="num">{_html.escape(str(count), quote=True)}</td></tr>'
+                   for name, count in db.get_table_statistics())
+    return ('<br><br><div class="grid1Col700"><h2>Datenbank-Übersicht</h2><table class="reportTable">'
+            f'<tr><th>Tabelle</th><th class="num">Anzahl Einträge</th></tr>{rows}</table></div>')
+
+
+def _about_sql_console():
+    """Der Kasten „SQL-Befehle ausführen“ samt der Vorlage „Zeitbereich löschen“ und seinem Skript – HTML und Skript wie bis dahin auf der
+    Seite Sonstiges (gleiche IDs, gleiche Funktionen), nur ohne den Platz im Raster dort. Er geht an ``POST /execute_sql``
+    (``handlers.handle_execute_sql``); die Seite zeigt ihn nur, wo ``auth.sql_console_allowed()`` gilt."""
+    s = '<div class="rectRounded">'
+    s += '''
+        <h2>SQL-Befehle ausführen</h2>
+        Gib hier SQL-Befehle ein (mehrere Befehle durch Semikolon getrennt). Eine Anfrage läuft höchstens 60 Sekunden, sehr große Ausgaben werden gekürzt:<br>
+        <textarea id="sql_input" rows="15" cols="100" class="textareaSql" placeholder="SELECT * FROM ChartOfAccounts WHERE AccountNumber = 6805;"></textarea>
+        <div class="rowWithObjects">
+            <label><input type="checkbox" id="sql_write" autocomplete="off">&nbsp;Schreiben erlauben</label>
+        </div>
+        <p class="hint">Ohne Haken läuft die Konsole nur lesend. Mit Haken laufen alle Befehle in einer Transaktion: Scheitert einer, wird nichts geändert.</p>
+        <div>
+            <button type="button" onclick="executeSql()" class="coloredButton bg-orange">SQL ausführen</button>
+            <span style="color: red; margin-left: 20px;">⚠️ Achtung: SQL-Befehle werden direkt ausgeführt!</span>
+        </div>
+        <br><br>
+        <h3>Zeitbereich löschen</h3>
+            <div>Erzeugt ein Lösch-Skript für Belege, Buchungen, Rechnungen und Angebote im Zeitraum und fügt es oben ins SQL-Feld ein.
+                Zum Ausführen „Schreiben erlauben“ ankreuzen und obigen Button klicken. Dateien im Dateisystem bleiben erhalten.</div>
+        <div>
+            <label>Von:&nbsp;<input type="date" id="range_del_from"></label>
+            <label>Bis:&nbsp;<input type="date" id="range_del_to"></label>
+            <button type="button" onclick="buildRangeDeleteSql()" class="coloredButton bg-blue">SQL erzeugen</button>
+        </div>
+        <script>
+        function buildRangeDeleteSql() {
+            const from = document.getElementById('range_del_from').value;
+            const to   = document.getElementById('range_del_to').value;
+            if (!from || !to) { sqlStatus([['errorColor', 'Bitte Von- und Bis-Datum angeben.']]); return; }
+            if (from > to)    { sqlStatus([['errorColor', 'Von-Datum liegt nach dem Bis-Datum.']]); return; }
+            const b = "SELECT ID FROM Bookings  WHERE DateBooking BETWEEN '" + from + "' AND '" + to + "'";
+            const d = "SELECT ID FROM Documents WHERE Date        BETWEEN '" + from + "' AND '" + to + "'";
+            const i = "SELECT ID FROM Invoices  WHERE InvoiceDate BETWEEN '" + from + "' AND '" + to + "'";
+            const sql =
+                "-- Zeitbereich löschen: " + from + " bis " + to + "\\n" +
+                "-- Reihenfolge beachtet Fremdschlüssel. Dateien im Dateisystem bleiben erhalten.\\n" +
+                "DELETE FROM InvoicePayments WHERE InvoiceID IN (" + i + ") OR BookingID IN (" + b + ");\\n" +
+                "DELETE FROM InvoiceItems WHERE InvoiceId IN (" + i + ");\\n" +
+                "DELETE FROM InvoiceCorrections WHERE InvoiceID IN (" + i + ");\\n" +
+                "DELETE FROM InvoiceDocumentVersions WHERE InvoiceID IN (" + i + ");\\n" +
+                "UPDATE Invoices SET SourceQuoteId = NULL WHERE SourceQuoteId IN (" + i + ");\\n" +
+                "UPDATE Invoices SET CancelsInvoiceId = NULL WHERE CancelsInvoiceId IN (" + i + ");\\n" +
+                "UPDATE Invoices SET ReplacesInvoiceId = NULL WHERE ReplacesInvoiceId IN (" + i + ");\\n" +
+                "DELETE FROM Invoices WHERE InvoiceDate BETWEEN '" + from + "' AND '" + to + "';  -- Rechnungen UND Angebote\\n" +
+                "DELETE FROM BookingDocuments WHERE Booking_ID IN (" + b + ") OR Document_ID IN (" + d + ");\\n" +
+                "UPDATE Assets SET Booking_ID = NULL WHERE Booking_ID IN (" + b + ");\\n" +
+                "UPDATE Assets SET Document_ID = NULL WHERE Document_ID IN (" + d + ");\\n" +
+                "UPDATE AssetDepreciations SET Booking_ID = NULL, Status = 'planned', BookedAt = NULL WHERE Booking_ID IN (" + b + ");\\n" +
+                "UPDATE Trips SET DocumentID = NULL WHERE DocumentID IN (" + d + ");\\n" +
+                "DELETE FROM DocumentReadings WHERE Document_ID IN (" + d + ");\\n" +
+                "-- Sätze außerhalb des Zeitraums unter einer Bankbewegung des Zeitraums bleiben erhalten (abgehängt, wie im Buchungssatz-Editor).\\n" +
+                "UPDATE Bookings SET ParentBooking_ID = NULL, Status = CASE WHEN Status = 'resolved' THEN NULL ELSE Status END WHERE ParentBooking_ID IN (" + b + ") AND DateBooking NOT BETWEEN '" + from + "' AND '" + to + "';\\n" +
+                "DELETE FROM Bookings WHERE DateBooking BETWEEN '" + from + "' AND '" + to + "';\\n" +
+                "DELETE FROM Documents WHERE Date BETWEEN '" + from + "' AND '" + to + "';";
+            document.getElementById('sql_input').value = sql;
+            sqlStatus([['', 'Lösch-Skript eingefügt — bitte prüfen, „Schreiben erlauben“ ankreuzen und „SQL ausführen“ klicken.']]);
+        }
+        </script>
+        <div id="sql_status" style="margin-top: 10px;"></div>
+        <textarea id="sql_output" rows="20" cols="100" readonly class="textareaSql" style="display: none;"></textarea>
+        <script>
+        // Meldungen nur über textContent: Fehlertexte kommen aus der Datenbank bzw. dem Server
+        function sqlStatus(parts) {
+            const status = document.getElementById('sql_status');
+            status.textContent = '';
+            parts.forEach(function(part) {
+                const span = document.createElement('span');
+                if (part[0]) span.className = part[0];
+                span.textContent = part[1];
+                status.appendChild(span);
+                status.appendChild(document.createTextNode(' '));
+            });
+        }
+        async function sendSql(input, write) {
+            const output = document.getElementById('sql_output');
+            sqlStatus([['', '⏳ Wird ausgeführt...']]);
+            try {
+                const resp = await fetch('/execute_sql', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                    body: 'sql_commands=' + encodeURIComponent(input) + (write ? '&write=1' : '')
+                });
+                const data = await resp.json();
+                const parts = [];
+                if (data.success_count > 0) parts.push(['successColor', data.success_count + ' von ' + data.total + ' Befehlen erfolgreich.']);
+                if (data.errors && data.errors.length) parts.push(['errorColor', data.errors.join('; ')]);
+                if (data.warnings && data.warnings.length) parts.push(['warnColor', data.warnings.join('; ')]);
+                sqlStatus(parts);
+                if (data.output) {
+                    output.style.display = 'block';
+                    output.value = data.output;
+                } else {
+                    output.style.display = 'none';
+                    output.value = '';
+                }
+            } catch(e) {
+                sqlStatus([['errorColor', 'Fehler: ' + e.message]]);
+            } finally {
+                if (write) document.getElementById('sql_write').checked = false;
+            }
+        }
+        function executeSql() {
+            const input = document.getElementById('sql_input').value;
+            if (!input.trim()) { sqlStatus([['errorColor', 'Keine SQL-Befehle eingegeben.']]); return; }
+            if (!document.getElementById('sql_write').checked) return sendSql(input, false);
+            appConfirm('Die Befehle können Daten ändern oder löschen. Vorher eine Datensicherung anlegen. Ausführen?',
+                       function() { return sendSql(input, true); });
+        }
+        </script>
+        '''
+    s += '</div>'
+    return s
+
+
+def _about_db_export(query):
+    """Der Kasten „DB-Export“ (``POST /db_export``) – er hängt an der SQL-Konsole und steht nur, wo sie steht. ``query``: die Query der Adresse; nennt
+    sie das Ergebnis eines Exports (``export_message``), meldet ein Skript es nach dem Laden über ``appMsg`` (der Text als JSON in den Skriptblock)."""
+    s = '<div class="rectRounded">'
+    s += '''
+        <h2>DB-Export</h2>
+        <p>Exportiert alle Tabelleninhalte als INSERT-Statements in die Datei
+        <code>db-export.sql</code> im Datenverzeichnis.
+        Ein kleinerer Export lässt sich im SQL-Konsolenbereich einfügen (mit „Schreiben erlauben“);
+        für ganze Bestände gibt es die Datensicherung.</p>
+        <form method="POST" action="/db_export">
+            <button type="submit" class="coloredButton bg-blue">&#x1F4BE; DB-Export</button>
+        </form>
+        '''
+    message = export_message(query)
+    if message:
+        s += ("<script>document.addEventListener('DOMContentLoaded',function(){"
+              f"appMsg({script_json(message[0])},{script_json(message[1])});}});</script>")
+    s += '</div>'
+    return s
+
+
+def PageAbout(db=None, query=None):
+    """Generate about page.
+
+    Mit ``db`` (der Server übergibt sie immer) folgen auf „Projekt in Zahlen“ die Datenbank-Übersicht – für jeden angemeldeten Benutzer –
+    und, nur für die, die die SQL-Konsole benutzen dürfen (``auth.sql_console_allowed``), ganz unten die SQL-Konsole und der DB-Export;
+    wer sie nicht benutzen darf, sieht weder die Kästen noch ihre Skripte. Ohne ``db`` bleibt die Seite, wie sie war.
+    ``query``: die Query der Adresse (``parse_qs``); sie trägt nur das Ergebnis eines DB-Exports (``export_message``)."""
     from version import APP_VERSION
     s = Header1('about')
     s+= Header2()
@@ -420,6 +599,11 @@ Kommerzielle Lizenz ohne AGPL-Pflichten: <span id="licenseContact"><noscript>E-M
 }());
 </script>'''
     s+= _about_stats()
+    if db is not None:
+        import auth as _auth
+        s+= _about_database_overview(db)
+        if _auth.sql_console_allowed():
+            s+= '<br><br><div class="grid1Col gridMiddle">' + _about_sql_console() + _about_db_export(query or {}) + '</div>'
     s+= Footer()
     return s
 

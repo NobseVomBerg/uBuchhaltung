@@ -40,7 +40,7 @@ from server.handlers import (
     handle_asset_sale, handle_book_depreciation, handle_datev_export, handle_execute_sql,
 )
 from server.pages_assets import PageAssets, PageAssetView
-from server.pages_miscellaneous import PageMiscellaneous
+from server.pages import PageAbout
 from tests.dom_helpers import Dom, app_msg_arguments, assert_same_structure
 from tests.http_client import get, own_origin, post
 
@@ -105,7 +105,7 @@ def _chart(db, *numbers):
 
 
 def _console(db, *commands):
-    """SQL über die Konsole der Seite „Verschiedenes“ ausführen (``handle_execute_sql``, Schreibmodus: Fremdschlüssel
+    """SQL über die SQL-Konsole (Seite About) ausführen (``handle_execute_sql``, Schreibmodus: Fremdschlüssel
     an, alle Befehle in einer Transaktion). Liefert die Antwort als Dict."""
     answer = json.loads(handle_execute_sql(db, {'sql_commands': [';\n'.join(commands)], 'write': ['1']}))
     assert not answer['errors'], answer
@@ -517,9 +517,9 @@ def test_booked_years_are_the_years_with_an_existing_booking_or_imported_as_book
 
 
 def _range_delete_script(db, date_from, date_to):
-    """Das Lösch-Skript „Zeitbereich löschen“ der Seite „Verschiedenes“, so zusammengesetzt, wie das
+    """Das Lösch-Skript „Zeitbereich löschen“ der SQL-Konsole (About-Seite), so zusammengesetzt, wie das
     JavaScript der Seite (``buildRangeDeleteSql``) es tut."""
-    html = PageMiscellaneous(db)
+    html = PageAbout(db)
     start = html.index('function buildRangeDeleteSql()')
     body = html[start:html.index("document.getElementById('sql_input').value = sql;", start)]
     env = {'from': date_from, 'to': date_to}

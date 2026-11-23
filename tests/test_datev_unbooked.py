@@ -17,9 +17,9 @@ für genau diesen Hinweis (Prüfsumme über Zeitraum und Wortlaut). Geprüft wer
 - ``handle_datev_export``: Wortlaut der drei Hinweise, die Prüfsumme, nichts exportiert und nichts gestempelt ohne gültige
   Bestätigung, Bestand oder Zeitraum ändern sich zwischen Hinweis und Bestätigung, die Reihenfolge der Prüfungen, keine Texte oder
   Empfänger in der Adresse
-- die Seite *Sonstiges*: Pflicht-Kästchen nur bei gültigen Daten und gültiger Prüfsumme, alles maskiert, GET schreibt nichts
+- die Seite *Daten*: Pflicht-Kästchen nur bei gültigen Daten und gültiger Prüfsumme, alles maskiert, GET schreibt nichts
 - den Durchlauf über den echten Server: POST ohne Bestätigung, GET der Weiterleitung, POST mit Bestätigung
-- ``handle_db_export``: eine feste Meldung statt des Fehlertextes in der Adresse
+- ``handle_db_export``: kein Fehlertext in der Adresse (die About-Seite nennt einen festen Satz)
 
 Die Zählregel selbst steht in test_datev_transfer_duplicates.py. Alle Werte sind erfundene Testdaten.
 """
@@ -30,7 +30,6 @@ from datetime import date, timedelta
 from decimal import Decimal
 from html import escape
 from types import SimpleNamespace
-from urllib.parse import quote
 
 import pytest
 
@@ -1288,6 +1287,6 @@ def test_a_failing_database_export_gives_a_fixed_message_and_not_the_text_of_the
     monkeypatch.setattr(world.db, 'export_to_sql', boom)
     status, location = handlers.handle_db_export(world.db)
     assert status == 303
-    assert location == '/miscellaneous?export=error&msg=' + quote('Export fehlgeschlagen.')
-    assert 'geheim' not in location and 'Daten' not in location and '%' not in location.replace('%20', '')
-    assert query_of(location)['msg'] == ['Export fehlgeschlagen.']
+    assert location == '/about?export=error'               # der Export steht auf der About-Seite; sie nennt ihren festen Satz selbst
+    assert 'geheim' not in location and 'Daten' not in location and '%' not in location
+    assert query_of(location) == {'export': ['error']}

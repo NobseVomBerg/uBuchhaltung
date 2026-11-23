@@ -337,7 +337,8 @@ def request_is_same_origin(headers):
 
 
 # Aktionen mit Seiteneffekt – nur per POST, siehe `_post_action_routes`; die
-# Parameter bleiben in der Query. `/masterdata/skr/add_standard` hat keinen.
+# Parameter bleiben in der Query. `/masterdata/skr/add_standard` hat keinen, `/backup/delete` nennt die
+# Sicherung im Formularfeld `file`.
 _ACTION_PATHS = frozenset({
     "/masterdata/articles/delete",
     "/masterdata/contacts/delete",
@@ -356,6 +357,7 @@ _ACTION_PATHS = frozenset({
     "/trips/delete",
     "/quote/delete",
     "/invoice/delete",
+    "/backup/delete",
 })
 
 # Dokumente erzeugen und ablegen: ebenfalls nur per POST (GET → 405), aber mit JSON-Antwort
@@ -1126,9 +1128,10 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         else:
             self.respond(status_code, "", headers={"Location": text if location is None else location})
 
-    def _post_action_routes(self, db):
+    def _post_action_routes(self, db, post_data=None):
         """Aktionen mit Seiteneffekt (Löschen, Umschalten, Lösen). Parameter stehen
-        in der Query, der Body trägt nur den CSRF-Token. Returns True, wenn die
+        in der Query, der Body trägt nur den CSRF-Token – außer bei ``/backup/delete``: Dort nennt
+        das Formularfeld ``file`` (``post_data``) die Sicherung. Returns True, wenn die
         Anfrage hier beantwortet wurde."""
         path = self.path.split('?', 1)[0]
         if path not in _ACTION_PATHS:
@@ -1137,7 +1140,7 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         # Pflichtparameter der Aktion: Fehlt einer oder ist er keine Ganzzahl,
         # kommt 400 – wie bei /invoice/delete, nicht KeyError/ValueError und damit 500.
         item_id = _int_param(qs, "id")
-        if path == "/masterdata/skr/add_standard":
+        if path in ("/masterdata/skr/add_standard", "/backup/delete"):
             invalid = False                         # die Aktion nennt keine ID
         else:
             invalid = item_id is None
@@ -1205,6 +1208,8 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 self.respond(404, location, content_type="text/plain; charset=utf-8")
             else:
                 self.respond(status_code, "", headers={"Location": location})
+        elif path == "/backup/delete":
+            self._respond_form_result(handlers.handle_backup_delete(post_data or {}))
         return True
 
     def _post_generate_document(self, db, route):
@@ -1542,8 +1547,10 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                     self.respond(200, PageSetupStart())
                 else:
                     self.respond(200, PageSetup(db))
-            elif self.path == "/about":
-                self.respond(200, pages.PageAbout())
+            elif route == "/about":
+                # Die Datenbank-Übersicht, die SQL-Konsole und der DB-Export stehen hier; das Ergebnis des Exports kommt mit der
+                # Weiterleitung (?export=ok&tables=…&rows=… bzw. ?export=error), die Seite liest es streng
+                self.respond(200, pages.PageAbout(db, self._query()))
             elif self.path == "/invoice" or self.path.startswith("/invoice?"):
                 # Parse query parameters for filters
                 query_components = self._query()
@@ -2052,7 +2059,7 @@ class SimpleWebServer(BaseHTTPRequestHandler):
 
         # Route to appropriate handler
         try:
-            if self._post_action_routes(db):
+            if self._post_action_routes(db, post_data):
                 return
             # ── Benutzerverwaltung (nur Admin) ────────────────────────────
             if self.path == "/users/auto-login":
@@ -2181,8 +2188,7 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 status_code, location = handlers.handle_wiso_fdb_import(db, post_data)
                 self.respond(status_code, "", headers={"Location": location})
             elif self.path == "/db_export":
-                status_code, location = handlers.handle_db_export(db)
-                self.respond(status_code, "", headers={"Location": location})
+                self._respond_form_result(handlers.handle_db_export(db))
             elif self.path == "/datev/export":
                 result = handlers.handle_datev_export(db, post_data)
                 if isinstance(result[0], bytes):
