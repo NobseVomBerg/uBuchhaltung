@@ -7,6 +7,7 @@ import datetime
 import json
 import html as _html
 import re
+import traceback
 from typing import NamedTuple, Optional
 from urllib.parse import quote
 from db import Database
@@ -16,8 +17,9 @@ from db.invoice_lock import (CLOSED, EDITABLE, LOCKED_STATUSES, NUMBER_KEPT_MESS
                              buyer_snapshot, canonical_status, status_group)
 from db.invoice_payments import MIXED_REVENUE_MESSAGE, PAYABLE_STATUSES, has_mixed_rates
 from db.invoice_versions import DELIVERY_DATE_MESSAGE, PROTOCOL_LABELS, local_date, local_datetime
+from db.payment_matching import reason_text
 from db.tax_rates import entry_snapshot, legacy_expressible
-from money import fmt_eur, format_plain, to_minor
+from money import fmt_eur, format_plain, from_minor, to_minor
 import tax_groups
 from tax_groups import EXEMPT, bp_pct, group_label, rate_pct
 from export.einvoice_model import (SCOPE_EN16931, SCOPE_XRECHNUNG, build_einvoice, einvoice_gaps, gap_texts,
@@ -2815,6 +2817,19 @@ function copyInvoiceAsNew(invId) {{
             candidates = [c for c in
                           db.get_unallocated_bank_bookings(existing_invoice[13])
                           if c[0] not in linked_booking_ids]
+            # Die Bewegungen, die laut Rechnungsnummer im Verwendungszweck, Betrag und Kunde zu dieser Rechnung passen, stehen zuerst (in der Rangfolge
+            # von ``rank_movements``), danach die übrigen wie bisher; die Begründung steht klein unter dem Auftraggeber. Der Haken „✓“ bei
+            # gleichem Betrag bleibt. Es wird nur vorgeschlagen – zugeordnet wird mit „Verknüpfen“.
+            try:
+                suggested = [(pair, movement) for pair, movement in db.suggest_bookings_for_invoice(invoice_id)
+                             if movement['id'] not in linked_booking_ids]
+            except Exception:                       # die Rechnungsseite hängt nicht an den Vorschlägen
+                traceback.print_exc()               # der volle Fehler nur ins Server-Log
+                suggested = []
+            reasons = {movement['id']: reason_text(pair) for pair, movement in suggested}
+            candidates = ([(m['id'], m['date'], m['recipient'], m['contact_id'], from_minor(m['total_minor']), from_minor(m['amount_minor']))
+                           for _pair, m in suggested]
+                          + [c for c in candidates if c[0] not in reasons])
             if candidates:
                 s += '''        <h4>Vorhandene Buchung verknüpfen</h4>
         <table style="width:100%; border-collapse:collapse;">
@@ -2831,9 +2846,10 @@ function copyInvoiceAsNew(invId) {{
                     b_id, b_date, b_recipient, _, b_amount, b_free = c
                     default_alloc = min(open_due, b_free)
                     match_mark = ' ✓' if b_free == open_due else ''
+                    reason_html = f'<div class="hint">{_html.escape(reasons[b_id])}</div>' if b_id in reasons else ''
                     s += f'''            <tr>
                 <td style="padding:6px 8px;">{_html.escape(str(b_date or "–"))}</td>
-                <td style="padding:6px 8px;">{_html.escape(str(b_recipient or ""))}</td>
+                <td style="padding:6px 8px;">{_html.escape(str(b_recipient or ""))}{reason_html}</td>
                 <td style="padding:6px 8px; text-align:right;">{fmt_eur(b_amount)}</td>
                 <td style="padding:6px 8px; text-align:right;">{fmt_eur(b_free)}{match_mark}</td>
                 <td style="padding:6px 8px; text-align:right;"><input type="number" step="0.01" class="noButtons" id="payAmount_{b_id}" value="{default_alloc:.2f}" style="width:90px; text-align:right;"></td>

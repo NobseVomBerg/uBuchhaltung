@@ -9,10 +9,17 @@ import html as _html
 from db import Database
 from db.accounts import is_business_only
 from money import fmt_eur
+from .handlers import BANK_SKR_RANGE, CASH_SKR_RANGE, free_bank_skr_number
 
 BUSINESS_ONLY_HINT = ('Auf einem reinen Geschäftskonto werden Kontoauszüge vollständig importiert; einzelne private Umsätze '
                       'bucht man als Privatentnahme oder -einlage. Ohne den Haken (gemischt genutztes Konto) lassen sich '
                       'beim Import einzelne Umsätze auswählen.')
+# Bankkonten (Stammdaten): das Konto im Kontenrahmen (Accounts.SKRAccount), auf das die Bewegungen gebucht werden
+SKR_ACCOUNT_HINT = 'Ohne dieses Konto lassen sich Zahlungen keiner Rechnung zuordnen.'
+SKR_OPTION_NONE = '-- keines --'
+SKR_OPTION_UNKNOWN = 'nicht im Kontenrahmen'     # hinter der Nummer, die das Konto trägt, der Kontenrahmen aber nicht kennt
+SKR_LIST_MISSING = 'kein Konto im Kontenrahmen'  # Liste: ein Konto ohne Nummer
+SKR_LIST_UNKNOWN = '{n} nicht im Kontenrahmen'   # Liste: eine Nummer, die der Kontenrahmen nicht kennt
 
 def Header1(active_page=None):
     from server.pages import Header1 as BaseHeader1
@@ -590,17 +597,62 @@ def PageSkrEdit(db: Database, id):
 # BANK ACCOUNTS (Bankkonten)
 # ══════════════════════════════════════════════════════════════════════
 
+def _chart_names(db: Database):
+    """{Kontonummer: Bezeichnung} des Kontenrahmens. Bei gleicher Nummer in mehreren Rahmen gilt das erste Konto (kleinste ID) – so
+    findet auch ``Database.get_coa_id_by_account_number`` es, über die die Zahlung das Konto des Bankkontos sucht."""
+    names = {}
+    rows = [row for row in db.fetch_chart_of_accounts() if type(row[2]) is int]       # [0]ID [2]Nummer [3]Bezeichnung
+    for row in sorted(rows, key=lambda row: (row[2], row[0])):
+        names.setdefault(row[2], '' if row[3] is None else str(row[3]))
+    return names
+
+
+def _skr_label(number, name):
+    return f'{number} – {name}' if name else str(number)
+
+
+def _skr_select(db: Database, account, is_cash, names):
+    """Die Auswahl „Konto im Kontenrahmen“ eines Bank- oder Kassenkontos samt festem Hinweis (HTML): die Konten des Kontenrahmens im Bereich
+    der Art – Bank 1700–1899, Kasse 1600–1699 (``BANK_SKR_RANGE``, ``CASH_SKR_RANGE``, dieselben, die der Handler beim Speichern prüft) – und
+    davor „-- keines --“. ``account``: die Zeile des Kontos (``None``: ein neues), ``names``: ``_chart_names``.
+
+    Vorgewählt ist beim Bearbeiten der gespeicherte Wert. Liegt er außerhalb des Bereichs oder kennt der Kontenrahmen ihn nicht (Bestand: eine
+    alte Kasse mit 1460, eine Nummer aus einem anderen Kontenrahmen wie 1200), steht er als eigene Option da – nichts wird still umgestellt.
+    Bei einem neuen Bankkonto ist es die kleinste Nummer des Bereichs, die noch kein eigenes Konto trägt (1800, dann 1810 …), sonst „-- keines --“."""
+    low, high = CASH_SKR_RANGE if is_cash else BANK_SKR_RANGE
+    offered = {number: name for number, name in names.items() if low <= number <= high}
+    if account is None:
+        stored = None if is_cash else free_bank_skr_number(db)
+    else:
+        stored = account[7] if len(account) > 7 else None
+    selected = stored if stored else None                          # 0 und leer heißen wie NULL: kein Konto
+    entries = [(number, _skr_label(number, name)) for number, name in offered.items()]
+    if selected is not None and selected not in offered:
+        entries.append((selected, _skr_label(selected, names[selected]) if selected in names
+                        else f'{selected} – {SKR_OPTION_UNKNOWN}'))
+    entries.sort(key=lambda entry: (0, entry[0]) if type(entry[0]) is int else (1, str(entry[0])))
+    options = [f'<option value=""{" selected" if selected is None else ""}>{_html.escape(SKR_OPTION_NONE)}</option>']
+    for value, label in entries:
+        options.append(f'<option value="{_html.escape(str(value), quote=True)}"{" selected" if value == selected else ""}>'
+                       f'{_html.escape(label)}</option>')
+    return (f'<select id="skr_account" name="skr_account">{"".join(options)}</select>'
+            f'<small class="hint">{_html.escape(SKR_ACCOUNT_HINT)}</small>')
+
+
 def PageBankAccounts(db: Database, edit_id=None, error=None):
     """Bankkonten (Stammdaten): Übersicht links, Inline-Formular rechts.
 
-    Kasse-Konten sind bis auf das SKR-Gegenkonto schreibgeschützt (Name/Typ
-    fix); reine Bankkonten sind voll editierbar und löschbar.
+    Kasse-Konten sind bis auf das Konto im Kontenrahmen schreibgeschützt (Name/Typ
+    fix); reine Bankkonten sind voll editierbar und löschbar. Das Konto im Kontenrahmen
+    wird aus dem Kontenrahmen gewählt (``_skr_select``); die Liste nennt in Warnfarbe,
+    wo es fehlt oder der Kontenrahmen die Nummer nicht kennt.
     """
     rows = db.fetch_accounts()
     # Accounts (SELECT *): [0]ID [1]Name [2]Inhaber [3]IBAN [4]BIC [5]Bank
-    #                      [6]IsCash [7]SKR-Gegenkonto [8]BusinessOnly (reines Geschäftskonto)
+    #                      [6]IsCash [7]Konto im Kontenrahmen (SKRAccount) [8]BusinessOnly (reines Geschäftskonto)
     edit_acc = db.get_account_by_id(edit_id) if edit_id is not None else None
     is_cash  = bool(edit_acc and edit_acc[6] == 1)
+    chart_names = _chart_names(db)
 
     s = Header1('masterdata')
     submenu = '<a href="/masterdata">Stammdaten</a> → <span id="ActivePage">🏦 Bankkonten</span>'
@@ -613,7 +665,8 @@ def PageBankAccounts(db: Database, edit_id=None, error=None):
     ea_iban   = _html.escape(str(edit_acc[3] or '')) if edit_acc else ''
     ea_bic    = _html.escape(str(edit_acc[4] or '')) if edit_acc else ''
     ea_bank   = _html.escape(str(edit_acc[5] or '')) if edit_acc else ''
-    ea_skr    = (edit_acc[7] if edit_acc and len(edit_acc) > 7 and edit_acc[7] is not None else '') if edit_acc else ''
+    skr_row   = (f'<tr><td><label for="skr_account">Konto im Kontenrahmen:</label></td>'
+                 f'<td>{_skr_select(db, edit_acc, is_cash, chart_names)}</td></tr>')
     # „Reines Geschäftskonto“: ein neues Konto ist es, ein vorhandenes nach strenger Lesung des gespeicherten Werts
     ea_business_only = is_business_only(edit_acc[8] if edit_acc and len(edit_acc) > 8 else 1)
 
@@ -640,7 +693,7 @@ def PageBankAccounts(db: Database, edit_id=None, error=None):
             f'<input type="hidden" name="bank_name" value="{ea_bank}">'
             f'<tr><td>Bezeichnung:</td><td>{ea_name}</td></tr>'
             f'<tr><td>Typ:</td><td>Kasse</td></tr>'
-            f'<tr><td>SKR-Gegenkonto:</td><td><input type="number" name="skr_account" value="{ea_skr}" placeholder="z.B. 1600"></td></tr>'
+            f'{skr_row}'
         )
     else:
         note = ''
@@ -650,7 +703,7 @@ def PageBankAccounts(db: Database, edit_id=None, error=None):
             f'<tr><td>IBAN:</td><td><input type="text" name="iban" value="{ea_iban}"></td></tr>'
             f'<tr><td>BIC:</td><td><input type="text" name="bic" value="{ea_bic}"></td></tr>'
             f'<tr><td>Bank:</td><td><input type="text" name="bank_name" value="{ea_bank}"></td></tr>'
-            f'<tr><td>SKR-Gegenkonto:</td><td><input type="number" name="skr_account" value="{ea_skr}" placeholder="z.B. 1810"></td></tr>'
+            f'{skr_row}'
             # Ein nicht angehaktes Kästchen schickt nichts: das versteckte Feld sagt dem Handler, dass das Formular das
             # Kennzeichen führt (fehlt es, bleibt der gespeicherte Wert)
             f'<tr><td><label for="business_only">Reines Geschäftskonto:</label></td><td>'
@@ -680,7 +733,13 @@ def PageBankAccounts(db: Database, edit_id=None, error=None):
     '''
     for row in rows:
         account_type = "Kasse" if row[6] == 1 else "Bank"
-        skr_display = row[7] if len(row) > 7 and row[7] else "–"
+        skr = row[7] if len(row) > 7 else None
+        if not skr:
+            skr_display = f'<span class="warnColor">⚠ {_html.escape(SKR_LIST_MISSING)}</span>'
+        elif skr in chart_names:
+            skr_display = _html.escape(str(skr))
+        else:
+            skr_display = f'<span class="warnColor">⚠ {_html.escape(SKR_LIST_UNKNOWN.format(n=skr))}</span>'
         s += (f"<tr><td>{row[0]}</td><td>{_html.escape(str(row[1] or ''))}</td><td>{_html.escape(str(row[2] or ''))}</td><td>{_html.escape(str(row[3] or ''))}</td>"
               f"<td>{_html.escape(str(row[4] or ''))}</td><td>{_html.escape(str(row[5] or ''))}</td><td>{account_type}</td><td>{skr_display}</td>")
         edit_title = "SKR zuweisen" if row[6] == 1 else "Bearbeiten"

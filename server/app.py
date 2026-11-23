@@ -1714,7 +1714,8 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 transaction_id = _id_param(query_components)
                 date_from, date_to, _ = resolve_period(query_components, self.headers.get('Cookie'))
                 self.respond(200, PageTransactions(db, edit_transaction_id=transaction_id,
-                                                   date_from=date_from, date_to=date_to))
+                                                   date_from=date_from, date_to=date_to,
+                                                   err=query_components.get("err", [None])[0]))
             elif self.path.startswith("/transactions/suggest"):
                 qs = parse_qs(self.path.split('?', 1)[1]) if '?' in self.path else {}
                 status_code, body = handlers.handle_transaction_suggest(db, qs)

@@ -29,10 +29,11 @@ from .invoice_lock import InvoiceLockMixin
 from .invoice_versions import InvoiceVersionsMixin
 from .invoice_storno import InvoiceStornoMixin
 from .invoice_repair import InvoiceRepairMixin
+from .payment_suggestions import PaymentSuggestionsMixin
 from .reporting import ReportingMixin
 
 
-class Database(SchemaMixin, SeedMixin, ReceiptsMixin, DocumentReadingsMixin, WorkTimesMixin, TripsMixin, BookingsMixin, MatchingMixin, AccountsMixin, AssetsMixin, WisoImportMixin, WisoFdbImportMixin, ContactsMixin, ArticlesMixin, NumberRangeMixin, TaxRatesMixin, InvoicePaymentsMixin, InvoicesMixin, InvoiceLockMixin, InvoiceVersionsMixin, InvoiceStornoMixin, InvoiceRepairMixin, ReportingMixin, _CoreMixin):
+class Database(SchemaMixin, SeedMixin, ReceiptsMixin, DocumentReadingsMixin, WorkTimesMixin, TripsMixin, BookingsMixin, MatchingMixin, AccountsMixin, AssetsMixin, WisoImportMixin, WisoFdbImportMixin, ContactsMixin, ArticlesMixin, NumberRangeMixin, TaxRatesMixin, InvoicePaymentsMixin, InvoicesMixin, InvoiceLockMixin, InvoiceVersionsMixin, InvoiceStornoMixin, InvoiceRepairMixin, PaymentSuggestionsMixin, ReportingMixin, _CoreMixin):
     """Komposition aller Domaenen-Mixins. Siehe db/<domaene>.py."""
     pass
 

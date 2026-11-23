@@ -92,13 +92,15 @@ def _text(value) -> str:
     return '' if value is None else value if isinstance(value, str) else str(value)
 
 
-def _is_int(value) -> bool:
+def is_int(value) -> bool:
+    """Eine ganze Zahl (ein ``bool`` zählt nicht). Öffentlich, weil auch ``payment_matching`` sie nutzt."""
     return isinstance(value, int) and not isinstance(value, bool)
 
 
-def _iso_day(value) -> datetime.date | None:
+def iso_day(value) -> datetime.date | None:
     """Der Kalendertag, wenn ``value`` ein ISO-Datum ``JJJJ-MM-TT`` ist (ein Tag, den es gibt, Jahr 1900–2200, nichts davor oder
-    dahinter) – sonst ``None``. Dieselbe Regel wie ``server.period.parse_iso_date``; die Datenbankschicht lädt das Server-Package nicht."""
+    dahinter) – sonst ``None``. Dieselbe Regel wie ``server.period.parse_iso_date``; die Datenbankschicht lädt das Server-Package nicht.
+    Öffentlich, weil auch ``payment_matching`` sie nutzt."""
     if not isinstance(value, str) or not _ISO_DATE.fullmatch(value):
         return None
     try:
@@ -111,7 +113,7 @@ def _iso_day(value) -> datetime.date | None:
 def candidate_window(doc_date: str | None) -> tuple[str, str] | None:
     """Das Fenster, in dem Buchungen zu einem Beleg mit diesem Datum gesucht werden: ``(von, bis)`` als ISO-Daten, ``WINDOW_DAYS_BEFORE``
     Tage vor bis ``WINDOW_DAYS_AFTER`` Tage nach ``doc_date`` (beide Tage gehören dazu). ``None``, wenn ``doc_date`` kein ISO-Datum ist."""
-    day = _iso_day(doc_date)
+    day = iso_day(doc_date)
     if day is None:
         return None
     return ((day - datetime.timedelta(days=WINDOW_DAYS_BEFORE)).isoformat(),
@@ -140,14 +142,14 @@ def usable_gross(reading) -> int | None:
     if currency and currency != 'EUR':
         return None
     gross = reading.get('GrossMinor')
-    return gross if _is_int(gross) and gross != 0 else None
+    return gross if is_int(gross) and gross != 0 else None
 
 
 def direction_fits(kind, amount) -> bool:
     """Passt die Zahlungsrichtung einer Buchung zur Belegart? ``kind`` ist ``Kind`` der Lesung: Eine Rechnung (``invoice``, auch leer)
     wird bezahlt, erwartet wird ein Ausgang (``amount`` < 0); eine Gutschrift (``credit_note``) bringt Geld herein (``amount`` > 0).
     Ein Betrag, der keine ganze Zahl ist, und eine unbekannte Art „passen“: Es wird nichts geraten."""
-    if not _is_int(amount):
+    if not is_int(amount):
         return True
     if kind is None or kind == '' or kind == 'invoice':
         return amount < 0
@@ -156,10 +158,10 @@ def direction_fits(kind, amount) -> bool:
     return True
 
 
-def _usable_number(number: str) -> bool:
+def usable_number(number: str) -> bool:
     """Taugt diese normalisierte Rechnungsnummer als Beweis? Mit Ziffern und Buchstaben ab ``MIN_NUMBER_LENGTH`` Zeichen, rein
     numerisch ab ``MIN_NUMERIC_NUMBER_LENGTH``; ohne Ziffer nie (ein Wort ist keine Nummer). Nach ``normalize_number`` stehen
-    nur ``[a-z0-9]`` darin, ``isdigit`` meint also genau die ASCII-Ziffern."""
+    nur ``[a-z0-9]`` darin, ``isdigit`` meint also genau die ASCII-Ziffern. Öffentlich, weil auch ``payment_matching`` sie nutzt."""
     if number.isdigit():
         return len(number) >= MIN_NUMERIC_NUMBER_LENGTH
     return len(number) >= MIN_NUMBER_LENGTH and any(char.isdigit() for char in number)
@@ -173,7 +175,9 @@ def _day_reason(distance: int) -> str:
     return REASON_DAY_BEFORE if distance == -1 else REASON_DAYS_BEFORE.format(days=-distance)
 
 
-def _field(candidate: dict, key: str) -> str:
+def text_field(candidate: dict, key: str) -> str:
+    """Der Wert von ``key`` als Text, auf ``MAX_FIELD_LENGTH`` Zeichen gekappt (``None`` und ein fehlender Schlüssel ergeben ``''``).
+    Öffentlich, weil auch ``payment_matching`` sie nutzt."""
     return _text(candidate.get(key))[:MAX_FIELD_LENGTH]
 
 
@@ -182,20 +186,20 @@ def _rate(candidate, target: int, day: datetime.date | None, number: str, docume
     if not isinstance(candidate, dict):
         return None
     booking_id, amount = candidate.get('id'), candidate.get('amount')
-    if not _is_int(booking_id) or not _is_int(amount) or abs(amount) != target:
+    if not is_int(booking_id) or not is_int(amount) or abs(amount) != target:
         return None
     score = 0
     reasons = [REASON_AMOUNT]
-    if number and any(number in normalize_number(_field(candidate, key)) for key in ('text', 'number', 'recipient')):
+    if number and any(number in normalize_number(text_field(candidate, key)) for key in ('text', 'number', 'recipient')):
         score += POINTS_NUMBER
         reasons.append(REASON_NUMBER)
     if document_words:
-        common = len(name_words(_field(candidate, 'recipient') + ' ' + _field(candidate, 'contact_name')) & document_words)
+        common = len(name_words(text_field(candidate, 'recipient') + ' ' + text_field(candidate, 'contact_name')) & document_words)
         if common:
             score += POINTS_NAME_SEVERAL if common > 1 else POINTS_NAME_ONE
             reasons.append(REASON_NAME)
     distance = None
-    booked = _iso_day(candidate.get('date'))
+    booked = iso_day(candidate.get('date'))
     if day is not None and booked is not None:
         distance = (booked - day).days
         if -WINDOW_DAYS_BEFORE <= distance <= WINDOW_DAYS_AFTER:
@@ -235,10 +239,10 @@ def rank_candidates(reading: dict, candidates: list[dict], doc_date: str | None)
     if gross is None:
         return []
     number = normalize_number(reading.get('InvoiceNumber'))
-    if not _usable_number(number):
+    if not usable_number(number):
         number = ''                                   # zu kurz oder ohne Ziffer: kein Beweis
     document_words = name_words(_text(reading.get('SenderName')) + ' ' + _text(reading.get('Text')))
-    day = _iso_day(doc_date)
+    day = iso_day(doc_date)
     kind = reading.get('Kind')
     rated = (_rate(candidate, abs(gross), day, number, document_words, kind) for candidate in candidates)
     return heapq.nsmallest(MAX_SUGGESTIONS, (suggestion for suggestion in rated if suggestion is not None), key=_order)

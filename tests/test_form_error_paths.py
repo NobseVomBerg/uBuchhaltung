@@ -150,12 +150,14 @@ def receipt_form(w):
 
 
 def account_add_form(w):
+    # 1810 trägt schon das Probekonto der Welt: Ein neues Konto nimmt seit 2.8.1 nur eine freie Nummer des Kontenrahmens (1820 ist frei)
     return form(name='Zweites Konto', holder='Inhaber', iban=IBAN, bic='TESTDEFFXXX', bank_name='Probebank',
-                skr_account='1810')
+                skr_account='1820')
 
 
 def account_update_form(w):
-    return {**account_add_form(w), 'id': [str(w.account)]}
+    # das Probekonto schickt seine gespeicherte Nummer zurück (1810)
+    return {**account_add_form(w), 'id': [str(w.account)], 'skr_account': ['1810']}
 
 
 def skr_add_form(w):
@@ -459,7 +461,7 @@ def test_valid_numbers_are_stored_as_before(world):
     direct = db.insert_asset('Direkt', DAY, 250.5, 5, coa_id=world.anlage, asset_category_id=world.category)
     assert columns(db, ASSET_COLUMNS, world.asset) == columns(db, ASSET_COLUMNS, direct)
     assert handlers.handle_add_bankaccount(db, account_add_form(world)) == (303, '/masterdata/bankaccounts')
-    assert scalar(db, 'SELECT SKRAccount FROM Accounts WHERE Name = ?', 'Zweites Konto') == 1810
+    assert scalar(db, 'SELECT SKRAccount FROM Accounts WHERE Name = ?', 'Zweites Konto') == 1820
     assert handlers.handle_add_bankaccount(db, {**account_add_form(world), 'name': ['Ohne SKR'], 'skr_account': ['']}) \
         == (303, '/masterdata/bankaccounts')
     assert scalar(db, 'SELECT SKRAccount FROM Accounts WHERE Name = ?', 'Ohne SKR') is None

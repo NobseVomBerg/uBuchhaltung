@@ -147,13 +147,13 @@ def test_add_transaction_links_and_redirects(tmp_db):
     (inv_status,), = _raw(tmp_db, 'SELECT Status FROM Invoices WHERE ID=?', inv)
     assert inv_status == 'paid'
 
-    # Re-Speichern derselben Buchung (Update-Pfad) erzeugt keinen Doppel-Link; die
-    # Rechnungsseite bekommt den Grund als Meldung (die Rechnung ist bezahlt)
+    # Re-Speichern derselben Buchung (Update-Pfad) erzeugt keinen Doppel-Link; der Nutzer bleibt
+    # bei der Buchung und bekommt den Grund als Meldung (die Rechnung ist bezahlt)
     booking_id = payments[0][2]
     status, location = handle_add_transaction(
         tmp_db, _payment_post(tmp_db, transaction_id=booking_id, invoice_id=inv))
     assert status == 303
-    assert location.startswith(f'/invoice/edit?id={inv}&payment_error=')
+    assert location.startswith(f'/transactions/edit?id={booking_id}&err=')
     assert len(tmp_db.get_invoice_payments(inv)) == 1
 
 

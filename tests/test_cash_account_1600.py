@@ -20,7 +20,10 @@ Portokasse auf 1610, weil 1600 die automatisch angelegte Kasse trägt).
 Die SKR-Nummer eines Kontos lässt sich nur umstellen, solange keine Buchungssätze das bisherige oder das
 neue Konto führen (``handle_update_bankaccount``, ``count_entries_on_account_numbers``): sonst würden
 EÜR und DATEV-Export vorhandene Sätze anders lesen, als sie gebucht wurden (Ausgabe ↔ Einnahme). Die
-Ablehnung kommt als Meldung auf die Bearbeitenseite des Kontos.
+Ablehnung kommt als Meldung auf die Bearbeitenseite des Kontos. Welche Nummern das Formular der Stammdaten
+überhaupt zulässt (aus dem Kontenrahmen, die Kasse 1600–1699, keine doppelte), prüft
+``tests/test_bank_account_chart_choice.py``; wo ein Test hier eine Kasse mit 1460 oder ohne Nummer braucht,
+stellt er sie über die Datenbankschicht ein (``_set_cash_number``), wie eine ältere Datenbank sie trägt.
 
 Alle Namen und Werte sind erfunden.
 """
@@ -138,9 +141,9 @@ def test_bank_account_without_a_number_stays_without_one(tmp_db):
 
 def test_hints_name_1600_for_the_cash_account(tmp_db):
     """Die Hinweise nennen 1600 für die Kasse und das Verrechnungskonto als Geldtransit – nicht
-    mehr 1460 als Kassenkonto."""
+    mehr 1460 als Kassenkonto. Das Formular der Kasse wählt aus dem Kontenrahmen (seit 2.8.1): 1600 ist gewählt, 1460 steht nicht zur Wahl."""
     edit = PageBankAccounts(tmp_db, edit_id=_cash_id(tmp_db))
-    assert 'placeholder="z.B. 1600"' in edit and 'z.B. 1460' not in edit
+    assert '<option value="1600" selected>1600 – Kasse</option>' in edit and 'value="1460"' not in edit
     misc = PageMiscellaneous(tmp_db)
     assert '1600 für Kasse' in misc and '1460 für Kasse' not in misc
     assert 'Verrechnungskonto 1460 gilt als Geldtransit' in misc
@@ -224,10 +227,8 @@ def test_ensure_cash_coa_returns_the_existing_account(tmp_db):
 
 
 @pytest.mark.parametrize('cash_number', OLD_PARAMS)
-@pytest.mark.parametrize('chosen, creates', [
-    ('1600', True), ('1610', False), ('1460', False), ('', False), ('1800', False),
-], ids=['1600', '1610', '1460', 'leer', '1800'])
-def test_switching_a_cash_account_to_1600_creates_the_account_other_numbers_do_not(
+@pytest.mark.parametrize('chosen, creates', [('1600', True), ('', False)], ids=['1600', 'leer'])
+def test_switching_a_cash_account_to_1600_creates_the_account_leaving_it_empty_does_not(
         tmp_path, cash_number, chosen, creates):
     db = _old_database(tmp_path, cash_number)
 
@@ -240,11 +241,29 @@ def test_switching_a_cash_account_to_1600_creates_the_account_other_numbers_do_n
     assert _count_chart(db, 1600) == (1 if creates else 0)
 
 
+@pytest.mark.parametrize('cash_number', OLD_PARAMS)
+@pytest.mark.parametrize('chosen', ['1610', '1800'], ids=['1610', '1800'])
+def test_other_numbers_are_refused_for_the_cash_account_and_create_nothing(tmp_path, cash_number, chosen):
+    """Seit 2.8.1 nimmt das Formular nur noch Konten des Kontenrahmens im Bereich der Kasse: 1610 fehlt im Kontenrahmen der älteren
+    Datenbank (nur 1600 legt die Umstellung selbst an), 1800 liegt außerhalb von 1600–1699. Nichts wird gespeichert oder angelegt."""
+    db = _old_database(tmp_path, cash_number)
+    kasse = _cash_id(db)
+
+    status, location = handle_update_bankaccount(db, {'id': [str(kasse)], 'name': ['Kasse'], 'skr_account': [chosen]})
+
+    assert status == 303 and _refusal(location, kasse) is not None
+    assert _cash_accounts(db) == [('Kasse', cash_number)]
+    assert not {1600, 1610} & _chart_numbers(db)
+
+
 def test_switching_to_1600_on_a_fresh_database_creates_nothing_new(tmp_db):
+    """Die Kasse gibt 1600 frei (über die Datenbankschicht – das Formular nimmt keine Nummer, die ein anderes Konto trägt); die Reisekasse
+    stellt sich auf 1600 um: Das Konto steht schon im Kontenrahmen, es entsteht kein zweites."""
     tmp_db.insert_account('Reisekasse', '', '', '', '', is_cash=1, skr_account=1610)
+    _set_cash_number(tmp_db, None)
     handle_update_bankaccount(tmp_db, {'id': [str(_cash_id(tmp_db, 'Reisekasse'))],
                                        'name': ['Reisekasse'], 'skr_account': ['1600']})
-    assert _cash_accounts(tmp_db)[1] == ('Reisekasse', 1600)
+    assert _cash_accounts(tmp_db) == [('Kasse', None), ('Reisekasse', 1600)]
     assert _count_chart(tmp_db, 1600) == 1
 
 
@@ -285,7 +304,7 @@ def _error_message(html):
     raise AssertionError('kein appMsg-Aufruf in der Seite')
 
 
-@pytest.mark.parametrize('new_number', [None, 1460, 1610], ids=['leer', '1460', '1610'])
+@pytest.mark.parametrize('new_number', [None, 1610], ids=['leer', '1610'])
 def test_cash_number_is_not_changed_while_entries_hang_on_the_old_number(tmp_db, new_number):
     """Zwei Importsätze führen 1600 – als Gegenkonto („6815 an 1600“) und als Konto („1600 an 4400“)."""
     db = tmp_db
@@ -306,7 +325,7 @@ def test_cash_number_is_not_changed_while_entries_hang_on_the_old_number(tmp_db,
 def test_cash_number_is_not_changed_while_entries_hang_on_the_new_number(tmp_db, old_number):
     db = tmp_db
     kasse = _cash_id(db)
-    _update(db, kasse, 'Kasse', old_number)                        # vor dem Import: erlaubt
+    _set_cash_number(db, old_number)                               # vor dem Import: die ältere Kasse
     db.import_wiso_csv(_csv(('6815', '1600', '18,35', 'KS-001', '401')))      # hängt an 1600
 
     status, location = _update(db, kasse, 'Kasse', 1600)
@@ -351,7 +370,7 @@ def test_mask_booking_blocks_the_change_by_its_entry_not_by_the_bank_row(tmp_db)
         'currency': ['EUR'], 'coa_id': [str(_coa(db, 6815))], 'tax_rate': ['19'], 'tax_amount': ['-1.90']})
     assert status == 303
 
-    _status, location = _update(db, kasse, 'Kasse', 1460)
+    _status, location = _update(db, kasse, 'Kasse', 1610)
 
     assert _refusal(location, kasse).startswith('SKR-Konto nicht geändert: 1 Buchungssätze führen')
     assert _skr_of(db, kasse) == 1600
@@ -550,11 +569,10 @@ def _numbers(db, coa_ids):
 
 
 def _set_cash_number(db, number):
-    """Die Kasse in den Stammdaten auf ``number`` (None = leer) stellen."""
-    status, _location = handle_update_bankaccount(
-        db, {'id': [str(_cash_id(db))], 'name': ['Kasse'],
-             'skr_account': ['' if number is None else str(number)]})
-    assert status == 303
+    """Die Kasse auf ``number`` (None = leer) stellen – über die Datenbankschicht, wie eine ältere Datenbank sie trägt: Das Formular der
+    Stammdaten lässt für die Kasse nur noch 1600–1699 aus dem Kontenrahmen zu (``tests/test_bank_account_chart_choice.py``), 1460 nicht mehr."""
+    row = db.get_account_by_id(_cash_id(db))
+    db.update_account(row[0], row[1], row[2], row[3], row[4], row[5], skr_account=number)
 
 
 def test_import_constant_is_the_clearing_account_only():

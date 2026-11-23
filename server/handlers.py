@@ -528,6 +528,16 @@ AMOUNT_ERROR = 'Bitte einen gültigen Betrag angeben.'
 COUNTER_ERROR = 'Bitte einen gültigen Zählerstand angeben.'
 PERCENT_ERROR = 'Bitte einen Privatanteil von 0 bis 100 Prozent angeben.'
 SKR_ACCOUNT_ERROR = 'Bitte eine gültige SKR-Kontonummer angeben.'
+#: Die Nummern im Kontenrahmen (SKR04), die ein Bankkonto bzw. die Kasse führen darf, ``(von, bis)`` einschließlich. Das Formular Stammdaten →
+#: Bankkonten bietet nur Konten daraus an (``pages_masterdata``), ``_skr_account_refusal`` lehnt beim Speichern alles andere ab. Die
+#: Datenbankschicht prüft nichts: Importe, Demodaten und der Bestand tragen auch andere Nummern (1460, 1200 …).
+BANK_SKR_RANGE = (1700, 1899)
+CASH_SKR_RANGE = (1600, 1699)
+SKR_NOT_IN_CHART = ('Das Konto {n} steht nicht im Kontenrahmen – bitte eines aus der Liste wählen oder es zuerst unter '
+                    'Stammdaten → Kontenrahmen anlegen.')
+SKR_OUT_OF_RANGE = (f'Für ein Bankkonto bitte ein Konto von {BANK_SKR_RANGE[0]} bis {BANK_SKR_RANGE[1]} wählen '
+                    f'(für die Kasse {CASH_SKR_RANGE[0]} bis {CASH_SKR_RANGE[1]}).')
+SKR_IN_USE = 'Das Konto {n} ist schon einem anderen Bank- oder Kassenkonto zugeordnet.'
 
 
 def _row_number(text, row, label):
@@ -797,6 +807,11 @@ def _new_payment_problem(db, invoice_id, account_id, amount, revenue_coa_id=None
         return ('Der Betrag muss größer 0 sein – nur Zahlungseingänge lassen sich einer '
                 'Rechnung zuordnen.')
     return db.payment_precheck(invoice_id, account_id, revenue_coa_id)
+
+
+# Schlägt die Zuordnung zu einer Rechnung NACH dem Speichern der Maske fehl, bleibt der Nutzer bei der (gespeicherten) Buchung: 303 auf
+# ``/transactions/edit?id=<ID>&err=<dieser Satz mit dem Grund>`` – der Fehlerweg der Seite (``appMsg``). Platzhalter: der Grund der Zuordnung.
+PAYMENT_NOT_ASSIGNED = 'Die Buchung ist gespeichert, die Zahlung wurde aber nicht zugeordnet: {reason}'
 
 
 def handle_add_transaction(db: Database, post_data):
@@ -1080,8 +1095,9 @@ def handle_add_transaction(db: Database, post_data):
                 print(f"Error consuming number range {suggest_range_id}: {e}")
 
         # Zahlungs-Zuordnung zur Rechnung (todo #2): idempotent und gekappt;
-        # ein Fehler hier darf die bereits gespeicherte Buchung nicht zum 500 machen. Die
-        # Rechnungsseite nennt den Grund, wenn die Zuordnung nicht zustande kam.
+        # ein Fehler hier darf die bereits gespeicherte Buchung nicht zum 500 machen. Kam die
+        # Zuordnung nicht zustande, bleibt der Nutzer bei der Buchung und bekommt den Grund dort
+        # (``PAYMENT_NOT_ASSIGNED``); der Erfolgsweg führt auf die Rechnung.
         if invoice_id:
             try:
                 ok, message = link_booking_to_invoice_capped(
@@ -1090,7 +1106,8 @@ def handle_add_transaction(db: Database, post_data):
                 print(f"Error linking booking {transaction_id} to invoice {invoice_id}: {e}")
                 ok, message = False, 'Die Zahlung konnte nicht zugeordnet werden.'
             if not ok:
-                return 303, f"/invoice/edit?id={invoice_id}&payment_error={quote(message)}"
+                return 303, (f"/transactions/edit?id={int(transaction_id)}"
+                             f"&err={quote(PAYMENT_NOT_ASSIGNED.format(reason=message), safe='')}")
             return 303, f"/invoice/edit?id={invoice_id}"
 
         return 303, "/transactions"
@@ -1127,6 +1144,35 @@ def _business_only_from_form(post_data):
     return post_data.get('business_only', [''])[0] == '1'
 
 
+def free_bank_skr_number(db):
+    """Die kleinste Kontonummer des Kontenrahmens im Bereich der Bankkonten (``BANK_SKR_RANGE``), die noch kein eigenes Bank- oder
+    Kassenkonto trägt – 1800, dann 1810 … –, sonst ``None``. EINE Stelle für die Vorauswahl im Formular und für das Bankkonto der
+    Ersteinrichtung: Die App rechnet in SKR04, eine Nummer aus einem anderen Kontenrahmen (1200) stünde nicht im Kontenrahmen, und
+    keine Zahlung ließe sich zuordnen."""
+    low, high = BANK_SKR_RANGE
+    taken = {row[7] for row in db.fetch_accounts()}
+    numbers = {row[2] for row in db.fetch_chart_of_accounts() if type(row[2]) is int and low <= row[2] <= high}
+    return next((number for number in sorted(numbers) if number not in taken), None)
+
+
+def _skr_account_refusal(db, number, account_id=None, is_cash=False):
+    """Der feste Satz, mit dem ein Bank- oder Kassenkonto die SKR-Nummer ``number`` nicht bekommt – sonst ``None``. ``number`` ist schon mit
+    ``_form_int`` gelesen (eine Zahl, nie roher Text). ``account_id``: das Konto, das gespeichert wird (keines beim Anlegen); ``is_cash``: die Kasse.
+
+    Geprüft wird nur ein neuer oder geänderter Wert – wer den gespeicherten zurückschickt, fragt hier nicht (so bleibt auch ein Bestand mit 1200 oder
+    1460 speicherbar): (a) das Konto steht im Kontenrahmen, (b) es liegt im Bereich der Art des Kontos (``BANK_SKR_RANGE``, ``CASH_SKR_RANGE``) und
+    (c) kein ANDERES eigenes Konto trägt es. Die Kasse auf 1600 legt das Konto beim Speichern selbst an (``ensure_cash_coa``), es gilt dort als
+    im Kontenrahmen."""
+    if db.get_coa_id_by_account_number(number) is None and not (is_cash and number == DEFAULT_CASH_ACCOUNT):
+        return SKR_NOT_IN_CHART.format(n=number)
+    low, high = CASH_SKR_RANGE if is_cash else BANK_SKR_RANGE
+    if not low <= number <= high:
+        return SKR_OUT_OF_RANGE
+    if any(row[0] != account_id and row[7] == number for row in db.fetch_accounts()):
+        return SKR_IN_USE.format(n=number)
+    return None
+
+
 def handle_add_bankaccount(db: Database, post_data):
     """Handle adding new bank account. Ein neues Konto ist ein reines Geschäftskonto, solange das Formular nichts anderes sagt."""
     name = post_data["name"][0]
@@ -1138,6 +1184,10 @@ def handle_add_bankaccount(db: Database, post_data):
     skr_account = _form_int(skr_raw, 1, 99999)
     if skr_raw.strip() and skr_account is None:
         return 303, f"/masterdata/bankaccounts?error={quote(SKR_ACCOUNT_ERROR, safe='')}"
+    if skr_account is not None:
+        refusal = _skr_account_refusal(db, skr_account)
+        if refusal:
+            return 303, f"/masterdata/bankaccounts?error={quote(refusal, safe='')}"
     business_only = _business_only_from_form(post_data)
     db.insert_account(name, holder, iban, bic, bank_name, skr_account=skr_account,
                       business_only=True if business_only is None else business_only)
@@ -1160,6 +1210,10 @@ def handle_update_bankaccount(db: Database, post_data):
     current = db.get_account_by_id(account_id)
     old_skr = current[7] if current else None
     if skr_account != old_skr:
+        if skr_account is not None:
+            refusal = _skr_account_refusal(db, skr_account, account_id, is_cash=bool(current and current[6] == 1))
+            if refusal:
+                return 303, f"/masterdata/bankaccounts/edit?id={account_id}&error={quote(refusal, safe='')}"
         # Die Form eines Buchungssatzes (Bookings.EntryForm) steht seit 2.1.0 fest, und EÜR
         # und DATEV-Export lesen sie. Zeilen ohne Form (Roh-SQL), die Zuordnung der Sätze zu
         # Kasse und Dashboard, die Split-Summe und der Abgleich richten sich aber weiter nach
@@ -5230,7 +5284,7 @@ def handle_setup_save(db: Database, post_data: dict):
                 bic=bic,
                 bank_name=bank_name,
                 is_cash=0,
-                skr_account=1200,
+                skr_account=free_bank_skr_number(db),       # 1800 im Standard-Kontenrahmen; nie eine feste Nummer
             )
         except Exception:
             import traceback
