@@ -42,6 +42,21 @@ RECEIVABLE_HINT = ('Forderung an einen Kunden: kein Geldeingang und noch keine E
                    'der Zahlungseingang wird später an der Rechnung zugeordnet.')
 
 
+# Hinweistext am Abzeichen einer Bankbewegung über 0,00 € ohne Buchungssatz (seit 2.8.4): Es gibt nichts zu verbuchen, sie gilt nicht als offen.
+ZERO_MOVEMENT_HINT = 'Bankbewegung über 0,00 €: Es gibt nichts zu verbuchen.'
+
+
+def is_zero_movement(amount):
+    """Ob der Betrag einer Bankbewegung genau 0 ist – eine solche Bewegung ohne Buchungssatz gilt nicht als offen. Kein Betrag (``None``) und Text
+    sind keine 0 (wie in der Zählung des Dashboards: ``Amount IS NOT 0``)."""
+    return amount is not None and not isinstance(amount, (str, bytes)) and amount == 0
+
+
+def _zero_movement_badge():
+    """Das graue Abzeichen einer Bankbewegung über 0,00 € ohne Buchungssatz (fester Text, maskiert)."""
+    return f"<span class='badge bg-gray' title='{_attr(ZERO_MOVEMENT_HINT)}'>0,00</span>"
+
+
 def _receivable_badge():
     """Das graue Abzeichen „Forderung“ – für die Einzelzeile, die Gruppe von Forderungen und ihre Kindzeilen EIN Element mit EINEM Hinweistext (maskiert)."""
     return f"<span class='badge bg-gray' title='{_attr(RECEIVABLE_HINT)}'>Forderung</span>"
@@ -1616,9 +1631,12 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                          f" title='Buchungssatz ein-/ausblenden'>&#9654;</span></td>")
                     s+= f"</tr>"
             else:
-                # Nicht verknüpft: als offene Bank-Buchung anzeigen
-                status_badge = "<span class='badge bg-orange' title='Noch nicht verbucht'>offen</span>"
-                s+= (f"<tr class='transaction-row row-open' "
+                # Nicht verknüpft: als offene Bank-Buchung anzeigen – außer bei 0,00 €: Dort gibt es nichts zu verbuchen
+                if is_zero_movement(amount):
+                    status_badge, row_class, amount_color = _zero_movement_badge(), 'transaction-row', 'inherit'
+                else:
+                    status_badge, row_class = "<span class='badge bg-orange' title='Noch nicht verbucht'>offen</span>", 'transaction-row row-open'
+                s+= (f"<tr class='{row_class}' "
                      f"data-account-id='{account_id or ''}' "
                      f"data-date='{date_booking}' "
                      f"data-currency='{currency}' "
