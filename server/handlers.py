@@ -46,7 +46,7 @@ from db.invoice_repair import REBUILD_WARNING
 from db.numbering import NumberRangeError, number_format_error
 from db.matching import FORM_LIQUID_FIRST, FORM_TRANSFER, is_bank_effective, is_mirror_row, purpose_in_counter, read_entry_form
 from db.accounts import DEFAULT_CASH_ACCOUNT
-from db.tax_rates import entry_snapshot
+from db.tax_rates import entry_snapshot, legacy_expressible
 from money import to_minor, from_minor, multiply, tax_from_gross, round_minor, fmt_eur
 from tax_groups import MIXED_TAX_RATES, bp_pct, group_label, rate_groups
 from decimal import Decimal
@@ -795,10 +795,11 @@ def _save_split_rows(db, bank_id, post_data, account_coa_id, date, date_tax,
         db, bank_id, post_data, account_coa_id, date, date_tax, recipient, currency))
 
 
-def _new_payment_problem(db, invoice_id, account_id, amount, revenue_coa_id=None):
+def _new_payment_problem(db, invoice_id, account_id, amount, revenue_coa_id=None, on=None):
     """Klartext, warum sich eine NEUE Bankbewegung nicht als Zahlung zu dieser Rechnung anlegen
     lässt (kein Zahlungseingang, Rechnung nicht zahlbar, Bankkonto ohne SKR-Nummer, kein
-    Erlöskonto …) – ``None``, wenn sie sich zuordnen lässt. Geprüft wird vor dem Anlegen."""
+    Erlöskonto, ein Datum, von dem das Erlöskonto abhängt und das keines ist …) – ``None``, wenn sie
+    sich zuordnen lässt. Geprüft wird vor dem Anlegen. ``on``: das Datum der neuen Bewegung (das Datumsfeld der Maske)."""
     try:
         positive = to_minor(amount) > 0
     except (ValueError, TypeError):
@@ -806,7 +807,7 @@ def _new_payment_problem(db, invoice_id, account_id, amount, revenue_coa_id=None
     if not positive:
         return ('Der Betrag muss größer 0 sein – nur Zahlungseingänge lassen sich einer '
                 'Rechnung zuordnen.')
-    return db.payment_precheck(invoice_id, account_id, revenue_coa_id)
+    return db.payment_precheck(invoice_id, account_id, revenue_coa_id, on=on)
 
 
 # Schlägt die Zuordnung zu einer Rechnung NACH dem Speichern der Maske fehl, bleibt der Nutzer bei der (gespeicherten) Buchung: 303 auf
@@ -876,7 +877,7 @@ def handle_add_transaction(db: Database, post_data):
         # Die Kontierung ergibt sich aus der Rechnung (assign_invoice_payment); ein Erlöskonto
         # aus dem Formular zählt hier nicht.
         if invoice_id and transaction_id <= 0:
-            problem = _new_payment_problem(db, invoice_id, account_id, amount, revenue_coa_id)
+            problem = _new_payment_problem(db, invoice_id, account_id, amount, revenue_coa_id, on=date)
             if problem:
                 return 400, problem
             coa_id = None
@@ -3430,6 +3431,8 @@ TAX_CHOICE_GONE = 'Position {n}: Der gewählte Steuersatz ist in den Stammdaten 
 TAX_CHOICE_RATE_DIFFERS = 'Position {n}: Der Steuersatz passt nicht zum gewählten Eintrag der Stammdaten – bitte die Seite neu laden.'
 TAX_SAME_RATE_TWICE = ('Position {n}: Ein Beleg kann je Steuersatz nur einen Eintrag der Stammdaten tragen ({rate}) – '
                        'zum Beispiel nur einen Befreiungsgrund.')
+# Nicht von ``_tax_fields``, sondern von der Transaktion des Speicherns (``_refuse_gone_revenue_accounts``): Das Erlöskonto eines gelesenen Eintrags gibt es dort nicht mehr
+TAX_CHOICE_CHANGED = 'Ein gewählter Steuersatz wurde inzwischen geändert – bitte die Seite neu laden und den Steuersatz neu wählen.'
 
 # So weit darf der Satz im Kopf (die Maske schickt ihn als Bruch, im Browser durch 100 geteilt) von dem der Positionen abweichen:
 # das Rauschen einer Kommazahl, nie ein anderer Satz
@@ -3475,6 +3478,13 @@ def _choice_id(value):
     return value if type(value) is int and 1 <= value <= 2 ** 63 - 1 else 0
 
 
+def _snapshot_to_write(entry):
+    """Die Momentaufnahme, die das Speichern für den Eintrag ``entry`` der Stammdaten schreibt – ``None``, wo der bisherige Payload den Eintrag ohne Verlust trägt
+    (``db.tax_rates.legacy_expressible``: die Vorbelegung 19 und 7 Prozent ohne Erlöskonto). Die Maske schickt für so einen Eintrag nie eine ID; ein Beleg, der sie
+    doch mit einer ID bekäme, trüge sonst eine Momentaufnahme, die „öffnen und unverändert speichern“ wieder auf NULL setzte."""
+    return None if legacy_expressible(entry) else entry_snapshot(entry)
+
+
 def _tax_fields(db, data, items):
     """Die Steuerangaben des Formulars einer Rechnung oder eines Angebots prüfen – die EINE Stelle für beide Speicherwege
     (``_invoice_fields``, ``handle_quote_save``). Returns ``(Satz im Kopf, Kennzeichen, Sätze der Positionen, Momentaufnahmen)``: was
@@ -3491,7 +3501,13 @@ def _tax_fields(db, data, items):
     Moment des Speicherns, wählbar ist (``TaxEntry.selectable``: gültig und aktiv); sonst – auch bei einer ID, die keine ist, und bei 0, dem Wert der
     Maske für „gespeicherter Stand, Eintrag nicht mehr vorhanden“ – wird abgelehnt, nie still als „ohne Eintrag“ gelesen. Der Satz des Eintrags muss der
     des Formulars sein (so fängt der Server auch einen Eintrag ab, dessen Satz sich zwischen Laden und Speichern geändert hat). Die Position trägt dann
-    eine Momentaufnahme des Eintrags, nie seine ID: Was später in den Stammdaten geschieht, ändert den Beleg nicht. Die Regeln, in dieser Reihenfolge:
+    eine Momentaufnahme des Eintrags, nie seine ID: Was später in den Stammdaten geschieht, ändert den Beleg nicht. **Ausnahme: ein Eintrag, den der bisherige Payload
+    ohne Verlust trägt** (``db.tax_rates.legacy_expressible``, die Vorbelegung 19 und 7 Prozent ohne Erlöskonto, ``_snapshot_to_write``) – er schreibt keine
+    Momentaufnahme, der Beleg wird gespeichert, als wäre sein Satz ohne ID gewählt (Kopf wie Position): Die Maske schickt für ihn nie eine ID, und „öffnen und
+    unverändert speichern“ soll keine Spalte ändern. Alle Prüfungen der ID gelten trotzdem (wählbar, Satz des Formulars, ``0``), und ``TAX_SAME_RATE_TWICE`` gilt nach
+    dem, was gespeichert wird. Die Angaben zum Steuersatz werden vor dem ersten Zugriff auf eine Position geprüft (Modus, Kopfsatz, „je Position ohne Steuerausweis“, wie
+    bis 2.7.0): Besteht ``items`` nicht nur aus Objekten (``[1]``, ``{"a": 1}``, ``[[]]``), gibt es keine ID an einer Position zu lesen, und die Eingabe bekommt den Satz,
+    den sie schon vor 2.8.0 bekam. Die Regeln, in dieser Reihenfolge:
 
     0. ``taxMode`` fehlt oder ist leer (die Maske ohne Häkchen „Steuersatz je Position“) oder ``'mixed'``; jeder andere Wert ist ungültig, ebenso eine
        ``taxRateId`` im Kopf zusammen mit ``'mixed'``.
@@ -3503,13 +3519,13 @@ def _tax_fields(db, data, items):
        1 Prozent lässt sich nicht eindeutig lesen (die Position hieße 50 %, der Kopf 0,5 %) und wird abgelehnt. Kennzeichen ``None``, keine Momentaufnahme –
        auch dann, wenn der Entwurf bisher welche trug: Der Nutzer hat die Vorbelegung gewählt, die Momentaufnahme entfällt mit der Wahl.
        2a. Mit ``taxRateId`` im Kopf: Kopf und jede Position tragen den Satz des Eintrags (``TAX_CHOICE_RATE_DIFFERS``); jede Position bekommt die
-           Momentaufnahme des Eintrags, Kennzeichen ``None``.
+           Momentaufnahme des Eintrags (``_snapshot_to_write``: bei der Vorbelegung keine), Kennzeichen ``None``.
     3. ``taxMode`` ``'mixed'``: jede Position braucht einen eigenen Satz. Ohne ``taxRateId`` GENAU einen aus ``tax_groups.MIXED_TAX_RATES``, mit ihr den des
-       Eintrags (Momentaufnahme). **Je Satz höchstens eine Momentaufnahme** (``TAX_SAME_RATE_TWICE``): zwei Positionen mit gleichem Satz tragen dieselbe –
-       auch „ohne“ gegen „mit“ ist verschieden. Sonst gäbe es in einem Beleg zwei 0-%-Arten, zwei Befreiungsgründe oder eine Satzgruppe mit gemischter
-       Rundung, und die Dokumente und das Buchen (``group_snapshots``) könnten sie nicht lesen. Tragen alle denselben Satz, ist es ein gewöhnlicher
-       Beleg: Kopf = dieser Satz als Bruch, Kennzeichen ``None``. Bei mindestens zwei verschiedenen Sätzen ist der Kopf der HÖCHSTE als Bruch – ein
-       Platzhalter, nie negativ; maßgeblich sind die Satzgruppen – und das Kennzeichen ``1``.
+       Eintrags (Momentaufnahme, ``_snapshot_to_write``). **Je Satz höchstens eine Momentaufnahme** (``TAX_SAME_RATE_TWICE``): zwei Positionen mit gleichem Satz tragen
+       dieselbe – auch „ohne“ gegen „mit“ ist verschieden (der Eintrag der Vorbelegung zählt als „ohne“: er schreibt keine). Sonst gäbe es in einem Beleg zwei
+       0-%-Arten, zwei Befreiungsgründe oder eine Satzgruppe mit gemischter Rundung, und die Dokumente und das Buchen (``group_snapshots``) könnten sie nicht lesen.
+       Tragen alle denselben Satz, ist es ein gewöhnlicher Beleg: Kopf = dieser Satz als Bruch, Kennzeichen ``None``. Bei mindestens zwei verschiedenen Sätzen ist der Kopf
+       der HÖCHSTE als Bruch – ein Platzhalter, nie negativ; maßgeblich sind die Satzgruppen – und das Kennzeichen ``1``.
 
     ``{n}`` in den Meldungen ist die Zeile der Maske (``_position_number``). Die Summen rechnet ``recompute_invoice_totals`` aus den hier gelieferten Sätzen und
     Momentaufnahmen; die Stammdaten liest ``db`` nur, wenn eine ``taxRateId`` da ist."""
@@ -3520,7 +3536,10 @@ def _tax_fields(db, data, items):
     head_choice = data.get('taxRateId') is not None
     if per_item and head_choice:
         raise _SaveRefused(TAX_MODE_INVALID)
-    item_choice = any(item.get('taxRateId') is not None for item in items)
+    # Nur an einer Liste von Objekten gibt es eine ID zu lesen: Bei allem anderen (``[1]``, ``{"a": 1}``, ``[[]]``) bleibt es bei der Reihenfolge von 2.7.0 – Kopfsatz und
+    # „je Position ohne Steuerausweis“ werden vor dem ersten Zugriff auf eine Position geprüft, abgelehnt wird dort, mit dem Satz von damals
+    item_choice = (isinstance(items, list) and all(isinstance(item, dict) for item in items)
+                   and any(item.get('taxRateId') is not None for item in items))
     if not data.get('showTax', True):
         if per_item:
             raise _SaveRefused(TAX_PER_ITEM_WITHOUT_TAX)
@@ -3562,7 +3581,7 @@ def _tax_fields(db, data, items):
                     raise _SaveRefused(TAX_CHOICE_RATE_DIFFERS.format(n=position))
             if exact and abs(chosen - head_rate) > _HEAD_RATE_NOISE:
                 raise _SaveRefused(TAX_CHOICE_RATE_DIFFERS.format(n=_position_number(items[0], 1)))
-            return head, None, rates, [entry_snapshot(entry) for _ in items]
+            return head, None, rates, [_snapshot_to_write(entry) for _ in items]
         for number, rate in enumerate(exact, 1):
             position = _position_number(items[number - 1], number)
             if rate is None:
@@ -3593,7 +3612,7 @@ def _tax_fields(db, data, items):
                 raise _SaveRefused(TAX_CHOICE_GONE.format(n=position))
             if percent != bp_pct(entry.bp):
                 raise _SaveRefused(TAX_CHOICE_RATE_DIFFERS.format(n=position))
-            snapshot = entry_snapshot(entry)
+            snapshot = _snapshot_to_write(entry)
         # Je Satz höchstens eine Momentaufnahme: Die erste Position eines Satzes legt sie fest (auch „keine“), jede weitere muss dieselbe tragen
         identity = None if snapshot is None else tuple(snapshot.values())
         exempt = snapshot is not None and snapshot['tax_category'] == 'E'
@@ -3603,6 +3622,22 @@ def _tax_fields(db, data, items):
         percents.append(percent)
         snapshots.append(snapshot)
     return float(max(percents) / 100), (1 if len(set(percents)) > 1 else None), [item['taxRate'] for item in items], snapshots
+
+
+def _refuse_gone_revenue_accounts(db, tx, rows):
+    """Das Erlöskonto jeder Momentaufnahme eines Steuersatzes aus den Stammdaten (``rows``: die Positionen oder die Momentaufnahmen, ``None`` und Zeilen ohne
+    ``revenue_coa_id`` zählen nicht) in der Transaktion ``tx`` prüfen, die die Positionen schreibt – als Erstes, vor jedem Schreiben. ``_tax_fields`` liest den Eintrag
+    davor, ohne Sperre; ``InvoiceItems.RevenueCoaId`` hat keinen Fremdschlüssel, und wer zwischen Lesen und Schreiben das Konto des Eintrags löscht, ließe den Entwurf sonst
+    auf ein Konto zeigen, das es nicht mehr gibt. Steht das Konto nicht (mehr) im Kontenrahmen oder ist es kein Erlöskonto, lehnt ``TAX_CHOICE_CHANGED`` ab (``_SaveRefused``:
+    die Transaktion rollt zurück, nichts ist gespeichert, keine Nummer verbraucht). Ohne ein Konto in den Zeilen (der Beleg ohne Eintrag, die Vorbelegung) geschieht nichts –
+    auch keine Sperre: Der Ablauf bleibt der bisherige."""
+    wanted = {row['revenue_coa_id'] for row in rows if row and row.get('revenue_coa_id') is not None}
+    if not wanted:
+        return
+    if not tx.conn.in_transaction:
+        tx.conn.execute('BEGIN IMMEDIATE')         # erst die Schreibsperre, dann lesen: Bis zum Commit löscht niemand das Konto
+    if db.missing_revenue_coas(tx.conn, wanted):
+        raise _SaveRefused(TAX_CHOICE_CHANGED)
 
 
 def handle_invoice_save(post_body: bytes):
@@ -3841,6 +3876,7 @@ def _save_invoice(data):
     # Positionen hinter einem gescheiterten Update und keine verbrauchte Rechnungsnummer.
     try:
         with db.transaction() as tx:
+            _refuse_gone_revenue_accounts(db, tx, item_rows)       # als Erstes: ein Konto, das es nicht mehr gibt, lehnt ab, bevor etwas geschrieben oder vergeben ist
             if is_update:
                 db.update_invoice_fields(tx, invoice_id, invoice_data, item_rows)
             else:
@@ -4397,6 +4433,7 @@ def handle_quote_save(post_body: bytes):
 
         try:
             with db.transaction() as tx:
+                _refuse_gone_revenue_accounts(db, tx, snapshots)      # als Erstes, wie bei der Rechnung
                 if is_update:
                     _save_quote_update(tx, quote_id, doc)
                 else:

@@ -388,18 +388,18 @@ def test_the_waiting_account_of_a_rate_is_found_only_for_exactly_that_rate(world
 
 def test_a_group_with_0_percent_gets_its_waiting_account_but_no_revenue_account_so_the_payment_is_refused(world):
     """0 % (so ein Satz ist im Formular nicht wählbar, nur per SQL herstellbar) hat ein Wartekonto (4340, ohne Satz und ohne Steuer an der Zeile), aber
-    bewusst kein Erlöskonto – nie 4185, das Konto der Kleinunternehmer: Die Zahlung lehnt mit dem Klartext ab, bis das entschieden ist."""
+    bewusst kein Erlöskonto – nie 4184/4185, die Konten der Kleinunternehmer: Die Zahlung lehnt mit dem Klartext ab, bis das entschieden ist."""
     invoice_id = mixed_draft(world)
     run_sql(world.db, 'UPDATE InvoiceItems SET TaxRate = 0 WHERE InvoiceId = ? AND Position = 2', invoice_id)
     run_sql(world.db, 'UPDATE Invoices SET TaxAmount = 190000, SumGross = 1690000 WHERE ID = ?', invoice_id)          # 19 %: 19,00; 0 %: keine Steuer
-    drop_accounts(world.db, 4340, 4185)                                                              # 4185 darf nicht neu entstehen
+    drop_accounts(world.db, 4340, 4184, 4185)                                                        # weder 4184 noch 4185 darf neu entstehen
 
     assert world.db.set_invoice_status(invoice_id, 'sent', USER).ok
 
     assert receivables(world.db) == [(10000, 4405, 11900, 0.19, 1900, 'transfer', DATE, TEXT), (10000, 4340, 5000, None, None, 'transfer', DATE, TEXT)]
     assignment = world.db.assign_invoice_payment(invoice_id, incoming(world, amount=100.0))
     assert assignment == PaymentAssignment(False, MIXED_NO_REVENUE_COA.format(rate='0'), None, None)
-    assert world.db.get_coa_id_by_account_number(4185) is None                                       # nie das Konto der Kleinunternehmer
+    assert world.db.get_coa_id_by_account_number(4184) is None and world.db.get_coa_id_by_account_number(4185) is None      # nie die Konten der Kleinunternehmer
 
 
 def test_a_rate_without_a_waiting_account_gets_no_receivable_and_no_account_and_the_payment_names_its_revenue_account(world):

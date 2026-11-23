@@ -4,9 +4,11 @@
 """EÜR-Klassifizierung: Einnahmen = SKR04-Ertragsklasse 4000-4999.
 
 Die frühere Aufzählung einzelner Erlöskonten (4400/4640/4845) ließ z. B.
-4185 (§19-Kleinunternehmer) und 4300 (7%) fälschlich unter "Ausgaben"
-erscheinen.
+4185 (§19-Kleinunternehmer; ab 2026 4184) und 4300 (7%) fälschlich unter
+"Ausgaben" erscheinen.
 """
+import pytest
+
 from db.reporting import is_income_account
 from server.handlers import handle_add_transaction
 from server.pages_dashboard import PageDashboard
@@ -14,7 +16,8 @@ from server.pages_dashboard import PageDashboard
 
 def test_is_income_account_boundaries():
     assert is_income_account(4000)
-    assert is_income_account(4185)   # §19-Kleinunternehmer
+    assert is_income_account(4184)   # §19-Kleinunternehmer ab 2026
+    assert is_income_account(4185)   # §19-Kleinunternehmer bis 2025
     assert is_income_account(4300)   # 7% USt
     assert is_income_account(4400)
     assert is_income_account(4999)
@@ -42,17 +45,19 @@ def _book_payment(db, coa_number, amount='100.00'):
     })
 
 
-def test_euer_data_contains_4185_revenue(tmp_db):
-    _book_payment(tmp_db, 4185)
+@pytest.mark.parametrize('number', [4184, 4185])
+def test_euer_data_contains_the_small_business_revenue(tmp_db, number):
+    _book_payment(tmp_db, number)
     rows = {nr: total for nr, _, total in
             tmp_db.get_euer_data('2026-01-01', '2026-12-31')}
-    assert rows.get(4185) == 100.0
+    assert rows.get(number) == 100.0
 
 
-def test_dashboard_shows_4185_under_einnahmen(tmp_db):
-    _book_payment(tmp_db, 4185)
+@pytest.mark.parametrize('number', [4184, 4185])
+def test_dashboard_shows_the_small_business_revenue_under_einnahmen(tmp_db, number):
+    _book_payment(tmp_db, number)
     html = PageDashboard(tmp_db, '2026-01-01', '2026-12-31')
-    assert '<td>4185</td>' in html
+    assert f'<td>{number}</td>' in html
     # Die Zeile muss VOR der Einnahmen-Summe stehen (= Einnahmen-Tabelle),
     # nicht im Ausgaben-Block danach.
-    assert html.index('<td>4185</td>') < html.index('Summe Betriebseinnahmen')
+    assert html.index(f'<td>{number}</td>') < html.index('Summe Betriebseinnahmen')

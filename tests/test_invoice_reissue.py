@@ -122,7 +122,7 @@ REASON_NO_SKR = 'das Bankkonto hat keine SKR-Nummer'
 REASON_OVERBOOKED = 'die Bankbewegung ist überbucht'
 REASON_EDITED = 'die Buchungssätze der Zahlung wurden von Hand geändert oder ergänzt oder tragen einen Beleg'
 REASON_UNMARKED = 'die Buchungssätze der Zahlung stammen aus einer älteren Version oder wurden von Hand angelegt'
-REASON_REVENUE = 'das Erlöskonto der Zahlung ist nicht das heute für den Steuersatz hinterlegte'
+REASON_REVENUE = 'das Erlöskonto der Zahlung ist nicht das für Steuersatz und Zahlungsdatum hinterlegte'
 REASON_TAX_DATE = ('die Buchungssätze der Zahlung tragen ein anderes Steuerdatum als die Bankbewegung '
                    '(z. B. nach einem DATEV-Export)')
 REASON_MULTIPLE = 'die Bankbewegung ist mehrfach zugeordnet'
@@ -1573,11 +1573,12 @@ def test_an_orphaned_marked_posting_under_the_movement_keeps_every_assignment_of
 
 
 def test_a_payment_without_tax_moves_too(world, monkeypatch):
-    """§ 19 / 0 %: Die Sätze der Zuordnung tragen weder Steuersatz noch Steuerbetrag, der Vergleich erwartet dort keinen."""
+    """§ 19 / 0 %: Die Sätze der Zuordnung tragen weder Steuersatz noch Steuerbetrag, der Vergleich erwartet dort keinen. Die Zahlung vom
+    01.07.2026 liegt auf 4184 (das Konto ab 2026), und die Ersatzrechnung bucht sie wieder dorthin."""
     items = [dict(ONE_ITEM[0], taxRate=0)]
     s = paid_scenario(world, monkeypatch, items=items, taxRate=0, showTax=False)     # § 19: Wartekonto 4340, keine Steuer
     db = world.db
-    assert [(r[0], r[1], r[3]) for r in payment_rows(db, 'T-100')] == [(1800, DEBTORS, None), (4340, 4185, None)]
+    assert [(r[0], r[1], r[3]) for r in payment_rows(db, 'T-100')] == [(1800, DEBTORS, None), (4340, 4184, None)]
     euer_before = euer(db)
 
     code, body = set_invoice_status(s.r2, 'sent')
@@ -2008,7 +2009,7 @@ def test_the_revenue_account_of_a_payment_is_read_from_its_postings(world, monke
     try:
         children = db._payment_children(conn, booking, 'T-100')
         assert db._payment_revenue_coa(conn, children) == coa(4400)
-        assert db._payment_revenue_coa(conn, db._payment_children(conn, second, 'T-500')) == coa(4185)
+        assert db._payment_revenue_coa(conn, db._payment_children(conn, second, 'T-500')) == coa(4184)      # § 19, Zahlung vom 02.07.2026
         assert db._payment_revenue_coa(conn, []) is None
         liquid_only = [r[0] for r in conn.execute("SELECT ID FROM Bookings WHERE ParentBooking_ID = ? AND EntryForm = "
                                                   "'liquid_first'", (booking,))]

@@ -550,10 +550,10 @@ def test_worktime_pdf_is_stored_by_default(tmp_db):
 
 # ── /transactions?from_invoice= (GET) legt kein Konto an ─────────────────────
 def _without_tax_free_revenue_account(db):
-    """Datenbank ohne das Standardkonto 4185 (wie eine ältere Datenbank, die es noch nicht kennt)."""
+    """Datenbank ohne die Standardkonten 4184 und 4185 (wie eine ältere Datenbank, die sie noch nicht kennt – 4184 gibt es erst seit 2.8.2)."""
     with sqlite3.connect(db.db_name) as con:
-        con.execute('DELETE FROM ChartOfAccounts WHERE AccountNumber = 4185')
-    assert db.get_coa_id_by_account_number(4185) is None
+        con.execute('DELETE FROM ChartOfAccounts WHERE AccountNumber IN (4184, 4185)')
+    assert db.get_coa_id_by_account_number(4184) is None and db.get_coa_id_by_account_number(4185) is None
 
 
 def _tax_free_open_invoice(db):
@@ -569,7 +569,7 @@ def test_showing_the_payment_form_for_an_invoice_does_not_create_an_account(serv
     resp = get(server_port, f'/transactions?from_invoice={invoice}')
     assert resp.status == 200 and 'Zahlung zu Rechnung 26R050' in resp.text     # die Vorbelegung steht
     assert scalar(books.db, 'SELECT COUNT(*) FROM ChartOfAccounts') == accounts
-    assert books.db.get_coa_id_by_account_number(4185) is None
+    assert books.db.get_coa_id_by_account_number(4184) is None and books.db.get_coa_id_by_account_number(4185) is None
     assert installation.dump(books.db.db_name) == dump                           # Anzeigen ändert nichts
 
 
@@ -586,12 +586,18 @@ def test_resolve_revenue_coa_creates_the_account_only_when_asked_to(tmp_db):
     _without_tax_free_revenue_account(tmp_db)
     accounts = scalar(tmp_db, 'SELECT COUNT(*) FROM ChartOfAccounts')
     assert tmp_db.resolve_revenue_coa(0, create=False) is None           # steuerfrei: nachschlagen, nichts anlegen
-    assert tmp_db.resolve_revenue_coa(-1, create=False) is None          # Kleinunternehmer (§ 19) genauso
+    for day in ('2025-12-31', '2026-01-01'):
+        assert tmp_db.resolve_revenue_coa(-1, create=False, on=day) is None          # Kleinunternehmer (§ 19) genauso, nach dem Datum der Bankbewegung
     assert scalar(tmp_db, 'SELECT COUNT(*) FROM ChartOfAccounts') == accounts
-    created = tmp_db.resolve_revenue_coa(-1)                             # Vorgabe: legt es an (Speichern der Zuordnung)
-    assert created == tmp_db.get_coa_id_by_account_number(4185) and created is not None
+    created = tmp_db.resolve_revenue_coa(-1, on='2026-01-01')            # Vorgabe: legt es an (Speichern der Zuordnung) – ab 2026 ist es 4184
+    assert created == tmp_db.get_coa_id_by_account_number(4184) and created is not None
     assert scalar(tmp_db, 'SELECT COUNT(*) FROM ChartOfAccounts') == accounts + 1
-    assert tmp_db.resolve_revenue_coa(0, create=False) == created        # jetzt gibt es das Konto zum Nachschlagen
+    assert tmp_db.get_coa_id_by_account_number(4185) is None             # nur das Konto, das das Datum nennt
+    assert tmp_db.resolve_revenue_coa(-1, create=False, on='2026-06-30') == created      # jetzt gibt es das Konto zum Nachschlagen
+    assert tmp_db.resolve_revenue_coa(0, create=False) is None           # 0 % bleibt auf 4185: nur der Platzhalter folgt dem Datum
+    earlier = tmp_db.resolve_revenue_coa(-1, on='2025-12-31')
+    assert earlier == tmp_db.get_coa_id_by_account_number(4185) and earlier != created
+    assert tmp_db.resolve_revenue_coa(0, create=False) == earlier
 
 
 @pytest.mark.parametrize('rate, number', [(0.19, 4400), (19, 4400), (0.07, 4300)])

@@ -481,17 +481,17 @@ def test_a_tax_free_invoice_refunds_without_tax(world):
     items = [dict(ONE_ITEM[0], taxRate=0)]
     r1 = sent(world, 'T-300', items=items, taxRate=0, showTax=False)                   # § 19: 100,00 €, kein Steuersatz
     pay(world, r1, 100.0)
-    assert euer_on(db, '2026-07-01') == {4185: 100.0}
+    assert euer_on(db, '2026-07-01') == {4184: 100.0}                                   # 2026: das Konto ab 2026 (bis 2025: 4185)
     s1 = cancel(world, r1, '2026-07-02').storno_id
     bank = outgoing(world, 100.0, '2026-07-10')
 
     refund(world, s1, bank, 100.0)
 
     assert refund_rows(db, columns(db, s1)['InvoiceNumber']) == [(1800, DEBTORS, -1000000, None, '2026-07-10', FORM_LIQUID),
-                                                                (4340, 4185, -1000000, None, '2026-07-10', FORM_TRANSFER)]
+                                                                (4340, 4184, -1000000, None, '2026-07-10', FORM_TRANSFER)]
     assert query_rows(db, 'SELECT TaxRate, TaxAmount FROM Bookings WHERE ParentBooking_ID = ?', bank) == [
         {'TaxRate': None, 'TaxAmount': None}] * 2
-    assert euer(db) == {} and euer_on(db, '2026-07-10') == {4185: -100.0}
+    assert euer(db) == {} and euer_on(db, '2026-07-10') == {4184: -100.0}
     assert balance(db, DEBTORS) == 0 and balance(db, 4340) == 0
     assert db.find_payment_inconsistencies() == []
 
@@ -628,14 +628,14 @@ def test_without_credit_there_is_nothing_to_refund(world, monkeypatch):
 
 
 def test_a_refused_refund_creates_no_account(world):
-    """Das Auflösen des Erlöskontos kann Konten anlegen (4185 bei § 19) – eine Erstattung, die abgelehnt wird, legt keines an."""
+    """Das Auflösen des Erlöskontos kann Konten anlegen (4184 oder 4185 bei § 19) – eine Erstattung, die abgelehnt wird, legt keines an."""
     db = world.db
     items = [dict(ONE_ITEM[0], taxRate=0)]
     s1 = cancel(world, sent(world, 'T-300', items=items, taxRate=0, showTax=False), '2026-07-02').storno_id
-    run_sql(db, 'DELETE FROM ChartOfAccounts WHERE AccountNumber = 4185')
+    run_sql(db, 'DELETE FROM ChartOfAccounts WHERE AccountNumber IN (4184, 4185)')
     bank = outgoing(world, 50.0)
     refused(world, s1, bank, REFUND_NO_CREDIT_MESSAGE)                                       # tables() enthält ChartOfAccounts
-    assert db.get_coa_id_by_account_number(4185) is None
+    assert db.get_coa_id_by_account_number(4184) is None and db.get_coa_id_by_account_number(4185) is None
 
 
 def test_a_movement_that_is_used_up_has_no_free_rest(world):

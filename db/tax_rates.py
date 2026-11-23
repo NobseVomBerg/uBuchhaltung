@@ -79,7 +79,8 @@ def legacy_expressible(entry):
     """Trägt die Wahl dieses Eintrags der bisherige Payload eines Belegs – der Satz allein, ohne Eintrag – ohne Verlust? Ja bei der Art ``standard`` ohne
     Erlöskonto und mit ganzem Prozentsatz (die Vorbelegung 19 und 7 Prozent): Der Satz sagt dort alles, was der Eintrag sagt. Nein bei einem steuerfreien Eintrag
     (Grund und Konto), bei jedem mit Erlöskonto und bei einem Satz mit Nachkommastellen (5,5 %). Die Maske bekommt es je Eintrag als Wahrheitswert – sie kennt
-    keinen Satz."""
+    keinen Satz. Auch der Server hält sich daran: Für so einen Eintrag schreibt das Speichern keine Momentaufnahme, ob die Maske nun eine ID schickt oder nicht
+    (``handlers._snapshot_to_write``) – „öffnen und unverändert speichern“ ändert so keine Spalte."""
     return entry.kind == STANDARD and entry.revenue_coa_id is None and type(entry.bp) is int and entry.bp % 100 == 0
 
 
@@ -207,6 +208,13 @@ class TaxRatesMixin:
             if own:
                 conn.close()
         return found[0] if found else None
+
+    def missing_revenue_coas(self, conn, coa_ids):
+        """Die Konten unter ``coa_ids`` (die ``RevenueCoaId`` von Momentaufnahmen), die es auf ``conn`` nicht als Erlöskonto gibt: nicht im Kontenrahmen, außerhalb von
+        4000–4999 oder ein Wartekonto (``_income_coas`` – dieselbe Regel wie beim Speichern eines Eintrags), als ``set``. ``InvoiceItems.RevenueCoaId`` hat keinen
+        Fremdschlüssel: Wer eine Momentaufnahme schreibt, fragt es in seiner Transaktion, nachdem er die Schreibsperre hat (``BEGIN IMMEDIATE``) – bis zum Commit löscht oder
+        ändert dann niemand das Konto. Rein lesend."""
+        return set(coa_ids) - {row[0] for row in self._income_coas(conn.cursor())}
 
     def get_tax_account_choices(self):
         """Die Konten, aus denen der Nutzer das Umsatzsteuer- und das Vorsteuerkonto eines Satzes wählt: ``{'vat': [(COA-ID, Kontonummer, Name)], 'input': […]}`` nach

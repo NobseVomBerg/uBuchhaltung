@@ -410,15 +410,15 @@ def _quote_form_html(db: Database, quote_id=None):
                 </tr>
                 <tr class="no-pdf">
                     <td colspan="7" style="text-align:right; border:none;">
-                        <label><input type="checkbox" id="show_tax" __SHOW_TAX_CHECKED__ onchange="calculateTotals()"> Umsatzsteuer ausweisen</label>
+                        <label><input type="checkbox" id="show_tax" ''' + ('checked' if show_tax else '') + ''' onchange="calculateTotals()"> Umsatzsteuer ausweisen</label>
                         <small style="color:#888;">(aus = Kleinunternehmer §&nbsp;19 UStG; der Hinweis darauf wird automatisch gedruckt)</small>
                         ''' + mixed_checkbox_html(mixed_on, mixed_attr) + ' ' + TAX_LINK_HTML + '''
-                        __TAX_PREFILL_NOTE__
+                        ''' + tax_prefill_note + '''
                         ''' + TAX_NOTE_HTML + '''
                     </td>
                 </tr>
                 <tr class="totals-row" id="tax_row">
-                    <td colspan="4" style="text-align:right; border:none;">Mehrwertsteuer ''' + head.html + '''<input type="hidden" id="tax_rate" value="__TAX_PCT__"></td>
+                    <td colspan="4" style="text-align:right; border:none;">Mehrwertsteuer ''' + head.html + '''<input type="hidden" id="tax_rate" value="''' + f'{tax_pct:g}' + '''"></td>
                     <td style="text-align:right; border:none;">auf <span id="tax_base">0,00</span> € netto:</td>
                     <td id="tax_amount" style="text-align:right; font-weight:bold;">0,00 €</td>
                     <td class="no-pdf" style="border:none;"></td>
@@ -719,8 +719,6 @@ def _quote_form_html(db: Database, quote_id=None):
         }
     </script>
     '''
-    # Steuersatz-Feld + USt-Checkbox serverseitig vorbelegen (Platzhalter im Template)
-    s = s.replace('__TAX_PCT__', f'{tax_pct:g}')
-    s = s.replace('__SHOW_TAX_CHECKED__', 'checked' if show_tax else '')
-    s = s.replace('__TAX_PREFILL_NOTE__', tax_prefill_note)
+    # Steuersatz-Feld, USt-Häkchen und Vorbelegungshinweis stehen an ihrer Stelle im Formular (oben, beim Aufbau): Eine Ersetzung von Platzhaltern über die fertige
+    # Seite träfe auch jeden Wert aus der Datenbank, der einen Platzhaltertext enthält (eine Bezeichnung, einen Kunden, einen Artikel, den Einleitungstext).
     return s

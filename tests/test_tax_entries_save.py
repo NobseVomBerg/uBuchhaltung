@@ -19,9 +19,17 @@ an jede Position eine **Momentaufnahme** (``InvoiceItems.TaxCategory`` ``'E'`` b
 * „Position n“ in jeder Meldung ist die Zeile der Maske (``item['position']``, eine ganze Zahl von 1 bis 9999), sonst die laufende Nummer.
 * Die Sperre einer versendeten Rechnung vergleicht die vier Spalten der Momentaufnahme mit (``_items_differ``).
 * Zum ersten Mal laufen Speichern, Buchen und Dokumente zusammen: Entwurf speichern → versenden → Zahlung zuordnen → PDF und E-Rechnung.
+* **Die Vorbelegung (19 und 7 % ohne Erlöskonto, ``legacy_expressible``) schreibt auch mit ID keine Momentaufnahme** (2.8.2, Befund N1): Der Beleg ist Spalte für Spalte der ohne ID –
+  die Maske schickt für diese Einträge nie eine, und „öffnen und unverändert speichern“ ändert so keine Spalte (der Rundlauf mit der Maske: ``tests/test_tax_entries_mask.py``). Alle
+  Prüfungen der ID bleiben, ``TAX_SAME_RATE_TWICE`` gilt nach dem, was gespeichert wird.
+* **Das Erlöskonto einer Momentaufnahme wird in der Schreibtransaktion geprüft** (Befund N3): Verschwindet es zwischen dem Lesen des Eintrags und dem Schreiben, lehnt ``TAX_CHOICE_CHANGED``
+  ab – Zeile für Zeile alles wie vorher, keine Nummer verbraucht.
+* **Kaputte Positionen** (``items`` ohne Objekte: ``[1]``, ``{"a": 1}``, ``[[]]``) bekommen wieder den Satz von 2.7.0 (Befund H1): die Angaben zum Steuersatz werden vor dem ersten Zugriff auf
+  eine Position geprüft.
 
 Alle Namen, Gründe, Konten und Beträge sind erfunden; ein „heute“ steht nie in einer Modulkonstante.
 """
+import contextlib
 import copy
 import datetime
 import json
@@ -39,9 +47,9 @@ from db.invoice_lock import LOCKED_MESSAGE, NO_WAITING_HINT, InvoiceLocked, _ite
 from export.invoice_files import generate_invoice_documents
 from export.pdf_quote import generate_quote_pdf
 from money import to_minor
-from server.handlers import (TAX_CHOICE_GONE, TAX_CHOICE_HEAD_GONE, TAX_CHOICE_RATE_DIFFERS, TAX_CHOICE_WITHOUT_TAX, TAX_ITEM_DIFFERS, TAX_ITEM_INVALID,
-                             TAX_ITEM_MISSING, TAX_ITEM_NOT_ALLOWED, TAX_MODE_INVALID, TAX_PER_ITEM_WITHOUT_TAX, TAX_RATE_INVALID, TAX_SAME_RATE_TWICE,
-                             _choice_id, _position_number, recompute_invoice_totals)
+from server.handlers import (TAX_CHOICE_CHANGED, TAX_CHOICE_GONE, TAX_CHOICE_HEAD_GONE, TAX_CHOICE_RATE_DIFFERS, TAX_CHOICE_WITHOUT_TAX, TAX_ITEM_DIFFERS,
+                             TAX_ITEM_INVALID, TAX_ITEM_MISSING, TAX_ITEM_NOT_ALLOWED, TAX_MODE_INVALID, TAX_PER_ITEM_WITHOUT_TAX, TAX_RATE_INVALID,
+                             TAX_SAME_RATE_TWICE, _choice_id, _position_number, recompute_invoice_totals)
 from tax_groups import EXEMPT, STANDARD, item_groups, mixed_groups
 from tests.invoice_world import ITEMS, build_world, columns, make_payload, query_rows, run_sql, save_raw, set_invoice_status, snapshot
 from tests.single_rate_helpers import document_facts, pdf_facts
@@ -168,6 +176,21 @@ def snapshot_columns(db, doc_id):
     return [(r['TaxCategory'], r['TaxRateBp'], r['TaxExemptReason'], r['RevenueCoaId']) for r in stored(db, doc_id)]
 
 
+def whole_document(db, doc_id):
+    """Jede Spalte von ``Invoices`` und ``InvoiceItems`` des Belegs – ohne das, was sich je Beleg unterscheidet (ID, Nummer, Zeitstempel, die ID der Positionen und ihr Verweis)."""
+    skip = {'ID', 'InvoiceNumber', 'CreatedAt', 'UpdatedAt'}
+    positions = query_rows(db, 'SELECT * FROM InvoiceItems WHERE InvoiceId = ? ORDER BY Position', doc_id)
+    return ({key: value for key, value in columns(db, doc_id).items() if key not in skip},
+            [{key: value for key, value in row.items() if key not in ('ID', 'InvoiceId')} for row in positions])
+
+
+def everything(db):
+    """Alle Zeilen ALLER Tabellen (auch ``sqlite_sequence``), roh – zum Vergleich vorher/nachher: Eine Ablehnung ändert nichts, verbraucht keine Nummer und keinen Zähler."""
+    with contextlib.closing(sqlite3.connect(db.db_name)) as con:
+        names = [row[0] for row in con.execute("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")]
+        return {name: con.execute(f'SELECT * FROM "{name}" ORDER BY rowid').fetchall() for name in names}
+
+
 NO_SNAPSHOT = ('S', None, None, None)                      # eine Position wie bisher
 
 
@@ -215,14 +238,95 @@ def test_positions_without_a_rate_take_the_rate_of_the_head_with_an_entry_too(wo
 
 
 @pytest.mark.parametrize('kind', KINDS)
-def test_a_preset_entry_in_the_head_also_gives_a_snapshot_without_changing_any_sum(world, entries, kind):
-    """Auch die Vorbelegung (19 % ohne Konto) trägt – mit ID geschickt – eine Momentaufnahme; die Summen sind die des heutigen Formulars."""
+def test_a_preset_entry_in_the_head_writes_no_snapshot_and_changes_no_sum(world, entries, kind):
+    """Die Vorbelegung (19 % ohne Konto) trägt der bisherige Payload ohne Verlust (``legacy_expressible``): Mit ID geschickt, schreibt der Server – wie ohne – keine Momentaufnahme; die
+    Summen sind die des heutigen Formulars. (Bis 2.8.1 bekam der Beleg hier ``TaxRateBp`` 1900, und „öffnen und unverändert speichern“ setzte es wieder auf NULL.)"""
     plain = saved(kind, form(kind, world, copy.deepcopy(ITEMS)))
     with_entry = saved(kind, form(kind, world, copy.deepcopy(ITEMS), taxRateId=entries.preset19, **number_over(kind, 101)))
 
     assert head(world.db, with_entry) == head(world.db, plain) == {'TaxRate': 0.19, 'MixedTaxRates': None, **minor('250.50', '47.60', '298.10')}
     assert snapshot_columns(world.db, plain) == [NO_SNAPSHOT] * 2
-    assert snapshot_columns(world.db, with_entry) == [('S', 1900, None, None)] * 2
+    assert snapshot_columns(world.db, with_entry) == [NO_SNAPSHOT] * 2
+
+
+@pytest.mark.parametrize('kind', KINDS)
+@pytest.mark.parametrize('preset, rate', [('preset19', 19), ('preset7', 7)])
+def test_a_preset_entry_in_the_head_gives_the_document_that_the_form_without_an_id_gives_column_for_column(world, entries, kind, preset, rate):
+    """Nicht nur die Momentaufnahme: jede Spalte von ``Invoices`` und ``InvoiceItems``. Die Summen sind zweistufig wie ohne ID (hier mit Cent-Beträgen und Mengen, die runden)."""
+    items = [item(1, 'Beratung', 99.99, rate, quantity=3), item(2, 'Material', 0.09, rate), item(3, 'Stunden', 33.33, rate, quantity=1.5)]
+    plain = saved(kind, form(kind, world, copy.deepcopy(items), taxRate=rate / 100))
+    with_entry = saved(kind, form(kind, world, copy.deepcopy(items), taxRate=rate / 100, taxRateId=getattr(entries, preset), **number_over(kind, 101)))
+
+    assert whole_document(world.db, with_entry) == whole_document(world.db, plain)
+    assert snapshot_columns(world.db, with_entry) == [NO_SNAPSHOT] * 3
+
+
+@pytest.mark.parametrize('kind', KINDS)
+def test_preset_entries_at_the_positions_write_no_snapshot_either(world, entries, kind):
+    """Mit dem Häkchen „Steuersatz je Position“: 19 und 7 % mit ihrer ID sind der Beleg ohne IDs, Spalte für Spalte – auch das Kennzeichen und der Kopf."""
+    ids = [item(1, 'Beratung', 100.0, 19, taxRateId=entries.preset19), item(2, 'Fachbuch', 50.0, 7, taxRateId=entries.preset7),
+           item(3, 'Stunden', 10.01, 19, taxRateId=entries.preset19)]
+    without = [{key: value for key, value in row.items() if key != 'taxRateId'} for row in ids]
+    plain = saved(kind, form(kind, world, without, taxMode='mixed'))
+    with_ids = saved(kind, form(kind, world, ids, taxMode='mixed', **number_over(kind, 101)))
+
+    assert whole_document(world.db, with_ids) == whole_document(world.db, plain)
+    assert snapshot_columns(world.db, with_ids) == [NO_SNAPSHOT] * 3
+    assert head(world.db, with_ids)['MixedTaxRates'] == 1
+
+
+@pytest.mark.parametrize('kind', KINDS)
+def test_only_the_positions_with_an_entry_the_payload_cannot_carry_get_a_snapshot_in_a_mixed_document(world, entries, kind):
+    doc_id = saved(kind, form(kind, world, [item(1, 'Beratung', 100.0, 19, taxRateId=entries.preset19), item(2, 'Nachhilfe', 80.0, 0, taxRateId=entries.free),
+                                            item(3, 'Heft', 10.0, 5.5, taxRateId=entries.reduced), item(4, 'Fachbuch', 50.0, 7, taxRateId=entries.preset7)],
+                             taxMode='mixed'))
+
+    assert snapshot_columns(world.db, doc_id) == [NO_SNAPSHOT, free_snapshot(entries), ('S', 550, None, entries.coa[4150]), NO_SNAPSHOT]
+
+
+@pytest.mark.parametrize('kind', KINDS)
+def test_two_positions_of_one_rate_with_the_preset_and_its_id_or_none_are_one_snapshot_and_no_conflict(world, entries, kind):
+    """„Mit ID gegen ohne“ ist für die Vorbelegung kein Widerspruch mehr: Beide schreiben nichts (``TAX_SAME_RATE_TWICE`` gilt nach dem, was gespeichert wird). Ein Eintrag, der etwas
+    schriebe (``nineteen_special``, mit Erlöskonto), gegen die Vorbelegung bleibt einer – siehe ``REFUSALS``."""
+    ids = saved(kind, form(kind, world, [item(1, 'Beratung', 100.0, 19), item(2, 'Material', 20.0, 19, taxRateId=entries.preset19), item(3, 'Fachbuch', 5.0, 7)],
+                           taxMode='mixed'))
+    both = saved(kind, form(kind, world, [item(1, 'Beratung', 100.0, 19, taxRateId=entries.preset19), item(2, 'Material', 20.0, 19), item(3, 'Fachbuch', 5.0, 7)],
+                            taxMode='mixed', **number_over(kind, 101)))
+
+    for doc_id in (ids, both):
+        assert snapshot_columns(world.db, doc_id) == [NO_SNAPSHOT] * 3
+        assert head(world.db, doc_id) == {'TaxRate': 0.19, 'MixedTaxRates': 1, **minor('125.00', '23.15', '148.15')}          # 120,00 · 19 % = 22,80 und 5,00 · 7 % = 0,35
+
+
+# Alle Prüfungen der ID gelten für die Vorbelegung unverändert – die Ausnahme betrifft nur, was geschrieben wird
+PRESET_REFUSALS = {
+    'kopf-satz-passt-nicht': lambda e: ([item(1, 'A', 10.0, 7), item(2, 'B', 10.0, 7)], dict(taxRate=0.07, taxRateId=e.preset19), TAX_CHOICE_RATE_DIFFERS.format(n=1)),
+    'position-satz-passt-nicht': lambda e: ([item(1, 'A', 10.0, 19), item(2, 'B', 10.0, 19, taxRateId=e.preset7)], MIXED, TAX_CHOICE_RATE_DIFFERS.format(n=2)),
+    'kopf-passt-nicht-zur-position': lambda e: ([item(1, 'A', 10.0, 19)], dict(taxRate=0.07, taxRateId=e.preset19), TAX_CHOICE_RATE_DIFFERS.format(n=1)),
+    'ohne-steuerausweis': lambda e: ([item(1, 'A', 10.0, 0)], dict(showTax=False, taxRate=0, taxRateId=e.preset19), TAX_CHOICE_WITHOUT_TAX),
+    'mit-haeckchen-im-kopf': lambda e: ([item(1, 'A', 10.0, 19)], dict(taxMode='mixed', taxRateId=e.preset19), TAX_MODE_INVALID),
+    'position-ohne-haeckchen': lambda e: ([item(1, 'A', 10.0, 19, taxRateId=e.preset19)], dict(taxRate=0.19), TAX_MODE_INVALID),
+    'id-0': lambda e: ([item(1, 'A', 10.0, 19)], dict(taxRate=0.19, taxRateId=0), TAX_CHOICE_HEAD_GONE),
+    'position-id-0': lambda e: ([plain_19(), item(2, 'B', 10.0, 7, taxRateId=0)], MIXED, TAX_CHOICE_GONE.format(n=2)),
+}
+
+
+@pytest.mark.parametrize('kind', KINDS)
+@pytest.mark.parametrize('case', PRESET_REFUSALS)
+def test_the_checks_of_the_id_stay_for_the_preset(world, entries, kind, case):
+    items, over, sentence = PRESET_REFUSALS[case](entries)
+
+    assert refused(kind, world, form(kind, world, items, **over)) == sentence
+
+
+@pytest.mark.parametrize('kind', KINDS)
+def test_a_preset_that_is_switched_off_is_refused_by_its_id_in_the_head_and_at_a_position(world, entries, kind):
+    world.db.set_tax_rate_active(entries.preset19, False)
+
+    in_head = refused(kind, world, form(kind, world, [item(1, 'A', 10.0, 19)], taxRate=0.19, taxRateId=entries.preset19))
+    at_position = refused(kind, world, form(kind, world, [item(1, 'A', 10.0, 7), item(2, 'B', 10.0, 19, taxRateId=entries.preset19)], taxMode='mixed'))
+
+    assert in_head == TAX_CHOICE_HEAD_GONE and at_position == TAX_CHOICE_GONE.format(n=2)
 
 
 @pytest.mark.parametrize('kind', KINDS)
@@ -299,15 +403,27 @@ def test_all_positions_with_the_same_entry_make_an_ordinary_document_even_with_t
 
 @pytest.mark.parametrize('kind', KINDS)
 def test_the_same_entry_on_two_positions_and_two_entries_with_the_same_content_are_one_snapshot(world, entries, kind):
-    same = saved(kind, form(kind, world, [item(1, 'A', 10.0, 7, taxRateId=entries.preset7), item(2, 'B', 20.0, 7, taxRateId=entries.preset7),
+    """Mit Erlöskonto (``seven_special``) schreibt der Eintrag eine Momentaufnahme: derselbe Eintrag zweimal und zwei Einträge gleichen Inhalts sind eine."""
+    twin = world.db.insert_tax_rate(label='7 % mit Sonderkonto, zweiter Eintrag (erfunden)', bp=700, kind=STANDARD, revenue_coa_id=entries.coa[4190])
+    same = saved(kind, form(kind, world, [item(1, 'A', 10.0, 7, taxRateId=entries.seven_special), item(2, 'B', 20.0, 7, taxRateId=entries.seven_special),
                                           item(3, 'C', 30.0, 19)], taxMode='mixed'))
-    twins = saved(kind, form(kind, world, [item(1, 'A', 10.0, 7, taxRateId=entries.preset7), item(2, 'B', 20.0, 7, taxRateId=entries.seven_twin),
+    twins = saved(kind, form(kind, world, [item(1, 'A', 10.0, 7, taxRateId=entries.seven_special), item(2, 'B', 20.0, 7, taxRateId=twin),
                                            item(3, 'C', 30.0, 19)], taxMode='mixed',
                              **number_over(kind, 101)))
 
     for doc_id in (same, twins):
         assert head(world.db, doc_id) == {'TaxRate': 0.19, 'MixedTaxRates': 1, **minor('60.00', '7.80', '67.80')}
-        assert snapshot_columns(world.db, doc_id) == [('S', 700, None, None)] * 2 + [NO_SNAPSHOT]
+        assert snapshot_columns(world.db, doc_id) == [('S', 700, None, entries.coa[4190])] * 2 + [NO_SNAPSHOT]
+
+
+@pytest.mark.parametrize('kind', KINDS)
+def test_the_preset_and_a_twin_without_an_account_write_no_snapshot_on_either_position(world, entries, kind):
+    """``preset7`` und ``seven_twin`` (7 % ohne Erlöskonto) tragen beide der bisherige Payload: Zwei Positionen mit je einem von ihnen schreiben nichts – und widersprechen sich nicht."""
+    doc_id = saved(kind, form(kind, world, [item(1, 'A', 10.0, 7, taxRateId=entries.preset7), item(2, 'B', 20.0, 7, taxRateId=entries.seven_twin),
+                                            item(3, 'C', 30.0, 19)], taxMode='mixed'))
+
+    assert head(world.db, doc_id) == {'TaxRate': 0.19, 'MixedTaxRates': 1, **minor('60.00', '7.80', '67.80')}
+    assert snapshot_columns(world.db, doc_id) == [NO_SNAPSHOT] * 3
 
 
 @pytest.mark.parametrize('kind', KINDS)
@@ -453,7 +569,12 @@ REFUSALS = {
                                               TAX_SAME_RATE_TWICE.format(n=2, rate='steuerfrei')),
     'mit-gegen-ohne': lambda e: ([plain_19(), item(2, 'B', 20.0, 19, taxRateId=e.nineteen_special)], MIXED, TAX_SAME_RATE_TWICE.format(n=2, rate='19 %')),
     'ohne-gegen-mit': lambda e: ([item(1, 'B', 20.0, 19, taxRateId=e.nineteen_special), item(2, 'A', 100.0, 19)], MIXED, TAX_SAME_RATE_TWICE.format(n=2, rate='19 %')),
-    'vorbelegung-mit-id-gegen-ohne': lambda e: ([plain_19(), item(2, 'B', 20.0, 19, taxRateId=e.preset19)], MIXED, TAX_SAME_RATE_TWICE.format(n=2, rate='19 %')),
+    # Die Vorbelegung mit ID schreibt nichts (``legacy_expressible``), „mit ID gegen ohne“ ist also kein Widerspruch (``test_two_positions_of_one_rate_with_the_preset_…``) – gegen einen Eintrag
+    # mit Erlöskonto aber schon: Verschieden ist, was gespeichert wird
+    'vorbelegung-mit-id-gegen-eintrag-mit-konto': lambda e: ([item(1, 'A', 100.0, 19, taxRateId=e.preset19), item(2, 'B', 20.0, 19, taxRateId=e.nineteen_special)], MIXED,
+                                                             TAX_SAME_RATE_TWICE.format(n=2, rate='19 %')),
+    'eintrag-mit-konto-gegen-vorbelegung-mit-id': lambda e: ([item(1, 'B', 20.0, 19, taxRateId=e.nineteen_special), item(2, 'A', 100.0, 19, taxRateId=e.preset19)], MIXED,
+                                                             TAX_SAME_RATE_TWICE.format(n=2, rate='19 %')),
     'zwei-erloeskonten-bei-7-prozent': lambda e: ([item(1, 'A', 10.0, 7, taxRateId=e.preset7), item(2, 'B', 20.0, 7, taxRateId=e.seven_special)], MIXED,
                                                   TAX_SAME_RATE_TWICE.format(n=2, rate='7 %')),
     'dritte-position-ist-die-genannte': lambda e: ([plain_19(), item(2, 'B', 10.0, 7), item(3, 'C', 20.0, 19, taxRateId=e.nineteen_special)], MIXED,
@@ -553,6 +674,148 @@ def test_the_existing_checks_keep_their_text_and_order_for_a_form_without_an_ent
     assert refused(kind, world, form(kind, world, [item(1, 'A', 1.0, 19)], taxRate='abc')) == TAX_RATE_INVALID
     assert refused(kind, world, form(kind, world, [item(1, 'A', 1.0, 19)], showTax=False, taxRate=0, taxMode='mixed')) == TAX_PER_ITEM_WITHOUT_TAX
     assert refused(kind, world, form(kind, world, [item(1, 'A', 1.0, 19)], taxMode='x')) == TAX_MODE_INVALID
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Kaputte Positionen: derselbe Satz wie in 2.7.0 (Befund H1)
+# ═════════════════════════════════════════════════════════════════════════════
+
+# Der allgemeine Satz von ``_save_error_text``: Der erste Zugriff auf eine Position (``.get`` an einem Nicht-Objekt) scheitert mit einem ``AttributeError`` bzw. ``TypeError``
+GENERAL = 'Speichern fehlgeschlagen: Beträge, Mengen oder Positionen sind ungültig – es wurde nichts gespeichert.'
+BROKEN_ITEMS = [[1], {'a': 1}, [[]]]                       # keine Liste von Objekten: eine Zahl, ein Objekt statt einer Liste, eine Liste in der Liste
+
+
+@pytest.mark.parametrize('kind', KINDS)
+@pytest.mark.parametrize('items', BROKEN_ITEMS, ids=json.dumps)
+@pytest.mark.parametrize('over, sentence', [
+    pytest.param({}, GENERAL, id='kopf-in-ordnung'),
+    pytest.param(dict(taxRate='abc'), TAX_RATE_INVALID, id='kopfsatz-ungueltig'),
+    pytest.param(dict(taxRate=None), TAX_RATE_INVALID, id='kopfsatz-fehlt'),
+    pytest.param(dict(showTax=False, taxRate=0, taxMode='mixed'), TAX_PER_ITEM_WITHOUT_TAX, id='je-position-ohne-steuerausweis'),
+    pytest.param(dict(taxMode='x'), TAX_MODE_INVALID, id='modus-ungueltig'),
+    pytest.param(dict(taxMode='mixed'), GENERAL, id='je-position'),
+    pytest.param(dict(taxRate=None, taxMode='mixed'), GENERAL, id='je-position-ohne-kopfsatz'),
+    pytest.param(dict(showTax=False, taxRate=0), GENERAL, id='ohne-steuerausweis'),
+    pytest.param(dict(taxRateId=1), GENERAL, id='id-im-kopf'),
+])
+def test_items_that_are_no_list_of_objects_get_the_sentence_of_2_7_0(world, entries, kind, items, over, sentence):
+    """Seit 2.8.0 las ``_tax_fields`` die IDs der Positionen als Erstes – ein Nicht-Objekt scheiterte dort, und die Eingabe bekam den allgemeinen Satz statt des Satzes, den sie in 2.7.0
+    bekam (Kopfsatz ungültig, „je Position“ ohne Steuerausweis): Die Angaben zum Steuersatz werden wieder vor dem ersten Zugriff auf eine Position geprüft. Abgelehnt wird in jedem Fall,
+    nichts gespeichert (``refused``)."""
+    assert refused(kind, world, form(kind, world, copy.deepcopy(items), **over)) == sentence
+
+
+@pytest.mark.parametrize('kind', KINDS)
+@pytest.mark.parametrize('over, sentence', [
+    pytest.param({}, GENERAL, id='kopf-in-ordnung'),
+    pytest.param(dict(taxRate='abc'), TAX_RATE_INVALID, id='kopfsatz-ungueltig'),
+])
+def test_an_object_with_an_id_next_to_a_non_object_is_no_list_of_objects_either(world, entries, kind, over, sentence):
+    """Ein Objekt mit ID neben einem Nicht-Objekt: Die ID wird nicht gelesen (``item_choice``), der Beleg scheitert wie jeder mit einer kaputten Position."""
+    items = [item(1, 'Heft', 10.0, 5.5, taxRateId=entries.reduced), 1]
+
+    assert refused(kind, world, form(kind, world, items, **over)) == sentence
+
+
+@pytest.mark.parametrize('kind', KINDS)
+def test_the_new_checks_of_the_ids_are_not_weakened_by_the_order_of_2_7_0(world, entries, kind):
+    """Bei einer Liste von Objekten bleibt es bei den Prüfungen der IDs – vor dem Kopfsatz (``TAX_MODE_INVALID``) wie seit 2.8.0."""
+    assert refused(kind, world, form(kind, world, [item(1, 'A', 10.0, 5.5, taxRateId=entries.reduced)], taxRate='abc')) == TAX_MODE_INVALID
+    assert refused(kind, world, form(kind, world, [item(1, 'A', 10.0, 0, taxRateId=entries.free)], showTax=False, taxRate=0)) == TAX_CHOICE_WITHOUT_TAX
+    assert refused(kind, world, form(kind, world, [item(1, 'A', 10.0, 0)], showTax=False, taxRate=0, taxRateId=entries.free)) == TAX_CHOICE_WITHOUT_TAX
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Der Eintrag wird in der Schreibtransaktion geprüft (Befund N3)
+# ═════════════════════════════════════════════════════════════════════════════
+
+def lose_the_account_after_reading(monkeypatch, db, how, entry_id, coa_id):
+    """Der Haken: ``get_tax_rate`` liefert den Eintrag und verliert danach – genau einmal – sein Erlöskonto, wie ein zweiter Nutzer zwischen dem Lesen des Eintrags (``_tax_fields``, ohne
+    Sperre) und dem Schreiben des Speicherns: ``how`` ``deleted`` (der Eintrag und das Konto sind weg) oder ``renumbered`` (das Konto liegt außerhalb von 4000–4999). Die Antwort des Hakens
+    ist ``seen``; ``seen['dump']`` ist der Stand ALLER Tabellen unmittelbar danach – was die Ablehnung nicht mehr ändern darf."""
+    seen = {}
+    real = db.get_tax_rate
+
+    def read_then_lose(requested, conn=None):
+        found = real(requested, conn)
+        monkeypatch.setattr(db, 'get_tax_rate', real)                       # nur das erste Lesen
+        if how == 'deleted':
+            run_sql(db, 'DELETE FROM TaxRates WHERE ID = ?', entry_id)
+            run_sql(db, 'DELETE FROM ChartOfAccounts WHERE ID = ?', coa_id)
+        else:
+            run_sql(db, 'UPDATE ChartOfAccounts SET AccountNumber = 84150 WHERE ID = ?', coa_id)
+        seen['dump'] = everything(db)
+        return found
+
+    monkeypatch.setattr(db, 'get_tax_rate', read_then_lose)
+    return seen
+
+
+@pytest.mark.parametrize('kind', KINDS)
+@pytest.mark.parametrize('write', ['new', 'update'])
+@pytest.mark.parametrize('place', ['head', 'position'])
+@pytest.mark.parametrize('how', ['deleted', 'renumbered'])
+def test_an_account_lost_between_reading_the_entry_and_writing_the_positions_is_refused_by_the_transaction(world, entries, monkeypatch, kind, write, place, how):
+    """Ohne die Prüfung in der Transaktion trüge der Entwurf ``InvoiceItems.RevenueCoaId`` eines Kontos, das es nicht mehr gibt (die Spalte hat keinen Fremdschlüssel). Jetzt: ``TAX_CHOICE_CHANGED``,
+    nichts gespeichert (keine Zeile, keine Nummer, kein Zähler, kein Protokoll – der Stand aller Tabellen bleibt), und der nächste Versuch bekommt den gewöhnlichen Satz „nicht mehr wählbar“."""
+    db = world.db
+    stored = saved(kind, form(kind, world, copy.deepcopy(ITEMS))) if write == 'update' else None
+    if place == 'head':
+        items, over = [item(1, 'Heft', 10.0, 5.5), item(2, 'Buch', 20.0, 5.5)], dict(taxRate=0.055, taxRateId=entries.reduced)
+        expected_next = TAX_CHOICE_HEAD_GONE
+    else:
+        items, over = [item(1, 'Beratung', 100.0, 19), item(2, 'Heft', 10.0, 5.5, taxRateId=entries.reduced)], dict(MIXED)
+        expected_next = TAX_CHOICE_GONE.format(n=2)
+    if stored is not None:
+        over.update({'invoiceId': stored, 'invoiceNumber': columns(db, stored)['InvoiceNumber']} if kind == 'invoice' else {'quoteId': stored})
+    seen = lose_the_account_after_reading(monkeypatch, db, how, entries.reduced, entries.coa[4150])
+
+    answer, _status = post(kind, form(kind, world, items, **over))
+
+    assert 'dump' in seen, 'der Haken lief nicht'
+    assert answer == {'success': False, 'error': TAX_CHOICE_CHANGED}
+    assert everything(db) == seen['dump']
+    assert refused(kind, world, form(kind, world, items, **over)) == expected_next
+
+
+def test_the_sentence_of_the_race_is_the_fixed_text_of_the_plan():
+    assert TAX_CHOICE_CHANGED == 'Ein gewählter Steuersatz wurde inzwischen geändert – bitte die Seite neu laden und den Steuersatz neu wählen.'
+
+
+@pytest.mark.parametrize('kind', KINDS)
+def test_a_save_whose_accounts_are_all_there_goes_through_the_check_and_writes_what_it_always_did(world, entries, kind):
+    """Die Prüfung nimmt die Schreibsperre vor dem Schreiben (``BEGIN IMMEDIATE``), wenn eine Momentaufnahme ein Konto trägt – der Rest läuft unverändert: Nummer, Zeilen, Momentaufnahmen."""
+    doc_id = saved(kind, form(kind, world, [item(1, 'Beratung', 100.0, 19), item(2, 'Nachhilfe', 80.0, 0, taxRateId=entries.free)], taxMode='mixed'))
+    again = resave(kind, world, doc_id, [item(1, 'Heft', 10.0, 5.5)], taxRate=0.055, taxRateId=entries.reduced)
+
+    assert again == doc_id
+    assert snapshot_columns(world.db, doc_id) == [('S', 550, None, entries.coa[4150])]
+
+
+@pytest.mark.parametrize('rows', [[], [None], [{}], [{'revenue_coa_id': None}], [None, {'tax_rate_bp': 550, 'revenue_coa_id': None}, {'description': 'Heft'}]],
+                         ids=['leer', 'none', 'ohne-schluessel', 'konto-none', 'ohne-konto'])
+def test_without_a_revenue_account_in_the_rows_the_check_takes_no_lock_and_reads_nothing(world, rows):
+    """Der Beleg ohne Eintrag und die Vorbelegung (ohne Erlöskonto): Der Ablauf bleibt der bisherige – die Prüfung fasst die Verbindung nicht an."""
+    class Untouchable:
+        in_transaction = False
+
+        def execute(self, *args):
+            raise AssertionError(f'die Verbindung wurde angefasst: {args}')
+
+    handlers._refuse_gone_revenue_accounts(world.db, SimpleNamespace(conn=Untouchable()), rows)
+
+
+def test_missing_revenue_coas_names_the_accounts_that_are_no_income_account_on_the_connection(world, entries):
+    """Dieselbe Regel wie beim Speichern eines Eintrags (``_income_coas``): im Kontenrahmen, 4000–4999, kein Wartekonto."""
+    db = world.db
+    expense = db.get_coa_id_by_account_number(6300)
+    waiting = db.get_coa_id_by_account_number(4340)
+    assert expense is not None and waiting is not None
+
+    with contextlib.closing(db._get_connection()) as conn:
+        assert db.missing_revenue_coas(conn, [entries.coa[4120], entries.coa[4150]]) == set()
+        assert db.missing_revenue_coas(conn, {entries.coa[4120], 999999, expense, waiting}) == {999999, expense, waiting}
+        assert db.missing_revenue_coas(conn, []) == set()
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -738,7 +1001,7 @@ def test_the_preset_with_its_id_gives_the_same_sums_the_same_pdf_and_the_same_e_
         after = (head(world.db, doc_id), [(r['Position'], r['TotalNet'], r['TaxRate']) for r in stored(world.db, doc_id)], documents_of(kind, world, doc_id))
 
         assert after == before, (count, items, with_ids)
-        assert all(snap[1] is not None for snap in snapshot_columns(world.db, doc_id))        # und jede Position trägt jetzt eine Momentaufnahme
+        assert snapshot_columns(world.db, doc_id) == [NO_SNAPSHOT] * len(items)               # und keine Position trägt eine Momentaufnahme: Die Vorbelegung braucht keine (2.8.2)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -822,13 +1085,25 @@ def test_a_sent_invoice_refuses_a_deviating_snapshot_like_any_other_change_to_a_
 
 
 def test_a_sent_invoice_without_a_snapshot_refuses_an_entry_sent_with_it(world, entries):
+    """Der Eintrag ``nineteen_special`` (19 % mit eigenem Erlöskonto) schriebe eine Momentaufnahme – die gesperrte Position trüge sie danach: abgelehnt."""
     doc_id = saved('invoice', form('invoice', world, copy.deepcopy(ITEMS)))
     assert set_invoice_status(doc_id, 'sent')[0] == 200
     before = snapshot(world.db)
 
-    raw = save_raw(form('invoice', world, copy.deepcopy(ITEMS), invoiceId=doc_id, documentVersion=1, taxRateId=entries.preset19))
+    raw = save_raw(form('invoice', world, copy.deepcopy(ITEMS), invoiceId=doc_id, documentVersion=1, taxRateId=entries.nineteen_special))
 
     assert raw.status == 409 and json.loads(raw)['error'].startswith(LOCKED_MESSAGE) and snapshot(world.db) == before
+
+
+def test_a_sent_invoice_without_a_snapshot_takes_the_preset_sent_with_its_id_as_unchanged(world, entries):
+    """Die Vorbelegung schreibt mit ID keine Momentaufnahme (2.8.2): Für die gesperrte Rechnung ohne eine ist das Formular mit der ID das Formular ohne – nichts ändert sich."""
+    doc_id = saved('invoice', form('invoice', world, copy.deepcopy(ITEMS)))
+    assert set_invoice_status(doc_id, 'sent')[0] == 200
+    before = snapshot(world.db)
+
+    answer, _status = post('invoice', form('invoice', world, copy.deepcopy(ITEMS), invoiceId=doc_id, documentVersion=1, taxRateId=entries.preset19))
+
+    assert answer == {'success': True, 'invoice_id': doc_id} and snapshot(world.db) == before
 
 
 def test_the_database_layer_refuses_a_deviating_snapshot_of_a_sent_invoice_too(world, entries):

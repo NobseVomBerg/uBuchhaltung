@@ -11,11 +11,15 @@ from tax_groups import booking_rate
 from .core import fk_explained
 from .invoice_lock import (CHANGED_MESSAGE, DocumentNotFound, has_storno, invoice_row, REOPEN_ATTACHED_MESSAGE,
                            REOPEN_FOREIGN_MESSAGE, REOPEN_IMPORTED_MESSAGE)
-# Was ``db.invoice_payments`` für die Buchungen eines Belegs mit Steuersatz je Position festlegt, reicht dieses Modul weiter
+# Was ``db.invoice_payments`` für die Buchungen eines Belegs mit Steuersatz je Position festlegt, reicht dieses Modul weiter – ebenso die Regel der
+# Kleinunternehmer-Erlöse (4185 bis 2025, 4184 ab 2026, nach dem Datum der Bankbewegung)
+from . import invoice_payments as _payments
 from .invoice_payments import (MIXED_ALLOCATION_UNREADABLE, MIXED_GROUP_NOT_POSITIVE, MIXED_GROUPS_MISMATCH,  # noqa: F401
                                MIXED_LINK_NOT_BOOKABLE, MIXED_NO_REVENUE_COA, MIXED_RECEIVABLE_MISMATCH, PAYABLE_STATUSES,
                                PAYMENT_MARK, STORNO_KIND, STORNO_PAYMENT_MESSAGE, ITEM_SNAPSHOT_COLUMNS, ITEM_SNAPSHOT_KEYS, MixedNotBookable,
-                               has_mixed_rates)
+                               SMALL_BUSINESS_REVENUE_BEFORE, SMALL_BUSINESS_REVENUE_FROM, SMALL_BUSINESS_REVENUE_NAMES,
+                               SMALL_BUSINESS_REVENUE_NUMBERS, SMALL_BUSINESS_SWITCH, has_mixed_rates, small_business_day,
+                               small_business_revenue_number, uses_small_business_rule)
 from .matching import FORM_TRANSFER
 from .reporting import is_income_account
 
@@ -44,8 +48,8 @@ class InvoiceCol:
 
 #: Die Standard-Erlöskonten der Sätze, für die es eines gibt – Prozentzahl → Kontonummer (SKR04): 19 % → 4400, 7 % → 4300. ``resolve_revenue_coa`` nimmt sie, wenn
 #: nichts gelernt ist; jeder andere Satz (5,5 % …) und jede steuerfreie Leistung hat keines, dort muss der Eintrag der Stammdaten ein Erlöskonto nennen
-#: (``tax_groups.check_tax_entry``, ``has_default_revenue``) – der Satz 0 bekommt nie ein Standardkonto (4185 ist das der Kleinunternehmer und gilt nur für
-#: einen Beleg ohne Steuerausweis).
+#: (``tax_groups.check_tax_entry``, ``has_default_revenue``) – der Satz 0 bekommt nie ein Standardkonto (4184/4185 sind die der Kleinunternehmer und gelten nur für
+#: einen Beleg ohne Steuerausweis, nach dem Datum der Bankbewegung: 4185 bis 2025, 4184 ab 2026).
 DEFAULT_REVENUE_ACCOUNT_NUMBERS = {19: 4400, 7: 4300}
 
 # Aus diesen Status wird ein Angebot in eine Rechnung umgewandelt – einmal: danach ist es „converted“.
@@ -798,8 +802,13 @@ class InvoicesMixin:
                 f'ELSE ROUND({column}, 2) END)')
 
     def _learned_revenue_coa(self, key):
-        """Das Erlöskonto, auf das die App zuletzt eine Zahlung zu einer Rechnung mit diesem
-        Steuersatz-Schlüssel (``_revenue_rate_key``) gebucht hat – oder ``None``.
+        """Das Erlöskonto (COA-ID), auf das die App zuletzt eine Zahlung zu einer Rechnung mit diesem Steuersatz-Schlüssel (``_revenue_rate_key``) gebucht hat – oder
+        ``None``. Die Regeln dazu stehen bei ``_learned_revenue_row``; ``resolve_revenue_coa`` liest dort auch die Kontonummer."""
+        return self._learned_revenue_row(key)[0]
+
+    def _learned_revenue_row(self, key):
+        """``(COA-ID, Kontonummer)`` des Erlöskontos, auf das die App zuletzt eine Zahlung zu einer Rechnung mit diesem
+        Steuersatz-Schlüssel (``_revenue_rate_key``) gebucht hat – oder ``(None, None)``.
 
         Gelesen wird NUR aus den Sätzen, die die App selbst für eine Zuordnung angelegt hat
         (Marke ``PAYMENT_MARK``), und nur in der Form, in der sie sie schreibt:
@@ -853,18 +862,24 @@ class InvoicesMixin:
             ''', (*waiting, PAYMENT_MARK, *waiting, *payment_ids, key)).fetchone()
         finally:
             conn.close()
-        return row[0] if row and is_income_account(row[1]) else None
+        return (row[0], row[1]) if row and is_income_account(row[1]) else (None, None)
 
-    def resolve_revenue_coa(self, tax_rate, create=True):
+    def resolve_revenue_coa(self, tax_rate, create=True, on=None):
         """Passendes Erlöskonto für einen Rechnungs-Steuersatz ermitteln.
 
-        Lernt zuerst aus der eigenen Historie (``_learned_revenue_coa``): das zuletzt von der
+        Lernt zuerst aus der eigenen Historie (``_learned_revenue_row``): das zuletzt von der
         App bei einer Zahlungs-Zuordnung gebuchte Erlöskonto einer Rechnung mit gleichem
         Steuersatz (0% und §19-Sentinel -1 bilden einen gemeinsamen "steuerfrei"-Topf).
-        Fallback auf die Standardkonten: 19% → 4400, 7% → 4300 (``DEFAULT_REVENUE_ACCOUNT_NUMBERS``), steuerfrei/§19 → 4185
-        (DATEV: "Erlöse als Kleinunternehmer nach § 19 Abs. 1 UStG"; wird in älteren DBs ohne
-        dieses Seed-Konto automatisch nachgelegt, Vorbild ensure_kasse_exists).
+        Fallback auf die Standardkonten: 19% → 4400, 7% → 4300 (``DEFAULT_REVENUE_ACCOUNT_NUMBERS``).
         tax_rate wie in Invoices.TaxRate (0.19, 19, 0 oder -1).
+
+        **Kleinunternehmer (§ 19, Kopfsatz −1, ``uses_small_business_rule``):** Das Erlöskonto hängt am Datum der Bankbewegung der Zahlung (``on``), nicht an der
+        Rechnung – 4185 bis 31.12.2025 („Erlöse als Kleinunternehmer nach § 19 Abs. 1 UStG“), 4184 ab 1.1.2026 (``small_business_revenue_number``); fehlt das Konto in
+        einer älteren DB, wird es nachgelegt (Vorbild ensure_kasse_exists). ``on``: ein Datum oder ein Text ``JJJJ-MM-TT``; ohne ``on`` gilt heute
+        (``_revenue_today`` – nur für Anzeigen und Tests: wer eine Bankbewegung hat, nennt ihr Datum). Ein ``on``, das kein Datum ist, ergibt ``None``, und es wird nichts
+        angelegt. **Ein gelerntes 4184 oder 4185 zählt dabei nicht als gelernt** (im Topf von „0 und § 19“): Für den Topf 0 gibt es keine Wahl des Nutzers, die beiden
+        Konten stehen dort nur, weil die App sie selbst als Standard gebucht hat – sonst bliebe das Konto von 2025 im Jahr 2026 stehen. Ein anderes gelerntes Konto
+        (4120 – der Nutzer hat den Satz im Editor geändert) gilt wie immer, für 2025 wie für 2026. Ein Satz von 0 % mit Steuerausweis bleibt fest auf 4185.
 
         Das ist die Regel für einen Beleg OHNE Erlöskonto aus den Stammdaten; trägt ein Beleg eines (die Momentaufnahme eines Steuersatzes,
         2.8.0), gilt dieses Konto, immer (``document_revenue_coa``, ``_group_revenue_coa``).
@@ -878,17 +893,27 @@ class InvoicesMixin:
         fehlt das Standardkonto, ist das Ergebnis ``None``.
         """
         key = self._revenue_rate_key(tax_rate)
-        learned = self._learned_revenue_coa(key)
-        if learned is not None:
-            return learned
+        learned_id, learned_number = self._learned_revenue_row(key)
+        if learned_id is not None and not (key == 0 and learned_number in SMALL_BUSINESS_REVENUE_NUMBERS):
+            return learned_id
         default = DEFAULT_REVENUE_ACCOUNT_NUMBERS.get(key)
         if default is not None:
             return self.get_coa_id_by_account_number(default)
         if key == 0:
-            if create:
-                return self._ensure_tax_free_revenue_coa()
-            return self.get_coa_id_by_account_number(self.TAX_FREE_REVENUE_ACCOUNT_NUMBER)
+            if uses_small_business_rule(tax_rate):
+                number = small_business_revenue_number(_payments._revenue_today() if on is None else on)
+                if number is None:
+                    return None
+            else:
+                number = SMALL_BUSINESS_REVENUE_BEFORE
+            return self._ensure_small_business_revenue_coa(number) if create else self.get_coa_id_by_account_number(number)
         return None
+
+    def _revenue_by_number(self, tax_rate, numbers, create):
+        """``{Kontonummer: COA-ID oder None}`` – für jedes Kleinunternehmer-Konto in ``numbers`` (4185, 4184) das Erlöskonto, das ``resolve_revenue_coa`` dafür liefert
+        (an einem Tag, an dem die Datumsregel es nennt, ``small_business_day``): Umzug der Zahlungen und Neuaufbau lösen so je Kontonummer auf, nicht je Bankbewegung.
+        ``create`` wie bei ``resolve_revenue_coa``."""
+        return {number: self.resolve_revenue_coa(tax_rate, create, on=small_business_day(number)) for number in sorted(numbers)}
 
     # Wartekonten für offene Posten: die Rechnung wird beim Versenden hierhin
     # gebucht, erst die Zahlung bucht auf das echte Erlöskonto um. Erlös und
@@ -901,13 +926,13 @@ class InvoicesMixin:
         0:  (4340, 'Umsatzerlöse 0% noch offen'),
     }
     DEBTOR_ACCOUNT_NUMBER = 10000
-    TAX_FREE_REVENUE_ACCOUNT_NUMBER = 4185
+    TAX_FREE_REVENUE_ACCOUNT_NUMBER = SMALL_BUSINESS_REVENUE_BEFORE      # das Konto bis Ende 2025; ab 2026 gilt 4184 (``small_business_revenue_number``)
 
     def resolve_open_revenue_coa(self, tax_rate):
         """Wartekonto ("noch offen") zum Steuersatz einer Rechnung.
 
         19% → 4405, 7% → 4345, steuerfrei/§19 → 4340. Fehlt das Konto in einer
-        älteren DB, wird es nachgelegt (Vorbild _ensure_tax_free_revenue_coa).
+        älteren DB, wird es nachgelegt (Vorbild _ensure_small_business_revenue_coa).
         Andere Sätze haben kein Wartekonto und liefern None – der Aufrufer
         bucht dann wie bisher erst bei Zahlung.
         """
@@ -1013,30 +1038,32 @@ class InvoicesMixin:
         ``group_snapshots``, ``revenue_coa_id`` nicht ``None``), gilt dieses Konto, immer – wenn es ein Erlöskonto ist (``get_revenue_coas``: 4000–4999 ohne
         Wartekonten), sonst ``None`` (die Zahlung lehnt dann ab, ``TAX_PAYMENT_NO_REVENUE``): Es wird kein anderes untergeschoben. Sonst – ohne
         Momentaufnahme oder mit einer ohne Erlöskonto, den 19 und 7 % der Vorbelegung – wie bisher: ``resolve_revenue_coa`` über ``tax_groups.booking_rate`` (die
-        Form, in der der Satz in ``Bookings.TaxRate`` steht). Ein Satz von 0 % hat dort bewusst KEIN Erlöskonto, nie 4185: Das ist das Konto der
+        Form, in der der Satz in ``Bookings.TaxRate`` steht). Ein Satz von 0 % hat dort bewusst KEIN Erlöskonto, nie 4184/4185: Das sind die Konten der
         Kleinunternehmer (§ 19 UStG), und ob ein steuerfreier Satz in einem Beleg mit mehreren Sätzen dorthin gehört, ist nicht entschieden – er braucht den
-        Eintrag mit eigenem Erlöskonto. ``create`` wie bei ``resolve_revenue_coa``."""
+        Eintrag mit eigenem Erlöskonto. Der Satz ist nie negativ (``booking_rate``), die Datumsregel der Kleinunternehmer-Erlöse gilt hier nie – ``on`` entfällt.
+        ``create`` wie bei ``resolve_revenue_coa``."""
         if snapshot is not None and snapshot.revenue_coa_id is not None:
             return snapshot.revenue_coa_id if snapshot.revenue_coa_id in {row[0] for row in self.get_revenue_coas()} else None
         rate = booking_rate(pct)
         return None if rate is None else self.resolve_revenue_coa(rate, create)
 
-    def document_revenue_coa(self, invoice_id, tax_rate, create=True):
+    def document_revenue_coa(self, invoice_id, tax_rate, create=True, on=None):
         """Das Erlöskonto (COA-ID) eines Belegs mit EINEM Satz für eine Zahlung oder Erstattung – oder ``None``. ``tax_rate``: ``Invoices.TaxRate``.
 
         Trägt der Beleg die Momentaufnahme eines Steuersatzes aus den Stammdaten (``document_entry``) mit einem Erlöskonto – oder mit dem Satz 0, der nie ein
         Standardkonto hat –, gilt das Konto der Momentaufnahme (``_group_revenue_coa``), immer, und nie ein anderes. Sonst die Regel von heute:
-        ``resolve_revenue_coa(tax_rate, create)``. ``MixedNotBookable``, wenn die Momentaufnahmen des Belegs sich widersprechen. Die Wahl des Nutzers
+        ``resolve_revenue_coa(tax_rate, create, on)`` – ``on`` ist das Datum der Bankbewegung (bei einem Beleg ohne Steuerausweis hängt das Erlöskonto daran: 4185 bis
+        2025, 4184 ab 2026). ``MixedNotBookable``, wenn die Momentaufnahmen des Belegs sich widersprechen. Die Wahl des Nutzers
         (``_chosen_revenue_coa``) ist nicht Teil davon: Sie gilt nur, wenn der Beleg keine Momentaufnahme mit Erlöskonto trägt (``_document_revenue``)."""
         entry = self.document_entry(invoice_id, tax_rate)
         if self._entry_binds(entry):
             return self._group_revenue_coa(entry[0], entry[1], create)
-        return self.resolve_revenue_coa(tax_rate, create)
+        return self.resolve_revenue_coa(tax_rate, create, on)
 
     @staticmethod
     def _entry_binds(entry):
         """Entscheidet die Momentaufnahme eines Belegs mit EINEM Satz (``document_entry``: ``(Satz, Snapshot)`` oder ``None``) über sein Erlöskonto – sie trägt eines,
-        oder ihr Satz ist 0 (nie ein Standardkonto, nie 4185)? Dann gibt es weder eine Wahl des Nutzers noch einen Rückgriff auf das gelernte oder
+        oder ihr Satz ist 0 (nie ein Standardkonto, nie 4184/4185)? Dann gibt es weder eine Wahl des Nutzers noch einen Rückgriff auf das gelernte oder
         hinterlegte Konto des Satzes."""
         return entry is not None and (entry[1].revenue_coa_id is not None or entry[0] == 0)
 
@@ -1315,14 +1342,12 @@ class InvoicesMixin:
             row = invoice_row(tx.conn, invoice_id)
             return row is not None and self._drop_receivable(tx.conn, invoice_id, row['InvoiceNumber'])
 
-    def _ensure_tax_free_revenue_coa(self):
-        """Kleinunternehmer-Erlöskonto 4185 liefern (DATEV-SKR04); fehlt es
+    def _ensure_small_business_revenue_coa(self, number):
+        """Das Kleinunternehmer-Erlöskonto ``number`` (4185 bis 2025, 4184 ab 2026; DATEV-SKR04) liefern; fehlt es
         (DB älter als der Seed-Eintrag), wird es als Standardkonto im
         dominanten Kontenrahmen nachgelegt – sonst hätten §19-/0%-Rechnungen
-        kein Zielkonto."""
-        return self._ensure_standard_coa(
-            self.TAX_FREE_REVENUE_ACCOUNT_NUMBER,
-            'Erlöse als Kleinunternehmer nach § 19 Abs. 1 UStG')
+        kein Zielkonto. Legt in einer eigenen Verbindung an: nie innerhalb einer Transaktion."""
+        return self._ensure_standard_coa(number, SMALL_BUSINESS_REVENUE_NAMES[number])
 
     def get_booking_allocations(self, booking_id):
         """Zahlungs-Zuordnungen einer Buchung.

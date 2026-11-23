@@ -35,7 +35,8 @@ from money import to_minor
 from tax_groups import booking_rate, group_label
 from .core import fk_explained
 from .invoice_payments import (ITEM_SNAPSHOT_COLUMNS, ITEM_SNAPSHOT_KEYS, MixedNotBookable, PAYMENT_MARK, STORNO_KIND,
-                               PaymentMoveFailed, has_mixed_rates, rate_sentence)
+                               PaymentMoveFailed, has_mixed_rates, rate_sentence, small_business_revenue_number,
+                               uses_small_business_rule)
 
 EDITABLE_STATUSES = frozenset({'draft', 'finalized'})
 LOCKED_STATUSES = frozenset({'sent', 'overdue', 'partial_payment', 'partial', 'paid'})
@@ -675,7 +676,7 @@ class InvoiceLockMixin:
         # Konten, die der Wechsel braucht, werden bei Bedarf angelegt – in eigenen Verbindungen, nie
         # innerhalb der Transaktion (ein zweiter Schreiber sperrte sich selbst). Fehlt einer Satzgruppe mit einem Steuersatz aus den Stammdaten das Erlöskonto,
         # lehnt das Versenden ab (``_entry_revenue_blocker``) – dann entsteht auch kein Konto: weder das Wartekonto der Forderung noch das Erlöskonto des Umzugs der
-        # Zahlungen (``_payment_move_context`` löst es auf und legt dabei 4185 an, wo es fehlt), der Umzugskontext folgt dem Blocker und läuft nur ohne Ablehnung
+        # Zahlungen (``_payment_move_context`` löst es auf und legt dabei 4184/4185 an, wo sie fehlen), der Umzugskontext folgt dem Blocker und läuft nur ohne Ablehnung
         entry_blocker = self._entry_revenue_blocker(invoice_id, new)
         accounts, accounts_key = (None, None) if entry_blocker else self._receivable_accounts_for(invoice_id, new)
         move = None if entry_blocker else self._payment_move_context(invoice_id, new)
@@ -737,8 +738,11 @@ class InvoiceLockMixin:
                         # Die Zahlungen der stornierten Rechnung ziehen auf die Ersatzrechnung um – in dieser
                         # Transaktion: scheitert etwas, ist auch der Versand nicht passiert
                         if (row['ReplacesInvoiceId'] != move['replaced_id']
-                                or self._revenue_rate_key(row['TaxRate']) != self._revenue_rate_key(move['tax_rate'])):
-                            raise _Refusal(CHANGED_MESSAGE, 409)      # inzwischen geändert: das Erlöskonto gälte nicht mehr
+                                or self._revenue_rate_key(row['TaxRate']) != self._revenue_rate_key(move['tax_rate'])
+                                or uses_small_business_rule(row['TaxRate']) != uses_small_business_rule(move['tax_rate'])):
+                            # inzwischen geändert: das Erlöskonto gälte nicht mehr (der Platzhalter −1 und ein Satz von 0 % teilen den Schlüssel des Satzes,
+                            # nur der Platzhalter bucht nach dem Datum der Bankbewegung)
+                            raise _Refusal(CHANGED_MESSAGE, 409)
                         try:
                             moved, payment_hint = self._move_replaced_payments(tx, row, move)
                         except PaymentMoveFailed as exc:
@@ -775,7 +779,11 @@ class InvoiceLockMixin:
         ``None``: für ihren Steuersatz ist keines hinterlegt, dann zieht nichts um – und bei einem Steuersatz je Position
         (``MixedTaxRates``) und bei einem Erlöskonto aus den Stammdaten (``InvoiceItems.RevenueCoaId``, an einer der beiden Rechnungen) immer: Dort wird der
         Kopfsatz nie aufgelöst, und ``_move_replaced_payments`` zieht nichts um), ``bank_coas`` das SKR-Konto
-        {Account_ID: COA-ID} jedes Bankkontos, über das die stornierte Rechnung bezahlt wurde (nur mit SKR-Nummer)."""
+        {Account_ID: COA-ID} jedes Bankkontos, über das die stornierte Rechnung bezahlt wurde (nur mit SKR-Nummer).
+
+        **Eine neue Rechnung ohne Steuerausweis (§ 19)** bucht nach dem Datum der Bankbewegung jeder Zahlung (4185 bis 2025, 4184 ab 2026): ``revenue_coa`` ist dann ``None``,
+        und ``revenue_by_number`` {Kontonummer: COA-ID} nennt das Konto je Nummer, die eine Zahlung der stornierten Rechnung braucht (``_revenue_by_number``; fehlt es, wird es
+        hier angelegt – nur das, was eine Zahlung braucht: ein Bestand, der nur 2026 kennt, bekommt kein 4185). Sonst ist ``revenue_by_number`` ``None``."""
         if new != 'sent':
             return None
         conn = self._get_connection()
@@ -787,6 +795,9 @@ class InvoiceLockMixin:
             account_ids = [r[0] for r in conn.execute(
                 'SELECT DISTINCT b.Account_ID FROM InvoicePayments ip JOIN Bookings b ON b.ID = ip.BookingID '
                 'WHERE ip.InvoiceID = ? AND b.Account_ID IS NOT NULL', (replaced_id,))]
+            bank_dates = [r[0] for r in conn.execute(
+                "SELECT DISTINCT b.DateBooking FROM InvoicePayments ip JOIN Bookings b ON b.ID = ip.BookingID "
+                "WHERE ip.InvoiceID = ? AND ip.Amount > 0 AND b.BookingType = 'bank' AND b.Amount > 0", (replaced_id,))]
             entry = self._entry_accounts(conn, replaced_id) or self._entry_accounts(conn, invoice_id)
             try:
                 self._send_key(conn, invoice_id, row['TaxRate'], has_mixed_rates(row.get('MixedTaxRates')))
@@ -804,9 +815,14 @@ class InvoiceLockMixin:
         # (das legte ein Konto für einen Satz an, den die Rechnung so nicht bucht) – ``_move_replaced_payments`` zieht für sie nichts um. Ebenso, wenn eine der
         # beiden Rechnungen ein Erlöskonto aus den Stammdaten trägt: Ihr Konto gilt, und der Umzug bucht nie damit neu
         mixed = has_mixed_rates(row.get('MixedTaxRates'))
+        by_date = not (mixed or entry) and uses_small_business_rule(row['TaxRate'])
+        revenue_by_number = None
+        if by_date:
+            numbers = {small_business_revenue_number(day) for day in bank_dates} - {None}
+            revenue_by_number = self._revenue_by_number(row['TaxRate'], numbers, create=True)
         return {'replaced_id': replaced_id, 'tax_rate': row['TaxRate'],
-                'revenue_coa': None if mixed or entry else self.resolve_revenue_coa(row['TaxRate']), 'bank_coas': bank_coas,
-                'bank_coa_ids': self.get_bank_coa_ids()}
+                'revenue_coa': None if mixed or entry or by_date else self.resolve_revenue_coa(row['TaxRate']),
+                'revenue_by_number': revenue_by_number, 'bank_coas': bank_coas, 'bank_coa_ids': self.get_bank_coa_ids()}
 
     def _send_key(self, conn, invoice_id, head_rate, mixed):
         """Der Stand, für den die Konten einer Forderung gelten – ``(Schlüssel, Einzelheit)`` –, gelesen in der Verbindung oder Transaktion ``conn``. Die
@@ -862,7 +878,7 @@ class InvoiceLockMixin:
         eines Steuersatzes aus den Stammdaten trägt (``group_snapshots``), braucht ein gültiges Erlöskonto. Hat die Momentaufnahme eines eingetragen
         (``InvoiceItems.RevenueCoaId``), muss es heute eines sein (``_income_coas``: 4000–4999 ohne Wartekonten); hat sie keines – die 19 und 7 % der
         Vorbelegung, nur per Schnittstelle mit einer ID gespeichert –, muss ``resolve_revenue_coa(…, create=False)`` eines finden; ein Satz von 0 % ohne eigenes
-        Erlöskonto hat nie eines (nie 4185). Sonst ``TAX_SEND_NO_REVENUE`` mit dem ersten Satz (absteigend), dem es fehlt – eine steuerfreie Gruppe heißt dort „steuerfreie
+        Erlöskonto hat nie eines (nie 4184/4185). Sonst ``TAX_SEND_NO_REVENUE`` mit dem ersten Satz (absteigend), dem es fehlt – eine steuerfreie Gruppe heißt dort „steuerfreie
         Leistungen“ (``rate_sentence``) –: Eine Zahlung ließe sich später nicht kontieren, und das Versenden hat sie zugesichert. Ein Beleg ohne Momentaufnahme (der ganze
         Bestand) wird nicht geprüft: Er bucht ohne Erlöskonto und fragt bei der Zahlung. Läuft vor der Transaktion in eigenen Verbindungen und legt nie ein Konto an; lässt
         sich der Beleg nicht buchen (``MixedNotBookable``), ist es ``None`` – die Transaktion lehnt dann mit dem Klartext ab."""

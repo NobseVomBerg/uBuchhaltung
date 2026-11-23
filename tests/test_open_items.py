@@ -305,7 +305,8 @@ def test_euer_shows_revenue_once_at_payment(tmp_db, monkeypatch):
     assert 4405 not in euer and 10000 not in euer
 
 
-def test_euer_kleinunternehmer_uses_4340_and_4185(tmp_db, monkeypatch):
+def test_euer_kleinunternehmer_uses_4340_and_4184(tmp_db, monkeypatch):
+    """Wartekonto 4340 und – für die Zahlung vom Februar 2026 – das Erlöskonto 4184 (bis 2025: 4185)."""
     inv = _invoice(tmp_db, 'R-19', gross=100.00, rate=-1)
     _set_status(tmp_db, inv, 'sent', monkeypatch)
     assert tmp_db.get_booking_by_id(tmp_db.get_receivable_booking(inv))[9] == \
@@ -317,8 +318,8 @@ def test_euer_kleinunternehmer_uses_4340_and_4185(tmp_db, monkeypatch):
     link_booking_to_invoice_capped(tmp_db, inv, bk)
 
     euer = {nr: t for nr, _, t in tmp_db.get_euer_data('2026-01-01', '2026-12-31')}
-    assert round(euer[4185], 2) == 100.00
-    assert 4340 not in euer and 3806 not in euer
+    assert round(euer[4184], 2) == 100.00
+    assert 4185 not in euer and 4340 not in euer and 3806 not in euer
 
 
 # ── DATEV-Export ─────────────────────────────────────────────────────────────

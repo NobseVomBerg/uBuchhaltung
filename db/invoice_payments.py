@@ -18,6 +18,7 @@ einer Transaktion mit ``BEGIN IMMEDIATE``: Prüfung, Schreiben und Neuberechnung
 Stand – zwei gleichzeitige Anfragen legen das Paar (Rechnung, Bankbewegung) nie zweimal an.
 """
 import datetime
+import re
 import sqlite3
 from collections import defaultdict, namedtuple
 from decimal import Decimal
@@ -168,10 +169,71 @@ def valid_rate_bp(bp):
     return type(bp) is int and (bp == 0 or MIN_RATE_BP <= bp <= MAX_RATE_BP)
 
 
+#: Das Erlöskonto eines Belegs ohne Steuerausweis (§ 19 UStG, Kopfsatz −1) hängt am Datum der Bankbewegung der Zahlung (bzw. der Erstattung), nicht am Rechnungsdatum: Bis zum
+#: 31.12.2025 bucht der Erlös auf 4185, ab 1.1.2026 auf 4184 (die Nummer im Standard-Kontenrahmen ab 2026). Eine Rechnung von 2025, die 2026 bezahlt wird, bucht auf 4184.
+#: Die Konstanten stehen hier, im untersten der Rechnungsmodule (``db.invoices`` reicht sie weiter).
+SMALL_BUSINESS_SWITCH = datetime.date(2026, 1, 1)
+SMALL_BUSINESS_REVENUE_BEFORE = 4185
+SMALL_BUSINESS_REVENUE_FROM = 4184
+SMALL_BUSINESS_REVENUE_NUMBERS = frozenset({SMALL_BUSINESS_REVENUE_BEFORE, SMALL_BUSINESS_REVENUE_FROM})
+SMALL_BUSINESS_REVENUE_NAMES = {
+    SMALL_BUSINESS_REVENUE_FROM: 'Steuerfreie Erlöse Kleinunternehmer nach § 19 Abs. 1 UStG',
+    SMALL_BUSINESS_REVENUE_BEFORE: 'Erlöse als Kleinunternehmer nach § 19 Abs. 1 UStG',
+}
+# Ein Tag je Konto, an dem die Datumsregel dieses Konto liefert (``small_business_day``)
+_SMALL_BUSINESS_DAYS = {SMALL_BUSINESS_REVENUE_BEFORE: SMALL_BUSINESS_SWITCH - datetime.timedelta(days=1),
+                        SMALL_BUSINESS_REVENUE_FROM: SMALL_BUSINESS_SWITCH}
+_ISO_DAY = re.compile(r'[0-9]{4}-[0-9]{2}-[0-9]{2}')
+
+
+def uses_small_business_rule(tax_rate):
+    """Folgt das Erlöskonto eines Belegs mit diesem Kopfsatz (``Invoices.TaxRate``) der Datumsregel der Kleinunternehmer-Erlöse (4185 bis 2025, 4184 ab 2026)?
+
+    **Die EINE Stelle dieser Entscheidung.** Nur der Platzhalter „ohne Steuerausweis“ (< 0, § 19) folgt der Datumsregel; ein Satz von 0 % MIT Steuerausweis bleibt fest auf 4185
+    (er teilt mit dem Platzhalter den Topf der gelernten Erlöskonten, ``Database._revenue_rate_key``, ist aber kein Beleg nach § 19). Soll auch 0 % der Datumsregel folgen, ist
+    die Bedingung hier ``tax_rate <= 0`` – kein anderer Ort rechnet es nach."""
+    return tax_rate is not None and tax_rate < 0
+
+
+def small_business_revenue_number(day):
+    """Das Kleinunternehmer-Erlöskonto für das Datum einer Bankbewegung: 4185 vor ``SMALL_BUSINESS_SWITCH``, 4184 ab diesem Tag – oder ``None``, wenn ``day`` kein Datum ist.
+
+    ``day``: ein ``datetime.date``/``datetime.datetime`` oder ein Text genau ``JJJJ-MM-TT`` (ein Kalendertag, Jahr 1900–2200, ohne Leerraum und ohne andere Schreibweise –
+    dieselbe Regel wie ``db.invoice_versions.is_iso_date``; dieses Modul darf es nicht importieren). Alles andere – ``None``, Leerraum, ``2026-1-1``, ``2026-02-30``, ein Datum mit
+    Uhrzeit, eine Zahl, Bytes – ergibt ``None``: Ein Datum wird nie geraten, und davon hängt ein Konto ab."""
+    if isinstance(day, datetime.datetime):
+        day = day.date()
+    elif isinstance(day, str):
+        if not _ISO_DAY.fullmatch(day):
+            return None
+        try:
+            day = datetime.date.fromisoformat(day)
+        except ValueError:
+            return None
+        if not 1900 <= day.year <= 2200:
+            return None
+    elif not isinstance(day, datetime.date):
+        return None
+    return SMALL_BUSINESS_REVENUE_FROM if day >= SMALL_BUSINESS_SWITCH else SMALL_BUSINESS_REVENUE_BEFORE
+
+
+def small_business_day(number):
+    """Ein Tag, an dem die Datumsregel das Konto ``number`` (4185 oder 4184) liefert – für Auflösungen je Konto (Umzug, Neuaufbau): 4185 → 31.12.2025, 4184 → 1.1.2026."""
+    return _SMALL_BUSINESS_DAYS[number]
+
+
+def _revenue_today():
+    """Heute – für das Erlöskonto, wo kein Datum einer Bankbewegung bekannt ist (Anzeigen, Tests). Eine eigene Funktion, damit Tests sie festsetzen können; sie liest die Uhr über
+    ``datetime.date.today()`` (die festgesetzte Uhr der Schnappschuss-Tests fängt das)."""
+    return datetime.date.today()
+
+
 # Die Erstattung einer Stornorechnung (``assign_storno_refund``) und der Schutz des Guthabens
 REFUND_ONLY_STORNO_MESSAGE = 'Erstatten lässt sich nur auf eine Stornorechnung.'
 REFUND_ONLY_OUTGOING_MESSAGE = 'Nur Zahlungsausgänge lassen sich als Erstattung zuordnen.'
 REFUND_NO_CREDIT_MESSAGE = 'Zu dieser Stornorechnung gibt es kein Guthaben zu erstatten.'
+INCOMING_ONLY_MESSAGE = 'Nur Zahlungseingänge lassen sich einer Rechnung zuordnen.'
+NOTHING_TO_ASSIGN_MESSAGE = 'Kein offener Betrag zuordenbar (Rechnung oder Buchung ausgeschöpft)'
 REFUND_EXHAUSTED_MESSAGE = 'Kein offener Betrag zuordenbar (Guthaben oder Buchung ausgeschöpft)'
 ALREADY_REFUNDED_MESSAGE = ('Zu dieser Rechnung wurde bereits erstattet – erst die Erstattung an der Stornorechnung '
                             'entfernen.')
@@ -199,6 +261,9 @@ RECEIVABLE_STATUSES = frozenset({'sent', 'partial_payment', 'overdue', 'paid'})
 NO_REVENUE_COA = ('Für den Steuersatz dieser Rechnung ist kein Erlöskonto hinterlegt – bitte ein '
                   'Erlöskonto wählen.')
 NOT_A_REVENUE_COA = 'Das gewählte Konto ist kein Erlöskonto.'
+# Das Erlöskonto eines Belegs ohne Steuerausweis hängt am Datum der Bankbewegung (``small_business_revenue_number``): Lässt es sich nicht lesen, wird die Zahlung (bzw.
+# Erstattung) abgelehnt – vor dem Auflösen der Konten, nichts geschrieben, kein Konto angelegt
+REVENUE_DATE_UNREADABLE = 'Das Datum der Bankbewegung ist ungültig – davon hängt das Erlöskonto ab. Bitte das Datum korrigieren.'
 
 # Die Spalten, die ``_assign_in_tx`` für jeden Satz einer Zuordnung schreibt, in der Reihenfolge des INSERT (dazu die festen
 # Werte BookingType 'entry' und AutoMirror 0). Daran erkennt der Umzug der Zahlungen beim Versenden einer Ersatzrechnung, ob
@@ -286,7 +351,8 @@ MOVE_SKIP_REASONS = {
     'edited': 'die Buchungssätze der Zahlung wurden von Hand geändert oder ergänzt oder tragen einen Beleg',
     'tax_date': ('die Buchungssätze der Zahlung tragen ein anderes Steuerdatum als die Bankbewegung '
                  '(z. B. nach einem DATEV-Export)'),
-    'revenue_account': 'das Erlöskonto der Zahlung ist nicht das heute für den Steuersatz hinterlegte',
+    'revenue_account': 'das Erlöskonto der Zahlung ist nicht das für Steuersatz und Zahlungsdatum hinterlegte',
+    'revenue_date': 'zum Datum der Bankbewegung lässt sich kein Erlöskonto bestimmen',
     'multiple': 'die Bankbewegung ist mehrfach zugeordnet',
     'no_incoming': 'keine Bankbewegung mit Zahlungseingang',
     'rebook': 'die Zuordnung ließ sich nicht neu buchen',
@@ -845,13 +911,19 @@ class InvoicePaymentsMixin:
                     f'ein Konto aus dem Kontenrahmen wählen (üblich: 1800), sonst lässt sich die {what} nicht kontieren.'), None
         return None, bank_coa
 
-    def _payment_prerequisites(self, invoice_id, account_id, revenue_coa_id=None):
+    def _payment_prerequisites(self, invoice_id, account_id, revenue_coa_id=None, on=None):
         """Was vor einer Zuordnung geklärt sein muss, in eigenen Verbindungen: Beim Auflösen
         des Erlöskontos werden bei Bedarf Konten angelegt – das darf nicht innerhalb von
         ``BEGIN IMMEDIATE`` geschehen (ein zweiter Schreiber sperrte sich selbst).
 
         Das Erlöskonto ergibt sich aus der Rechnung (``resolve_revenue_coa``); ``revenue_coa_id``
         zählt nur, wenn dafür keines hinterlegt ist, und muss dann ein Erlöskonto sein.
+
+        **``on``: das Datum der Bankbewegung** (ein ISO-Datum; die Zuordnung nennt das der Bewegung, die Maske das Datumsfeld des Formulars). Bei einem Beleg ohne
+        Steuerausweis (§ 19, ``uses_small_business_rule``) hängt das Erlöskonto daran: 4185 bis 2025, 4184 ab 2026 (``small_business_revenue_number``). Ist ``on`` genannt
+        und kein Datum, lehnt ``REVENUE_DATE_UNREADABLE`` ab – vor dem Auflösen, es entsteht kein Konto. Ohne ``on`` (nur Tests) gilt heute (``_revenue_today``). Der
+        Kontext trägt dann ``revenue_date_number``, das Konto, für das die Vorprüfung aufgelöst hat: ``_assign_in_tx`` lehnt ab, wenn das Datum der Bewegung in der
+        Transaktion zu einem anderen gehört.
 
         **Ein Beleg mit Steuersatz je Position** (``Invoices.MixedTaxRates``) hat kein EINES Erlöskonto, und der Nutzer wählt keines: Seine
         Satzgruppen (``_checked_mixed_groups``) werden gelesen – ``MixedNotBookable`` (ein fester Satz) lehnt ab, wenn sie sich nicht buchen
@@ -901,21 +973,27 @@ class InvoicePaymentsMixin:
                 'tax_rate': invoice[35], 'account_id': account_id, 'bank_coa': bank_coa, 'revenue_coa': None,
                 'bank_coa_ids': self.get_bank_coa_ids(), 'mixed': {'groups': tuple(groups), 'revenue': revenue},
             }
-        revenue_coa, error = self._document_revenue(invoice_id, invoice[35], revenue_coa_id)
+        by_date = on is not None and uses_small_business_rule(invoice[35])
+        if by_date and small_business_revenue_number(on) is None and not self.invoice_entry_accounts(invoice_id):
+            return REVENUE_DATE_UNREADABLE, None
+        revenue_coa, error = self._document_revenue(invoice_id, invoice[35], revenue_coa_id, on=on)
         if error:
             return error, None
-        return None, {
+        context = {
             'tax_rate': invoice[35], 'account_id': account_id, 'bank_coa': bank_coa,
             'revenue_coa': revenue_coa,
             'bank_coa_ids': self.get_bank_coa_ids(),
         }
+        if by_date:
+            context['revenue_date_number'] = small_business_revenue_number(on)
+        return None, context
 
-    def payment_precheck(self, invoice_id, account_id, revenue_coa_id=None):
+    def payment_precheck(self, invoice_id, account_id, revenue_coa_id=None, on=None):
         """Fehlertext, wenn sich auf diese Rechnung über dieses Bankkonto keine Zahlung zuordnen
         lässt – sonst ``None``. Für Masken, die die Bankbewegung erst noch anlegen: Wer prüft,
         bevor er schreibt, hinterlässt keine Bewegung ohne Zuordnung. ``revenue_coa_id`` wie
-        bei ``assign_invoice_payment``."""
-        return self._payment_prerequisites(invoice_id, account_id, revenue_coa_id)[0]
+        bei ``assign_invoice_payment``, ``on``: das Datum der neuen Bankbewegung (``_payment_prerequisites``)."""
+        return self._payment_prerequisites(invoice_id, account_id, revenue_coa_id, on)[0]
 
     # ── Erlöskonto: Wahl, wenn keines hinterlegt ist ────────────────────────
     @staticmethod
@@ -952,17 +1030,18 @@ class InvoicePaymentsMixin:
             return None, NOT_A_REVENUE_COA
         return chosen, None
 
-    def _document_revenue(self, invoice_id, tax_rate, revenue_coa_id=None):
+    def _document_revenue(self, invoice_id, tax_rate, revenue_coa_id=None, on=None):
         """Das Erlöskonto eines Belegs mit EINEM Satz für eine Zahlung oder Erstattung: ``(COA-ID, None)`` oder ``(None, Fehlertext)``. ``tax_rate``:
-        ``Invoices.TaxRate``, ``revenue_coa_id``: die Wahl des Nutzers.
+        ``Invoices.TaxRate``, ``revenue_coa_id``: die Wahl des Nutzers, ``on``: das Datum der Bankbewegung (bei einem Beleg ohne Steuerausweis hängt das Erlöskonto
+        daran – 4185 bis 2025, 4184 ab 2026, ``resolve_revenue_coa``; der Aufrufer prüft vorher, dass es ein Datum ist: ``REVENUE_DATE_UNREADABLE``).
 
         Trägt der Beleg die Momentaufnahme eines Steuersatzes aus den Stammdaten (``document_entry``) und ist dort ein Erlöskonto eingetragen – oder der Satz 0,
-        der nie ein Standardkonto hat und nie 4185 bekommt (``_entry_binds``) –, gilt das Konto der Momentaufnahme (``document_revenue_coa``), immer:
+        der nie ein Standardkonto hat und nie 4184/4185 bekommt (``_entry_binds``) –, gilt das Konto der Momentaufnahme (``document_revenue_coa``), immer:
         ``TAX_PAYMENT_NO_REVENUE``, wenn es keines (mehr) ist, eine Wahl des Nutzers gibt es nicht. Sonst (ohne Momentaufnahme, und mit einer ohne Erlöskonto)
         ist es wie immer: das hinterlegte oder gelernte Erlöskonto des Satzes (``resolve_revenue_coa``), und fehlt das, die Wahl des Nutzers
         (``_chosen_revenue_coa``). ``MixedNotBookable`` der Momentaufnahme wird zum Fehlertext."""
         try:
-            revenue_coa = self.document_revenue_coa(invoice_id, tax_rate)
+            revenue_coa = self.document_revenue_coa(invoice_id, tax_rate, on=on)
             if revenue_coa is not None:
                 return revenue_coa, None
             entry = self.document_entry(invoice_id, tax_rate)
@@ -974,7 +1053,7 @@ class InvoicePaymentsMixin:
 
     def revenue_coa_choice_needed(self, tax_rate):
         """Muss der Nutzer das Erlöskonto wählen, weil für diesen Steuersatz keines hinterlegt
-        ist? Steuerfrei/§ 19 nie: Das Konto 4185 legt die Zuordnung bei Bedarf selbst an."""
+        ist? Steuerfrei/§ 19 nie: Das Konto (4185 bis 2025, 4184 ab 2026) legt die Zuordnung bei Bedarf selbst an."""
         if self._revenue_rate_key(tax_rate) == 0:
             return False
         return self.resolve_revenue_coa(tax_rate, create=False) is None
@@ -1048,7 +1127,8 @@ class InvoicePaymentsMixin:
         bei einer Ablehnung ein Klartext für die Oberfläche, ``revenue_coa_id`` das Erlöskonto,
         auf das gebucht wurde.
         """
-        if self.get_document(invoice_id, 'invoice') is None:
+        invoice = self.get_document(invoice_id, 'invoice')
+        if invoice is None:
             return _refused('Rechnung nicht gefunden')
         booking = self.get_booking_by_id(booking_id)
         if booking is None:
@@ -1057,14 +1137,34 @@ class InvoicePaymentsMixin:
             return _refused('Nur Bankbewegungen lassen sich einer Rechnung zuordnen.')
         if any(a[1] == invoice_id for a in self.get_booking_allocations(booking_id)):
             return _refused('Buchung ist bereits mit dieser Rechnung verknüpft')
-        error, ctx = self._payment_prerequisites(invoice_id, booking[4], revenue_coa_id)
+        # Was an der Rechnung und am Bankkonto liegt, zuerst (dieselben Prüfungen wie in ``_payment_prerequisites``, rein lesend): Eine Stornorechnung nennt ihren Grund,
+        # auch wenn die Bewegung ein Ausgang ist
+        blocked = payment_blocker(invoice[45], invoice[40], invoice[38], invoice[50] if len(invoice) > 50 else None)
+        if blocked:
+            return _refused(blocked)
+        error, _ = self._bank_coa_of(booking[4])
         if error:
             return _refused(error)
+        # Der Betrag vor den Vorbedingungen: Sie können ein Konto anlegen (4184/4185), und eine abgelehnte Zuordnung legt keines an
         requested = None
         if amount is not None:
             requested = round_minor(to_minor(amount), 2)
             if requested <= 0:
                 return _refused('Der Betrag muss größer 0 sein.')
+        # Ebenso vor den Vorbedingungen, was die Transaktion ohnehin ablehnte: ein Zahlungsausgang und eine ausgeschöpfte Bewegung
+        # (die Transaktion prüft beides noch einmal am frisch gelesenen Stand)
+        if (booking[11] or 0) <= 0:
+            return _refused(INCOMING_ONLY_MESSAGE)
+        conn = self._get_connection()
+        try:
+            free = self._booking_free_minor(conn, booking_id, self._get_bank_coa_ids(conn.cursor()))
+        finally:
+            conn.close()
+        if free <= 0:
+            return _refused(NOTHING_TO_ASSIGN_MESSAGE)
+        error, ctx = self._payment_prerequisites(invoice_id, booking[4], revenue_coa_id, on=booking[1])
+        if error:
+            return _refused(error)
 
         with self.transaction() as tx:
             tx.conn.execute('BEGIN IMMEDIATE')
@@ -1079,7 +1179,10 @@ class InvoicePaymentsMixin:
 
         ``requested``: der gewünschte Betrag in Minor Units, schon auf Cent gerundet, oder ``None`` („so viel
         wie möglich“). ``ctx``: die Schlüssel ``tax_rate, account_id, bank_coa, revenue_coa, bank_coa_ids``
-        (``_payment_prerequisites``), bei einem Beleg mit Steuersatz je Position dazu ``mixed`` (``_assign_mixed``).
+        (``_payment_prerequisites``), bei einem Beleg mit Steuersatz je Position dazu ``mixed`` (``_assign_mixed``). Bei einem Beleg ohne
+        Steuerausweis, dessen Erlöskonto am Datum der Bankbewegung hängt (``uses_small_business_rule``), dazu ``revenue_date_number``: das Kleinunternehmer-Konto (4185 oder
+        4184), für das die Vorbereitung aufgelöst hat – gehört das Datum der Bewegung in der Transaktion zu einem anderen, lehnt der Baustein mit dem „geändert“-Satz ab (ein
+        Kontext ohne den Schlüssel, etwa von Hand gebaut, bindet nichts).
         ``allow_cancelled``: Auch eine stornierte Rechnung (mit positivem Betrag, keine
         Stornorechnung) nimmt die Zuordnung an – nur für den Rest, der beim Umzug an der stornierten Rechnung bleibt.
 
@@ -1118,8 +1221,10 @@ class InvoicePaymentsMixin:
         _, bank_amount, account_id, bank_date, bank_tax_date, recipient, currency = bank
         if rate != ctx['tax_rate'] or account_id != ctx['account_id']:
             return _refused(PAYMENT_CHANGED_MESSAGE)
+        if ctx.get('revenue_date_number') is not None and small_business_revenue_number(bank_date) != ctx['revenue_date_number']:
+            return _refused(PAYMENT_CHANGED_MESSAGE)             # das Datum der Bewegung gehört inzwischen zum anderen Kleinunternehmer-Erlöskonto
         if (bank_amount or 0) <= 0:
-            return _refused('Nur Zahlungseingänge lassen sich einer Rechnung zuordnen.')
+            return _refused(INCOMING_ONLY_MESSAGE)
 
         paid = conn.execute('SELECT COALESCE(SUM(Amount), 0) FROM InvoicePayments '
                             'WHERE InvoiceID = ?', (invoice_id,)).fetchone()[0]
@@ -1127,8 +1232,7 @@ class InvoicePaymentsMixin:
         free = self._booking_free_minor(conn, booking_id, ctx['bank_coa_ids'])
         alloc = min(due, free, due if requested is None else requested)
         if alloc <= 0:
-            return _refused('Kein offener Betrag zuordenbar (Rechnung oder Buchung '
-                            'ausgeschöpft)')
+            return _refused(NOTHING_TO_ASSIGN_MESSAGE)
         if ctx.get('mixed'):
             return self._assign_mixed(tx, invoice_id, booking_id, number, customer_id, bank, alloc, ctx)
 
@@ -1251,8 +1355,11 @@ class InvoicePaymentsMixin:
         dasselbe tragen; liegen sie auf **mehr als einem** Erlöskonto (ein Satz wurde im Editor geändert), wählt der Nutzer das
         der Erstattung (``revenue_coa_id``, ein Erlöskonto, sonst Ablehnung mit ``MIXED_REVENUE_MESSAGE``). Hat keine Zuordnung
         markierte Sätze (Import), ist es das Erlöskonto der Momentaufnahme, wenn der Beleg einen Steuersatz aus den Stammdaten mit Erlöskonto trägt
-        (``_document_revenue``: es gilt immer, eine Wahl gibt es dann nicht), sonst das für den Steuersatz hinterlegte (``resolve_revenue_coa``), und gibt es
-        auch das nicht, wählt der Nutzer es (``revenue_coa_id``, ein Erlöskonto, sonst Ablehnung). Konten, die das Auflösen anlegen könnte,
+        (``_document_revenue``: es gilt immer, eine Wahl gibt es dann nicht), sonst das für den Steuersatz hinterlegte (``resolve_revenue_coa``) – bei einem Beleg ohne
+        Steuerausweis nach dem Datum der Erstattung (4185 bis 2025, 4184 ab 2026; ist es kein Datum, lehnt ``REVENUE_DATE_UNREADABLE`` ab) –, und gibt es
+        auch das nicht, wählt der Nutzer es (``revenue_coa_id``, ein Erlöskonto, sonst Ablehnung). Mit markierten Sätzen gilt das Konto der Zahlungen, nie das Datum
+        der Erstattung: Die Erstattung nimmt den Erlös dort zurück, wo die Zahlung ihn gebucht hat. Liegen Zahlungen auf 4185 und auf 4184 (eine Teilzahlung über den
+        Jahreswechsel), sind es mehrere Erlöskonten, und der Nutzer wählt (``MIXED_REVENUE_MESSAGE``). Konten, die das Auflösen anlegen könnte,
         entstehen vor der Transaktion in eigenen Verbindungen – erst, wenn die Erstattung sich buchen lässt.
 
         **Ein Beleg mit Steuersatz je Position** (``Invoices.MixedTaxRates``, Stornorechnung und stornierte Rechnung tragen es beide) erstattet je Satz:
@@ -1287,7 +1394,7 @@ class InvoicePaymentsMixin:
         error, bank_coa = self._bank_coa_of(plan.account_id, 'Erstattung')
         if error:
             return _refused(error)
-        fallback = None
+        fallback = fallback_number = None
         if plan.parts is not None:
             pass                         # je Satz: Die Zahlungen nennen das Erlöskonto, der Nutzer wählt keines
         elif plan.mixed:
@@ -1296,8 +1403,14 @@ class InvoicePaymentsMixin:
             if error:
                 return _refused(MIXED_REVENUE_MESSAGE if error == NO_REVENUE_COA else error)
         elif plan.revenue_coa is None:
-            # ohne markierte Sätze der Zahlungen: das Konto der Momentaufnahme (Steuersatz aus den Stammdaten), sonst das für den Satz hinterlegte, sonst die Wahl
-            fallback, error = self._document_revenue(plan.original_id, plan.rate, revenue_coa_id)
+            # ohne markierte Sätze der Zahlungen: das Konto der Momentaufnahme (Steuersatz aus den Stammdaten), sonst das für den Satz hinterlegte, sonst die Wahl.
+            # Bei einem Beleg ohne Steuerausweis hängt das hinterlegte Konto am Datum der Erstattung (4185 bis 2025, 4184 ab 2026); ist es kein Datum, lehnt die
+            # Erstattung ab, bevor ein Konto entsteht. Mit markierten Sätzen gilt immer das Konto der Zahlungen (``_refund_revenue_coa``), nie das Datum der Erstattung
+            if uses_small_business_rule(plan.rate):
+                fallback_number = small_business_revenue_number(plan.bank_date)
+                if fallback_number is None and not self.invoice_entry_accounts(plan.original_id):
+                    return _refused(REVENUE_DATE_UNREADABLE)
+            fallback, error = self._document_revenue(plan.original_id, plan.rate, revenue_coa_id, on=plan.bank_date)
             if error:
                 return _refused(error)
         account_id, rate, mixed, parts = plan.account_id, plan.rate, plan.mixed, plan.parts
@@ -1315,7 +1428,8 @@ class InvoicePaymentsMixin:
                     return _refused(PAYMENT_CHANGED_MESSAGE)
                 return self._refund_mixed(tx, storno_id, booking_id, plan, bank_coa)
             revenue_coa = fallback if plan.mixed else plan.revenue_coa or fallback
-            if plan.rate != rate or plan.account_id != account_id or plan.mixed != mixed or revenue_coa is None:
+            if (plan.rate != rate or plan.account_id != account_id or plan.mixed != mixed or revenue_coa is None
+                    or (fallback_number is not None and small_business_revenue_number(plan.bank_date) != fallback_number)):
                 return _refused('Rechnung oder Bankbewegung wurde inzwischen geändert – bitte erneut versuchen.')
 
             debtor_side, waiting_side = self._receivable_sides(conn, plan.number)
@@ -1893,7 +2007,7 @@ class InvoicePaymentsMixin:
         Bewegung; und markierte Sätze, die unverändert sind (``_revenue_coa_if_as_written``).
 
         ``old``: die stornierte Rechnung (``_Replaced``). Returns ``((Account_ID der Bewegung, Erlöskonto der bisherigen
-        Sätze), None)``, sonst ``(None, Grund)`` – der Grund ist ein Schlüssel von ``MOVE_SKIP_REASONS``."""
+        Sätze, Datum der Bewegung), None)``, sonst ``(None, Grund)`` – der Grund ist ein Schlüssel von ``MOVE_SKIP_REASONS``."""
         bank = conn.execute('SELECT BookingType, Amount, Account_ID, DateBooking, DateTax, RecipientClient, Currency '
                             'FROM Bookings WHERE ID = ?', (bank_id,)).fetchone()
         if bank is None or bank[0] != 'bank' or (bank[1] or 0) <= 0:
@@ -1925,14 +2039,17 @@ class InvoicePaymentsMixin:
             return None, 'tax_date' if only_tax_date else 'edited'
         if self._booking_free_minor(conn, bank_id, bank_coa_ids) < 0:
             return None, 'overbooked'
-        return (bank[2], revenue_coa), None
+        return (bank[2], revenue_coa, bank[3]), None
 
     def _move_replaced_payments(self, tx, row, move):
         """Beim Versenden einer Ersatzrechnung (``Invoices.ReplacesInvoiceId``, ``db/invoice_storno.py``) gehen die
         Zahlungen der stornierten Rechnung auf sie über – in der Transaktion ``tx`` des Statuswechsels
         (``Database.set_invoice_status``), nach der Forderungsbuchung der neuen Rechnung (``row``: ihre Zeile). ``move``:
         was ``Database._payment_move_context`` vor der Transaktion aufgelöst hat (``replaced_id``, ``revenue_coa``,
-        ``bank_coas`` {Account_ID: COA-ID}, ``bank_coa_ids``).
+        ``bank_coas`` {Account_ID: COA-ID}, ``bank_coa_ids``). Trägt die neue Rechnung keinen Steuerausweis (§ 19), hängt ihr Erlöskonto am Datum der Bankbewegung
+        jeder Zahlung (4185 bis 2025, 4184 ab 2026): ``revenue_coa`` ist dann ``None`` und ``revenue_by_number`` {Kontonummer: COA-ID} nennt die Konten, die die Zahlungen
+        brauchen. Jede Zahlung zieht auf das Konto um, das für ihr Datum gilt – bei gleichem Steuersatz nur, wenn sie schon auf diesem liegt (``revenue_account``):
+        Eine Zahlung ab 2026, die eine ältere Version auf 4185 gebucht hat, bleibt an der stornierten Rechnung; der Umzug verschöbe sonst Erlös im vergangenen Zeitraum.
 
         Je Zuordnung der stornierten Rechnung, die älteste Zahlung zuerst und solange die neue Rechnung noch offen ist:
         Die Zuordnung samt ihren Sätzen wird entfernt (``_unassign``), die neue Rechnung bekommt den Betrag, den sie
@@ -2010,7 +2127,7 @@ class InvoicePaymentsMixin:
         if row['CustomerId'] != old_customer or (row['Currency'] or 'EUR') != (old_currency or 'EUR'):
             return 0, (f'Die Zahlungen der stornierten Rechnung {old_number} ({euro(total)}) bleiben dort: '
                        'Kunde oder Währung dieser Rechnung weichen ab.')
-        if move['revenue_coa'] is None:
+        if move.get('revenue_by_number') is None and move['revenue_coa'] is None:
             return 0, (f'Die Zahlungen der stornierten Rechnung {old_number} ({euro(total)}) wurden nicht übernommen: '
                        'Für den Steuersatz dieser Rechnung ist kein Erlöskonto hinterlegt. Bitte die Zuordnung dort '
                        'entfernen und hier mit Erlöskonto zuordnen.')
@@ -2032,15 +2149,27 @@ class InvoicePaymentsMixin:
         movable_left = total - refunded
         same_rate = self._tax_rate_key(old_rate) == self._tax_rate_key(row['TaxRate'])
 
+        def required(bank_date):
+            """Das Erlöskonto, auf das die neue Rechnung die Zahlung mit diesem Datum der Bankbewegung bucht: bei einem Beleg ohne Steuerausweis das für das Datum
+            hinterlegte (4185 bis 2025, 4184 ab 2026 – ``_payment_move_context`` hat beide, die gebraucht werden, vorab aufgelöst), sonst das EINE der Rechnung."""
+            if move.get('revenue_by_number') is None:
+                return move['revenue_coa']
+            return move['revenue_by_number'].get(small_business_revenue_number(bank_date))
+
         def verdict(bank_id, amount):
             found, reason = self._movable_payment(conn, replaced, new_id, bank_id, amount, move['bank_coas'],
                                                   move['bank_coa_ids'])
-            # Bei gleichem Steuersatz bleibt der Erlös auf seinem Konto: Liegt die Zahlung auf einem anderen als dem heute
-            # hinterlegten (von Hand geändert, oder inzwischen ein anderes gelernt), buchte der Umzug sie im vergangenen
-            # Zeitraum um
-            if found is not None and same_rate and found[1] != move['revenue_coa']:
+            if found is None:
+                return None, reason
+            coa = required(found[2])
+            if coa is None:
+                return None, 'revenue_date'
+            # Bei gleichem Steuersatz bleibt der Erlös auf seinem Konto: Liegt die Zahlung auf einem anderen als dem heute für Satz und Zahlungsdatum
+            # hinterlegten (von Hand geändert, inzwischen ein anderes gelernt, oder – ein Kleinunternehmer – ab 2026 noch auf 4185 gebucht), buchte der
+            # Umzug sie im vergangenen Zeitraum um
+            if same_rate and found[1] != coa:
                 return None, 'revenue_account'
-            return found, reason
+            return (found[0], found[1], coa, found[2]), None
 
         verdicts = [verdict(bank_id, amount) for _pay_id, bank_id, amount in payments]
         moved = skipped = 0
@@ -2056,16 +2185,16 @@ class InvoicePaymentsMixin:
             part = min(amount, due_new, movable_left)
             if part <= 0:
                 break                                  # die neue Rechnung ist bezahlt, oder das Guthaben ist aufgebraucht
-            account_id, revenue_coa_old = found
+            account_id, revenue_coa_old, revenue_coa_new, bank_date = found
+            new_context = {'tax_rate': row['TaxRate'], 'account_id': account_id, 'bank_coa': move['bank_coas'][account_id],
+                           'revenue_coa': revenue_coa_new, 'bank_coa_ids': move['bank_coa_ids']}
+            if move.get('revenue_by_number') is not None:
+                new_context['revenue_date_number'] = small_business_revenue_number(bank_date)
             log_length = len(tx.log)
             try:
                 conn.execute('SAVEPOINT payment_move')
                 self._unassign(conn, pay_id)
-                rebooked = booked(self._assign_in_tx(
-                    tx, new_id, bank_id, part,
-                    {'tax_rate': row['TaxRate'], 'account_id': account_id,
-                     'bank_coa': move['bank_coas'][account_id], 'revenue_coa': move['revenue_coa'],
-                     'bank_coa_ids': move['bank_coa_ids']}), part)
+                rebooked = booked(self._assign_in_tx(tx, new_id, bank_id, part, new_context), part)
                 if rebooked and amount > part:
                     rebooked = booked(self._assign_in_tx(
                         tx, old_id, bank_id, amount - part,

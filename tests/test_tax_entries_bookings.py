@@ -15,7 +15,7 @@ Die festen Belege (Beträge in Cent in den Vergleichen):
 * **G** (``G-100``): 19 % × 100,00 (eine Position wie heute) und steuerfrei × 80,00 (mit Momentaufnahme, Konto 4120) – zusammen 199,00;
 * **H** (``H-100``): 19 % × 100,00 und 5,5 % × 200,00 (Momentaufnahme, Konto 4150) – Steuer 19,00 und 11,00, zusammen 330,00.
 
-* **Erlöskonto:** Trägt die Satzgruppe (bzw. der Beleg mit einem Satz) eine Momentaufnahme mit Konto, gilt es, immer – nie 4185, nie ein gelerntes; ohne Momentaufnahme
+* **Erlöskonto:** Trägt die Satzgruppe (bzw. der Beleg mit einem Satz) eine Momentaufnahme mit Konto, gilt es, immer – nie 4184/4185, nie ein gelerntes; ohne Momentaufnahme
   bleibt jede Regel von heute. Eine Rechnung mit Erlöskonto aus den Stammdaten lehrt kein Erlöskonto, und die Masken bieten dort keine Wahl.
 * **Wartekonto** (keine neuen): 19 → 4405, 7 → 4345, Satz 0 → 4340; jeder andere Satz keines – der ganze Beleg bucht keine Forderung, jede Zahlung „Erlöskonto an Bank“ je
   Satz, und die Antwort des Versendens trägt ``NO_WAITING_HINT``. Für einen Beleg mit EINEM Satz und Momentaufnahme gilt der genaue Satz (7,4 % ist nicht 7 %).
@@ -167,7 +167,7 @@ def test_a_completely_tax_free_invoice_books_its_receivable_on_the_waiting_accou
     assert standing(world.db, invoice_id) == ('sent', 10000)
 
 
-def test_the_payment_of_a_tax_free_invoice_books_on_the_account_of_the_snapshot_never_on_4185(world):
+def test_the_payment_of_a_tax_free_invoice_books_on_the_account_of_the_snapshot_never_on_4184_or_4185(world):
     invoice_id = free_invoice(world)
     send(world, invoice_id)
 
@@ -175,7 +175,7 @@ def test_the_payment_of_a_tax_free_invoice_books_on_the_account_of_the_snapshot_
 
     assert marked(world.db, 'F-100') == [(1800, 10000, 10000, None, None, 'liquid_first'), (4340, FREE, 10000, None, None, 'transfer')]
     assert standing(world.db, invoice_id) == ('paid', 0)
-    assert balance(world.db, 4185) == 0 and balance(world.db, 4340) == 0 and balance(world.db, 10000) == 0
+    assert balance(world.db, 4184) == 0 and balance(world.db, 4185) == 0 and balance(world.db, 4340) == 0 and balance(world.db, 10000) == 0
     assert findings(world.db) == []
 
 
@@ -191,15 +191,17 @@ def test_an_invoice_with_one_rate_ignores_every_other_account_for_the_snapshot_e
     assert marked(world.db, 'F-100')[1][:2] == (4340, FREE)
 
 
-def test_a_section_19_invoice_still_learns_4185_because_the_tax_free_invoice_with_its_own_account_teaches_nothing(world):
-    """Ein ganz steuerfreier Beleg (Kopf 0) läge im Topf „0 und § 19“ und lehrte der nächsten Kleinunternehmer-Rechnung sein Konto – ``_learned_revenue_coa`` schließt ihn aus."""
+def test_a_section_19_invoice_still_gets_its_standard_account_because_the_tax_free_invoice_with_its_own_account_teaches_nothing(world):
+    """Ein ganz steuerfreier Beleg (Kopf 0) läge im Topf „0 und § 19“ und lehrte der nächsten Kleinunternehmer-Rechnung sein Konto – ``_learned_revenue_coa`` schließt ihn aus.
+    Die § 19-Rechnung bucht auf das Standardkonto, das das Datum der Bankbewegung nennt (4185 bis 2025, 4184 ab 2026); der Satz 0 bleibt auf 4185."""
     invoice_id = free_invoice(world)
     send(world, invoice_id)
     pay_on(world, invoice_id, 100.0)
 
     assert world.db._learned_revenue_coa(0.0) is None
-    assert world.db.resolve_revenue_coa(-1) == world.db.get_coa_id_by_account_number(4185)              # § 19: Kopf −1
-    assert world.db.resolve_revenue_coa(0) == world.db.get_coa_id_by_account_number(4185)
+    assert world.db.resolve_revenue_coa(-1, on='2025-12-31') == world.db.get_coa_id_by_account_number(4185)      # § 19: Kopf −1
+    assert world.db.resolve_revenue_coa(-1, on='2026-01-01') == world.db.get_coa_id_by_account_number(4184)
+    assert world.db.resolve_revenue_coa(0, on='2026-01-01') == world.db.get_coa_id_by_account_number(4185)       # Satz 0 mit Steuerausweis: fest 4185
 
 
 def test_a_paid_reduced_rate_invoice_with_its_own_account_teaches_nothing_but_the_same_without_one_does(world):
@@ -599,7 +601,7 @@ def test_a_snapshot_without_an_account_needs_a_default_account_for_its_rate(worl
     refused_with(world, invoice_id, before, TAX_SEND_NO_REVENUE.format(rate='19 %'))
 
 
-def test_a_snapshot_for_0_percent_without_an_account_is_refused_and_never_gets_4185(world):
+def test_a_snapshot_for_0_percent_without_an_account_is_refused_and_never_gets_4184_or_4185(world):
     invoice_id = entry_invoice(world, 'P-200', [Part(D(0), '100.00', {'tax_category': 'S', 'tax_rate_bp': 0, 'tax_exempt_reason': None, 'revenue_coa_id': None})])
     before = tables(world.db)
 
@@ -639,7 +641,7 @@ def full_dump(db):
         return {name: con.execute(f'SELECT * FROM "{name}" ORDER BY 1').fetchall() for name in names}
 
 
-def test_a_refused_send_of_a_replacement_invoice_creates_no_account_not_even_4185(world, monkeypatch):
+def test_a_refused_send_of_a_replacement_invoice_creates_no_account_not_even_4184_or_4185(world, monkeypatch):
     """„Standard 0 %“ mit Konto versenden, stornieren, neu ausstellen, an beiden Belegen das Erlöskonto streichen und 4185 löschen: Das Versenden der Ersatzrechnung lehnt mit
     ``TAX_SEND_NO_REVENUE`` ab. Früher hatte der Umzugskontext (``_payment_move_context``: ``resolve_revenue_coa``) vorher 4185 angelegt – der Kontenrahmen hatte danach eine Zeile
     mehr. Jetzt läuft erst der Blocker, und der Umzugskontext nur ohne Ablehnung: Alle Tabellen sind danach, wie sie vorher waren."""
@@ -648,19 +650,20 @@ def test_a_refused_send_of_a_replacement_invoice_creates_no_account_not_even_418
     cancelled(world, original)
     replacement = reissue(world.db, original, monkeypatch)
     run_sql(world.db, 'UPDATE InvoiceItems SET RevenueCoaId = NULL WHERE InvoiceId IN (?, ?)', original, replacement)
-    run_sql(world.db, 'DELETE FROM ChartOfAccounts WHERE AccountNumber = 4185')
+    run_sql(world.db, 'DELETE FROM ChartOfAccounts WHERE AccountNumber IN (4184, 4185)')
     before = full_dump(world.db)
-    assert world.db.get_coa_id_by_account_number(4185) is None
+    assert world.db.get_coa_id_by_account_number(4184) is None and world.db.get_coa_id_by_account_number(4185) is None
 
     change = world.db.set_invoice_status(replacement, 'sent', USER)
 
     assert (change.ok, change.code, change.message) == (False, 409, TAX_SEND_NO_REVENUE.format(rate='0 %'))
-    assert full_dump(world.db) == before and world.db.get_coa_id_by_account_number(4185) is None
+    assert full_dump(world.db) == before
+    assert world.db.get_coa_id_by_account_number(4184) is None and world.db.get_coa_id_by_account_number(4185) is None
 
 
 def test_a_send_refused_for_a_contradiction_creates_no_account_either(world, monkeypatch):
     """Dieselbe Lage, aber das Versenden scheitert nicht am Erlöskonto, sondern an einem Widerspruch der Momentaufnahme (eine Position trägt einen Grund, die andere nicht):
-    Der Umzugskontext löst dann kein Erlöskonto auf – auch hier entsteht kein 4185, alle Tabellen bleiben, wie sie waren."""
+    Der Umzugskontext löst dann kein Erlöskonto auf – auch hier entsteht weder 4184 noch 4185, alle Tabellen bleiben, wie sie waren."""
     coa = account(world.db, 4170)
     original = entry_invoice(world, 'Z-150', [entry(0, '60.00', coa), entry(0, '40.00', coa)])
     send(world, original)
@@ -668,17 +671,18 @@ def test_a_send_refused_for_a_contradiction_creates_no_account_either(world, mon
     replacement = reissue(world.db, original, monkeypatch)
     run_sql(world.db, 'UPDATE InvoiceItems SET RevenueCoaId = NULL WHERE InvoiceId IN (?, ?)', original, replacement)
     run_sql(world.db, "UPDATE InvoiceItems SET TaxExemptReason = 'Erfundener Grund' WHERE InvoiceId = ? AND Position = 2", replacement)
-    run_sql(world.db, 'DELETE FROM ChartOfAccounts WHERE AccountNumber = 4185')
+    run_sql(world.db, 'DELETE FROM ChartOfAccounts WHERE AccountNumber IN (4184, 4185)')
     before = full_dump(world.db)
 
     change = world.db.set_invoice_status(replacement, 'sent', USER)
 
     assert (change.ok, change.code, change.message) == (False, 409, TAX_ENTRY_CONTRADICTION)
-    assert full_dump(world.db) == before and world.db.get_coa_id_by_account_number(4185) is None
+    assert full_dump(world.db) == before
+    assert world.db.get_coa_id_by_account_number(4184) is None and world.db.get_coa_id_by_account_number(4185) is None
 
 
 def test_the_move_context_is_not_built_when_the_blocker_refuses_but_it_is_when_the_send_goes_through(world, monkeypatch):
-    """Die Reihenfolge, auf die es ankommt: erst ``_entry_revenue_blocker``, dann – nur ohne Ablehnung – ``_payment_move_context`` (er löst das Erlöskonto auf und legt 4185 an)."""
+    """Die Reihenfolge, auf die es ankommt: erst ``_entry_revenue_blocker``, dann – nur ohne Ablehnung – ``_payment_move_context`` (er löst das Erlöskonto auf und legt 4184/4185 an)."""
     original = entry_invoice(world, 'Z-200', [entry(0, '100.00', account(world.db, 4170))])
     send(world, original)
     cancelled(world, original)
@@ -704,7 +708,7 @@ def test_a_refused_send_of_any_other_kind_leaves_every_table_as_it_was_too(world
     if what == 'revive':
         run_sql(world.db, "UPDATE Invoices SET Status = 'cancelled' WHERE ID = ?", invoice_id)
     run_sql(world.db, 'DELETE FROM ChartOfAccounts WHERE ID = ?', coa)
-    drop_accounts(world.db, 10000, 4340, 4185)
+    drop_accounts(world.db, 10000, 4340, 4184, 4185)
     before = full_dump(world.db)
 
     change = world.db.set_invoice_status(invoice_id, 'sent', USER)
@@ -1009,7 +1013,7 @@ def test_a_payment_on_a_mixed_invoice_names_the_group_whose_snapshot_account_is_
 
 
 def test_a_snapshot_without_an_account_for_0_percent_gets_no_default_for_the_payment_either(world):
-    """Nie 4185 raten: Ein Satz 0 ohne eigenes Erlöskonto in der Momentaufnahme lehnt die Zahlung ab, auch ohne dass das Versenden es zugesichert hätte (der ungeprüfte Baustein)."""
+    """Nie 4184/4185 raten: Ein Satz 0 ohne eigenes Erlöskonto in der Momentaufnahme lehnt die Zahlung ab, auch ohne dass das Versenden es zugesichert hätte (der ungeprüfte Baustein)."""
     invoice_id = entry_invoice(world, 'P-200', [Part(D(0), '100.00', {'tax_category': 'S', 'tax_rate_bp': 0, 'tax_exempt_reason': None, 'revenue_coa_id': None})])
     world.db.update_invoice_status(invoice_id, 'sent')
 
@@ -1026,13 +1030,14 @@ def test_the_revenue_account_of_a_document_follows_the_snapshot_then_todays_rule
     section_19 = entry_invoice(world, 'K-100', [plain(0, '100.00')], tax_rate=-1)
     no_account = entry_invoice(world, 'R-3', [Part(D(0), '100.00', {'tax_category': 'S', 'tax_rate_bp': 0, 'tax_exempt_reason': None, 'revenue_coa_id': None})])
 
-    def of(invoice_id):
-        return world.db.document_revenue_coa(invoice_id, columns(world.db, invoice_id)['TaxRate'])
+    def of(invoice_id, on=None):
+        return world.db.document_revenue_coa(invoice_id, columns(world.db, invoice_id)['TaxRate'], on=on)
 
     assert of(free_id) == account(world.db, FREE) and of(reduced_id) == account(world.db, REDUCED)       # die Momentaufnahme gilt, immer
     assert of(vorbelegung) == world.db.get_coa_id_by_account_number(4400) and of(plain_19) == world.db.get_coa_id_by_account_number(4400)   # wie heute
-    assert of(section_19) == world.db.get_coa_id_by_account_number(4185)                                    # § 19: 4185, wie heute
-    assert of(no_account) is None                                                                           # Satz 0 mit Momentaufnahme ohne Konto: nie 4185
+    assert of(section_19, '2025-12-31') == world.db.get_coa_id_by_account_number(4185)                      # § 19: nach dem Datum der Bankbewegung – bis 2025 4185 …
+    assert of(section_19, '2026-01-01') == world.db.get_coa_id_by_account_number(4184)                      # … ab 2026 4184
+    assert of(no_account) is None                                                                           # Satz 0 mit Momentaufnahme ohne Konto: nie 4184/4185
     assert world.db._document_revenue(reduced_id, 0.055, account(world.db, 4130)) == (account(world.db, REDUCED), None)   # eine Wahl ändert daran nichts
 
 

@@ -339,6 +339,7 @@ def test_closing_part_after_a_legacy_partial_payment_takes_only_the_remaining_ta
 
 
 def test_tax_free_invoice_books_without_tax(db, acct):
+    """§ 19 UStG: Das Erlöskonto hängt am Datum der Bankbewegung – 2026 ist es 4184 (bis 2025 4185, ``test_small_business_revenue_4184.py``)."""
     inv = _sent(db, 'R-19', 100.00, rate=-1, tax_amount=0)       # § 19 UStG
     bank = _bank(db, acct, 100.00)
 
@@ -346,9 +347,9 @@ def test_tax_free_invoice_books_without_tax(db, acct):
 
     assert _children(db, bank) == [
         (1800, 10000, Decimal('100'), None, 'Zahlung zu Re. R-19', PAYMENT_MARK),
-        (4340, 4185, Decimal('100'), None, 'Umb. zu Re. R-19', PAYMENT_MARK),
+        (4340, 4184, Decimal('100'), None, 'Umb. zu Re. R-19', PAYMENT_MARK),
     ]
-    assert _euer(db) == {4185: 100.0}
+    assert _euer(db) == {4184: 100.0}
     assert _balance(db, 10000) == 0 and _balance(db, 4340) == 0
 
 
@@ -647,20 +648,20 @@ def test_a_bank_row_with_an_expense_account_teaches_nothing(db, acct):
 def test_a_tax_free_invoice_whose_bank_row_sits_on_a_waiting_account_teaches_nothing(db, acct):
     first = _sent(db, 'R-F1', 100.00, rate=-1, tax_amount=0)
     _assign(db, first, _bank(db, acct, 100.00, coa_id=_coa(db, 4405)))
-    assert db.resolve_revenue_coa(-1) == _coa(db, 4185)
+    assert db.resolve_revenue_coa(-1, on='2026-02-01') == _coa(db, 4184)
 
     second, bank = _sent(db, 'R-F2', 50.00, rate=-1, tax_amount=0), _bank(
         db, acct, 50.00, date='2026-02-02')
     _assign(db, second, bank)
 
-    assert [c[:2] for c in _children(db, bank)] == [(1800, 10000), (4340, 4185)]
-    assert _euer(db) == {4185: 150.0}
+    assert [c[:2] for c in _children(db, bank)] == [(1800, 10000), (4340, 4184)]
+    assert _euer(db) == {4184: 150.0}
 
 
 def test_a_collective_payment_over_19_and_7_percent_leaves_every_later_invoice_on_its_own_account(
         db, acct):
     """Sammelzahlung 19 % + 7 % auf einer Bewegung; danach weitere 7-%-, 19-%- und §-19-Rechnungen:
-    jede landet auf dem Konto ihres Satzes (4400/4300/4185), die EÜR stimmt."""
+    jede landet auf dem Konto ihres Satzes (4400/4300/4184 – das Konto der § 19-Rechnung von 2026), die EÜR stimmt."""
     def link(invoice, movement):                       # wie die Oberfläche: samt Anzeige der Bankzeile
         assert link_booking_to_invoice_capped(db, invoice, movement) == (True, None)
 
@@ -677,8 +678,8 @@ def test_a_collective_payment_over_19_and_7_percent_leaves_every_later_invoice_o
                                                     (1800, 10000), (4345, 4300)]
     assert [c[:2] for c in _children(db, banks[0])] == [(1800, 10000), (4345, 4300)]
     assert [c[:2] for c in _children(db, banks[1])] == [(1800, 10000), (4405, 4400)]
-    assert [c[:2] for c in _children(db, banks[2])] == [(1800, 10000), (4340, 4185)]
-    assert _euer(db) == {4400: 200.0, 4300: 200.0, 4185: 100.0, 3806: 52.0}
+    assert [c[:2] for c in _children(db, banks[2])] == [(1800, 10000), (4340, 4184)]
+    assert _euer(db) == {4400: 200.0, 4300: 200.0, 4184: 100.0, 3806: 52.0}
     assert db.find_payment_inconsistencies() == []
 
 

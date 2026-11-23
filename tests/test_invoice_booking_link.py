@@ -312,7 +312,7 @@ def test_revenue_coa_is_learned_from_the_payment_rows_only(tmp_db):
     4405 (Wartekonto, Stellvertreter für ein beliebiges falsches Konto); früher lernte der
     §19-Satz daraus „4405“ und die nächste Zahlung buchte „4405 an Bank“."""
     coa_4405 = tmp_db.get_coa_id_by_account_number(4405)
-    coa_4185 = tmp_db.get_coa_id_by_account_number(4185)
+    coa_4184 = tmp_db.get_coa_id_by_account_number(4184)          # das Konto der §19-Rechnung von 2026 (bis 2025: 4185)
     coa_4400 = tmp_db.get_coa_id_by_account_number(4400)
 
     # §19-Rechnung: Die Bankbewegung trägt ein fremdes Konto
@@ -320,13 +320,13 @@ def test_revenue_coa_is_learned_from_the_payment_rows_only(tmp_db):
     bk1 = _bank_booking(tmp_db, 100.00, date='2026-03-01', coa_id=coa_4405)
     assert link_booking_to_invoice_capped(tmp_db, inv1, bk1)[0]
     assert tmp_db.get_booking_by_id(bk1)[8] == coa_4405          # die Anzeige der Bankzeile bleibt
-    assert tmp_db.resolve_revenue_coa(-1) == coa_4185            # … und lehrt nichts
+    assert tmp_db.resolve_revenue_coa(-1, on='2026-03-01') == coa_4184      # … und lehrt nichts
 
-    # Nächste §19-Rechnung landet auf 4185 (nicht auf 4405)
+    # Nächste §19-Rechnung landet auf 4184 (nicht auf 4405)
     inv2 = _invoice(tmp_db, 'R-KU2', gross=50.00, tax_rate=-1, tax_amount=0)
     bk2 = _bank_booking(tmp_db, amount=50.00)
     assert link_booking_to_invoice_capped(tmp_db, inv2, bk2)[0]
-    assert _raw(tmp_db, 'SELECT COA_ID FROM Bookings WHERE ParentBooking_ID = ?', bk2) == [(coa_4185,)]
+    assert _raw(tmp_db, 'SELECT COA_ID FROM Bookings WHERE ParentBooking_ID = ?', bk2) == [(coa_4184,)]
 
     # Das Formular „Zahlung verbuchen“ bietet kein Erlöskonto an: Die Kontierung entsteht
     # aus der Rechnung
@@ -370,8 +370,8 @@ def test_learning_takes_the_youngest_payment_row_of_the_rate_and_only_if_it_is_a
     assert tmp_db.resolve_revenue_coa(0.07) == tmp_db.get_coa_id_by_account_number(4300)
 
 
-def test_tax_free_invoice_gets_coa_4185_and_entry_child(tmp_db):
-    # §19-/0%-Rechnung ohne Historie: Kleinunternehmer-Konto 4185 (DATEV)
+def test_tax_free_invoice_gets_coa_4184_and_entry_child(tmp_db):
+    # §19-Rechnung ohne Historie: Kleinunternehmer-Konto (DATEV) nach dem Datum der Bankbewegung – 2026 ist es 4184 (bis 2025 4185) –
     # wird gesetzt und der Buchungssatz (entry-Kind = grünes Häkchen) erzeugt
     tmp_db.insert_account('BF-Bank', 'Ich', 'DE01', 'BIC', 'Bank', is_cash=0,
                           skr_account=1800)
@@ -383,28 +383,35 @@ def test_tax_free_invoice_gets_coa_4185_and_entry_child(tmp_db):
     ok, err = link_booking_to_invoice_capped(tmp_db, inv, bk)
     assert ok, err
 
-    coa_4185 = tmp_db.get_coa_id_by_account_number(4185)
+    coa_4184 = tmp_db.get_coa_id_by_account_number(4184)
     b = tmp_db.get_booking_by_id(bk)
-    assert b[8] == coa_4185
+    assert b[8] == coa_4184
     assert b[13] is None and b[14] is None      # keine Steuer bei §19
     entry = tmp_db.get_linked_entry_for_bank(bk)
-    assert entry is not None and entry[0] == coa_4185
+    assert entry is not None and entry[0] == coa_4184
 
 
-def test_resolve_creates_4185_in_legacy_db(tmp_db):
-    # Ältere DBs haben 4185 nicht im Seed → wird beim ersten Bedarf angelegt
-    coa_4185 = tmp_db.get_coa_id_by_account_number(4185)
-    con = sqlite3.connect(tmp_db.db_name)
-    con.execute('DELETE FROM ChartOfAccounts WHERE ID = ?', (coa_4185,))
-    con.commit()
-    con.close()
-    assert tmp_db.get_coa_id_by_account_number(4185) is None
+def test_resolve_creates_the_small_business_account_in_legacy_db(tmp_db):
+    # Ältere DBs haben 4184 und 4185 nicht im Seed → das Konto, das das Datum der Bankbewegung nennt, wird beim ersten Bedarf angelegt:
+    # 4185 bis 2025, 4184 ab 2026 – und nur dieses
+    for number in (4184, 4185):
+        con = sqlite3.connect(tmp_db.db_name)
+        con.execute('DELETE FROM ChartOfAccounts WHERE AccountNumber = ?', (number,))
+        con.commit()
+        con.close()
+        assert tmp_db.get_coa_id_by_account_number(number) is None
 
-    resolved = tmp_db.resolve_revenue_coa(-1)
+    resolved = tmp_db.resolve_revenue_coa(-1, on='2025-12-31')
     assert resolved is not None
     assert resolved == tmp_db.get_coa_id_by_account_number(4185)
-    # Explizite 0% landen im selben Topf
+    assert tmp_db.get_coa_id_by_account_number(4184) is None
+    # Explizite 0% landen im selben Topf – und bleiben auf 4185 (nur der Platzhalter −1 folgt dem Datum)
     assert tmp_db.resolve_revenue_coa(0) == resolved
+    assert tmp_db.resolve_revenue_coa(0, on='2026-06-30') == resolved
+
+    resolved_2026 = tmp_db.resolve_revenue_coa(-1, on='2026-01-01')
+    assert resolved_2026 is not None and resolved_2026 != resolved
+    assert resolved_2026 == tmp_db.get_coa_id_by_account_number(4184)
 
 
 # ── Formular-Prefill (from_invoice) ──────────────────────────────────────────
