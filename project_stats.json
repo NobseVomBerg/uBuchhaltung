@@ -11,10 +11,10 @@
   },
   "tests": {
     "cases": 23609,
-    "code_lines": 102301,
+    "code_lines": 102308,
     "files": 271,
     "functions": 8741,
-    "lines": 148800
+    "lines": 148816
   },
   "version": "2.8.4"
 }

@@ -46,6 +46,11 @@ jobs:
       - name: Abhängigkeiten installieren
         run: pip install -r requirements-dev.txt
 
+      # Was dieser Python-Build mitbringt, steht so im Log: Fehlt ihm das kompilierte Modul der Dezimalrechnung (_decimal),
+      # rechnet er in reinem Python – dieselben Ergebnisse, aber rund zehnmal langsamer (die Suite dauert dann länger).
+      - name: Python-Build nennen
+        run: python -c "import sys, importlib.util as u; print(sys.version); print('Dezimalrechnung:', 'kompiliert (_decimal)' if u.find_spec('_decimal') else 'reines Python (_pydecimal)')"
+
       # Jeder Test legt eine eigene SQLite-Datenbank an, und jedes Speichern wartet auf die Platte – das macht den
       # größten Teil der Laufzeit aus. Die Arbeitsdaten der Tests (data/tests/, siehe tests/conftest.py) liegen deshalb
       # im Arbeitsspeicher des Runners; bestandene Tests räumen ihre Daten sofort wieder ab.

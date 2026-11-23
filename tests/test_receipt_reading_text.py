@@ -828,13 +828,29 @@ def test_lines_full_of_matches_are_slow_but_never_more_than_a_few_seconds(patter
     assert time.perf_counter() - started < 5.0
 
 
+def _decimal_is_compiled():
+    """Ob Python die Dezimalrechnung mit seinem kompilierten Modul (``_decimal``) rechnet. Fehlt es einem Python-Build, rechnet ``decimal`` in
+    reinem Python – dasselbe Ergebnis, aber gemessen rund zehnmal langsamer."""
+    try:
+        import _decimal  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+#: Zeitgrenze der Satzprobe über viele Zeilen: 5 s mit der kompilierten Dezimalrechnung (gemessen rund 0,5 s), 60 s ohne sie (gemessen rund
+#: 5,5 s allein, bis 20 s neben drei weiteren Prozessen). Die Probe rechnet fast nur mit Dezimalzahlen; die Grenze soll ein Wachstum mit dem
+#: Quadrat der Zeilen fangen, nicht die Art, wie ein Python-Build rechnet.
+RATE_PROOF_SECONDS = 5.0 if _decimal_is_compiled() else 60.0
+
+
 def test_thousands_of_tax_lines_with_as_many_amounts_as_the_rate_proof_still_compares_stay_fast():
     """Die Satzprobe vergleicht die Beträge einer Zeile paarweise – darum gilt eine Grenze je Zeile (``MAX_LINE_AMOUNTS``)."""
     amounts = ' '.join(f'{number},00' for number in range(1, text_rules.MAX_LINE_AMOUNTS + 1))
     text = '\n'.join([f'MwSt 19% {amounts}'] * 4000)
     started = time.perf_counter()
     reading = text_rules.read_text([text], OWN)
-    assert time.perf_counter() - started < 5.0 and reading.status in ('ok', 'empty')
+    assert time.perf_counter() - started < RATE_PROOF_SECONDS and reading.status in ('ok', 'empty')
 
 
 def test_the_time_grows_with_the_text_not_with_its_square():
