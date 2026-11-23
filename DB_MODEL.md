@@ -859,7 +859,7 @@ Abgleich wirkt (dieselbe Nummer am selben Tag gilt dort als ein Beleg). Lösen e
 | Spalte | Typ | Constraints | Beschreibung |
 |--------|-----|-------------|--------------|
 | ID | INTEGER | PRIMARY KEY | Auto-Increment |
-| Type | TEXT | NOT NULL | 'invoice', 'receipt_company', 'receipt_category' |
+| Type | TEXT | NOT NULL | 'invoice', 'quote', 'receipt_company', 'receipt_category' |
 | Year | INTEGER | NOT NULL | Jahr (4-stellig) |
 | Letter | TEXT | NOT NULL | Buchstabe (z.B. 'R') |
 | Prefix | TEXT | DEFAULT '' | Zusätzlicher Präfix |

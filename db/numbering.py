@@ -12,6 +12,8 @@ from decimal import Decimal
 from money import to_minor, from_minor
 
 DEFAULT_NUMBER_FORMAT = '{yy}{l}{nnn}{s}'
+# Die Belegarten, deren Nummer das Speichern vergibt, und der Buchstabe des Kreises, der beim ersten Speichern ohne Kreis entsteht
+DOCUMENT_LETTERS = {'invoice': 'R', 'quote': 'A'}
 _NUMBER_TOKENS = re.compile(r'(\{yyyy\}|\{yy\}|\{l\}|\{nnn\}|\{nn\}|\{n\}|\{s\})')
 # Mehr freie Nummern überspringt kein Kreis: Wer so viele belegte Nummern vor sich hat (oder eine
 # Formatvorlage ohne Zähler), bekommt einen Fehler statt einer Endlosschleife
@@ -201,14 +203,17 @@ class NumberRangeMixin:
 
         Für Vorschläge in Formularen: der Nutzer soll die Nummer sehen, ohne
         dass jeder Klick eine verbrennt. Verbraucht wird sie erst beim
-        Speichern (Rechnungen: ``allocate_invoice_number``, sonst consume_number).
+        Speichern (Rechnungen und Angebote: ``allocate_document_number``, sonst consume_number).
 
         Genommen wird der Kreis des angefragten Jahres, sonst der jüngste. Bei Rechnungen ist der
         Vorschlag die Nummer, die ``allocate_invoice_number`` vergäbe: eine schon belegte Nummer
-        wird übersprungen.
+        wird übersprungen. Bei Angeboten (``quote``) ist es die Nummer, die ``allocate_document_number``
+        vergäbe – auch ohne Kreis des Jahres (``_peek_quote_number``: dann ``(Nummer, None)``).
         Returns: (formatierte Nummer, range_id); ohne Kreis (None, None), und liefert der Kreis keine
         Nummer (Formatvorlage ohne Zähler) (None, range_id) – das Ansehen wirft nie einen Fehler.
         """
+        if range_type == 'quote':
+            return self._peek_quote_number(year)
         ranges = self.fetch_number_ranges(range_type)
         if not ranges:
             return None, None
@@ -233,18 +238,33 @@ class NumberRangeMixin:
             (chosen[5] or 0) + 1, chosen[4] or '')
         return number, chosen[0]
 
-    # ── Rechnungsnummern: vergeben beim ersten Speichern ─────────────────────
+    # ── Rechnungs- und Angebotsnummern: vergeben beim ersten Speichern ───────
     # Der Zähler gehört zur Transaktion des Aufrufers: scheitert das Speichern, ist auch die Nummer
-    # nicht verbraucht. Löscht der Nutzer einen Entwurf, gibt ``release_invoice_number`` sie zurück.
+    # nicht verbraucht. Löscht der Nutzer einen Rechnungsentwurf, gibt ``release_invoice_number`` sie
+    # zurück; ein gelöschtes Angebot lässt eine Lücke.
+
+    @staticmethod
+    def _document_ranges(conn, range_type):
+        """Die Nummernkreise einer Belegart (``invoice`` oder ``quote``), jüngstes Jahr zuerst (wie ``fetch_number_ranges``)."""
+        rows = conn.execute(
+            "SELECT ID, Year, Letter, Prefix, CurrentNumber, NumberFormat FROM NumberRanges "
+            "WHERE Type = ? ORDER BY Year DESC, Letter, Prefix", (range_type,)).fetchall()
+        return [NumberRange(r[0], r[1], r[2] or '', r[3] or '', r[4] or 0,
+                            r[5] or DEFAULT_NUMBER_FORMAT) for r in rows]
 
     @staticmethod
     def _invoice_ranges(conn):
         """Die Nummernkreise der Rechnungen, jüngstes Jahr zuerst (wie ``fetch_number_ranges``)."""
-        rows = conn.execute(
-            "SELECT ID, Year, Letter, Prefix, CurrentNumber, NumberFormat FROM NumberRanges "
-            "WHERE Type = 'invoice' ORDER BY Year DESC, Letter, Prefix").fetchall()
-        return [NumberRange(r[0], r[1], r[2] or '', r[3] or '', r[4] or 0,
-                            r[5] or DEFAULT_NUMBER_FORMAT) for r in rows]
+        return NumberRangeMixin._document_ranges(conn, 'invoice')
+
+    @staticmethod
+    def _new_range_base(ranges, range_type):
+        """Buchstabe, Zusatz und Vorlage eines neuen Kreises der Belegart: die des jüngsten vorhandenen, ohne einen der Standard der Art
+        (``DOCUMENT_LETTERS``, Standardvorlage). Die EINE Stelle für das Anlegen (``allocate_document_number``) und das Ansehen
+        (``_peek_quote_number``): Der Vorschlag ist so immer die Nummer, die das Speichern vergibt."""
+        base = ranges[0] if ranges else None
+        return ((base.letter, base.suffix, base.fmt) if base
+                else (DOCUMENT_LETTERS[range_type], '', DEFAULT_NUMBER_FORMAT))
 
     @staticmethod
     def _number_range_of(row):
@@ -285,6 +305,29 @@ class NumberRangeMixin:
             number += 1
         raise NumberRangeError('Im Nummernkreis ist keine freie Rechnungsnummer zu finden.')
 
+    def _peek_quote_number(self, year):
+        """Der Vorschlag für ein neues Angebot im Jahr ``year`` (ohne Angabe das laufende): genau die Nummer, die
+        ``allocate_document_number`` vergäbe. Gibt es für das Jahr noch keinen Kreis, rechnet der Vorschlag mit dem, der beim
+        Speichern entstünde (Buchstabe, Zusatz und Vorlage des jüngsten Kreises, ohne einen ``A``; Zähler 0); eine schon
+        belegte Nummer – von Hand vergeben oder von einer Rechnung – wird übersprungen. Verbraucht wird nichts.
+        Returns ``(Nummer, range_id)``: ``range_id`` ist ``None``, solange der Kreis des Jahres noch nicht angelegt ist, und die
+        Nummer ``None``, wenn die Formatvorlage keinen Zähler liefert – das Ansehen wirft nie einen Fehler."""
+        year = _current_year() if year is None else year
+        conn = self._get_connection()
+        try:
+            ranges = self._document_ranges(conn, 'quote')
+            rng = next((r for r in ranges if r.year == year), None)
+            if rng is None:
+                letter, suffix, fmt = self._new_range_base(ranges, 'quote')
+                rng = NumberRange(None, year, letter, suffix, 0, fmt)
+            try:
+                return self._next_free_number(conn, rng)[0], rng.id
+            except ValueError:
+                # Formatvorlage ohne Zähler o. Ä.: kein Vorschlag (die Seite lässt das Feld leer) – nie ein Fehler
+                return None, rng.id
+        finally:
+            conn.close()
+
     def _number_in_range(self, rng, text):
         """Die laufende Nummer, wenn ``text`` zur Formatvorlage des Kreises passt (Jahr, Buchstabe
         und Zusatz wie im Kreis), sonst ``None``."""
@@ -309,7 +352,7 @@ class NumberRangeMixin:
 
     def _take_next_number(self, conn, rng):
         """Den Zähler um eins weiterschieben und die Nummer liefern; eine schon belegte Nummer wird
-        übersprungen. In der Transaktion von ``conn`` (``allocate_invoice_number`` holt die
+        übersprungen. In der Transaktion von ``conn`` (``allocate_document_number`` holt die
         Schreibsperre): Das Lesen nach dem ``UPDATE`` sieht den eigenen Stand, kein anderer Schreiber
         kommt dazwischen."""
         if number_format_error(rng.fmt):
@@ -325,24 +368,33 @@ class NumberRangeMixin:
         raise NumberRangeError('Im Nummernkreis ist keine freie Rechnungsnummer zu finden.')
 
     def allocate_invoice_number(self, conn, invoice_date, requested=None):
-        """Die Nummer einer neuen Rechnung vergeben – in der Transaktion von ``conn``.
+        """Die Nummer einer neuen Rechnung vergeben – in der Transaktion von ``conn`` (siehe
+        ``allocate_document_number``)."""
+        return self.allocate_document_number(conn, 'invoice', invoice_date, requested)
 
-        Der Kreis ergibt sich aus dem Jahr von ``invoice_date`` (sonst der jüngste).
+    def allocate_document_number(self, conn, range_type, document_date, requested=None):
+        """Die Nummer eines neuen Belegs der Art ``range_type`` vergeben (``invoice``: Rechnung, ``quote``: Angebot; jede andere
+        Art ist ein ``ValueError``) – in der Transaktion von ``conn``.
+
+        Der Kreis ergibt sich aus dem Jahr von ``document_date`` (sonst der jüngste).
 
         * ``requested`` fehlt, oder es ist der Vorschlag (``peek_next_number``): Der Zähler rückt um
           eins vor, die Nummer wird nach der Formatvorlage des Kreises gebildet; eine schon belegte
-          Nummer wird übersprungen. Gibt es für das Jahr noch keinen Kreis, entsteht er (Buchstabe,
-          Zusatz und Vorlage des jüngsten Kreises, ohne einen: ``R``).
+          Nummer wird übersprungen (Rechnungen und Angebote teilen sich die Tabelle und damit die
+          Nummern). Gibt es für das Jahr noch keinen Kreis der Art, entsteht er (Buchstabe, Zusatz und
+          Vorlage des jüngsten Kreises der Art, ohne einen ``R`` bzw. ``A``).
         * ``requested`` ist eine eigene Nummer: Sie wird so übernommen. Passt sie zur Vorlage eines
           Kreises, hebt sie dessen Zähler auf ihre laufende Nummer – nie nach unten.
 
-        Returns die Nummer. Ist sie belegt, scheitert erst das Einfügen der Rechnung (eindeutige
+        Returns die Nummer. Ist sie belegt, scheitert erst das Einfügen des Belegs (eindeutige
         Nummer)."""
+        if range_type not in DOCUMENT_LETTERS:
+            raise ValueError(f'Unbekannte Belegart für die Nummernvergabe: {range_type!r}')
         if not conn.in_transaction:
             conn.execute('BEGIN IMMEDIATE')
         requested = (requested or '').strip()
-        ranges = self._invoice_ranges(conn)
-        year = self._year_of(invoice_date)
+        ranges = self._document_ranges(conn, range_type)
+        year = self._year_of(document_date)
         rng = self._range_for_year(ranges, year)
         if requested:
             try:
@@ -358,12 +410,10 @@ class NumberRangeMixin:
                                  'AND COALESCE(CurrentNumber, 0) < ?', (number, other.id, number))
             return requested
         if rng is None or rng.year != year:
-            base = ranges[0] if ranges else None
-            letter, suffix, fmt = ((base.letter, base.suffix, base.fmt) if base
-                                   else ('R', '', DEFAULT_NUMBER_FORMAT))
+            letter, suffix, fmt = self._new_range_base(ranges, range_type)
             cursor = conn.execute(
                 "INSERT INTO NumberRanges (Type, Year, Letter, Prefix, CurrentNumber, Description, "
-                "NumberFormat) VALUES ('invoice', ?, ?, ?, 0, '', ?)", (year, letter, suffix, fmt))
+                "NumberFormat) VALUES (?, ?, ?, ?, 0, '', ?)", (range_type, year, letter, suffix, fmt))
             rng = NumberRange(cursor.lastrowid, year, letter, suffix, 0, fmt)
         return self._take_next_number(conn, rng)
 

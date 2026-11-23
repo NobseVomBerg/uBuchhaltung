@@ -746,9 +746,9 @@ def test_without_the_checkbox_the_quote_sends_exactly_the_payload_of_before(worl
         'introText': 'Guten Tag', 'closingText': 'Mit freundlichen Grüßen', 'taxRate': 0.19, 'showTax': True, 'status': 'draft',
         'items': [{'position': 1, 'quantity': 1, 'unit': 'Stk.', 'description': 'Beratung', 'unitPrice': 100, 'taxRate': 19},
                   {'position': 2, 'quantity': 1, 'unit': 'Stk.', 'description': 'Material', 'unitPrice': 50, 'taxRate': 19}],
-        'quoteId': quote_id}
+        'numberSuggestion': None, 'quoteId': quote_id}                  # der Vorschlag der Nummer: beim Bearbeiten ``null`` (tests/test_quote_numbering.py)
     assert list(payload) == ['quoteNumber', 'quoteDate', 'customerId', 'ownCompanyId', 'validUntil', 'introText', 'closingText', 'taxRate',
-                             'showTax', 'status', 'items', 'quoteId']
+                             'showTax', 'status', 'items', 'numberSuggestion', 'quoteId']
 
 
 @NO_NODE

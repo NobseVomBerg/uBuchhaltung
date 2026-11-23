@@ -14,18 +14,25 @@ Kontenrahmens), merkte es erst beim Zuordnen einer Zahlung: Das Konto steht nich
   Ein unverändert zurückgeschickter Wert ist nie ein Verstoß: Der Bestand bleibt speicherbar. Die Sperre „SKR-Konto nicht geändert: n
   Buchungssätze …“ bleibt, wie sie war, und kommt nach den neuen Prüfungen.
 * Beim Zuordnen einer Zahlung sagt die Meldung, was zu tun ist (``Database._bank_coa_of``).
+* Prüfen und Anlegen (bzw. Ändern) gehören zusammen: Die Handler (auch die Ersteinrichtung) laufen unter EINER Sperre
+  (``handlers._BANK_ACCOUNT_LOCK``) – zwei Anfragen zugleich bekommen nie dieselbe freie Nummer. Als vergeben gilt auch eine Nummer, die als
+  Text in der Spalte steht (``handlers._carries_skr_number``; SQLite wandelt sie nicht in eine Zahl um, wenn etwa ein geschütztes
+  Leerzeichen daran hängt) – bei der Prüfung wie bei der Vorauswahl (``free_bank_skr_number``).
 
 Die Datenbankschicht (``insert_account``, ``update_account``) prüft weiter nichts: Importe, Demodaten und ältere Bestände tragen auch andere
 Nummern – wo ein Test hier einen solchen Bestand braucht, legt er ihn über sie an. Namen, Nummern und IBANs sind erfundene Testwerte.
 """
 import json
 import re
+import threading
+import time
 from contextlib import closing
 from html.parser import HTMLParser
 from urllib.parse import parse_qs, quote, urlsplit
 
 import pytest
 
+from db import Database
 from server import handlers
 from server.pages_masterdata import PageBankAccounts, SKR_ACCOUNT_HINT
 from tests.dom_helpers import Dom
@@ -747,3 +754,111 @@ def test_the_first_setup_leaves_the_account_empty_when_no_account_of_the_range_i
         tmp_db.insert_account(f'Konto {number}', 'Erika Probe', iban, 'TESTDEFF', 'Testbank', skr_account=number)
     tmp_db.insert_account('Konto 1820', 'Erika Probe', 'DE00000000000000000003', 'TESTDEFF', 'Testbank', skr_account=1820)
     assert handlers.free_bank_skr_number(tmp_db) is None
+
+
+# ── Eine als Text gespeicherte Nummer gilt als vergeben ──────────────────────
+
+NBSP = '\xa0'
+
+
+def _typeof(db, name):
+    with closing(db._get_connection()) as con:
+        return con.execute('SELECT typeof(SKRAccount) FROM Accounts WHERE Name = ?', (name,)).fetchone()[0]
+
+
+def _text_account(db, name, stored):
+    """Ein Konto, dessen Nummer als TEXT in der Spalte steht: SQLite wandelt ``'1820'`` und ``' 1820 '`` in eine Zahl um, ein geschütztes Leerzeichen
+    (so kommt es aus einer Kopie) verhindert es."""
+    db.insert_account(name, 'Erika Probe', IBAN_C, 'TESTDEFF', 'Testbank', skr_account=stored)
+    assert _typeof(db, name) == 'text'
+    return _account(db, name)[0]
+
+
+@pytest.mark.parametrize('stored', [NBSP + '1820', '1820' + NBSP], ids=['geschuetztes-Leerzeichen-davor', 'geschuetztes-Leerzeichen-dahinter'])
+def test_a_number_stored_as_text_counts_as_taken_for_a_new_and_a_changed_account(two, stored):
+    _text_account(two, 'Giro Text', stored)
+    beta = _account(two, 'Giro Beta')[0]
+    before = _untouched(two)
+
+    assert _error(_add(two, 'Giro Neu', '1820')[1]) == IN_USE.format(n=1820)
+    assert _error(_update(two, beta, 'Giro Beta', 1820)[1]) == IN_USE.format(n=1820)
+
+    assert _untouched(two) == before
+    assert handlers.free_bank_skr_number(two) is None                      # 1800 und 1810 als Zahl, 1820 als Text: alle drei sind vergeben
+
+
+def test_the_account_that_carries_the_text_may_be_saved_with_the_clean_number(two):
+    account = _text_account(two, 'Giro Text', NBSP + '1820')
+
+    assert _update(two, account, 'Giro Text', 1820) == (303, '/masterdata/bankaccounts')      # sich selbst zählt es nie als vergeben
+
+    assert _skr(two, 'Giro Text') == 1820 and _typeof(two, 'Giro Text') == 'integer'
+
+
+def test_the_preselection_and_the_first_setup_skip_a_number_stored_as_text(tmp_db):
+    _text_account(tmp_db, 'Giro Text', NBSP + '1800')
+
+    assert handlers.free_bank_skr_number(tmp_db) == 1810                    # vorher: 1800, die Nummer, die das Text-Konto trägt
+    assert _selected(_page(tmp_db)) == [('1810', '1810 – Bank 1', True)]
+    status, _target = handlers.handle_setup_save(tmp_db, _setup_form(company_name='Muster GmbH', iban=IBAN_A))
+    assert status == 303
+    assert _skr(tmp_db, 'Bankkonto') == 1810
+
+
+# ── Prüfen und Anlegen gehören zusammen: zwei Anfragen zugleich ──────────────
+
+def _race(monkeypatch, method, first, second):
+    """Zwei Anfragen zugleich. ``Database.<method>`` (``insert_account``, ``update_account``) wartet kurz, bevor sie schreibt – lange genug, dass die zweite
+    Anfrage ihre Prüfung längst gemacht hätte, wenn die Sperre sie nicht aufhielte. Die zweite beginnt erst, wenn die erste schreibt (und hält dann die
+    Sperre). Liefert die Antworten ``(erste, zweite)``."""
+    original = getattr(Database, method)
+    writing = threading.Event()
+
+    def slow(self, *args, **kwargs):
+        writing.set()
+        time.sleep(0.3)
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(Database, method, slow)
+    results = {}
+    threads = [threading.Thread(target=lambda: results.__setitem__('first', first()))]
+    threads[0].start()
+    assert writing.wait(10), 'die erste Anfrage hat nie geschrieben'
+    threads.append(threading.Thread(target=lambda: results.__setitem__('second', second())))
+    threads[1].start()
+    for thread in threads:
+        thread.join(30)
+        assert not thread.is_alive()
+    return results['first'], results['second']
+
+
+def test_two_simultaneous_requests_cannot_both_create_an_account_with_the_same_free_number(two, monkeypatch):
+    first, second = _race(monkeypatch, 'insert_account',
+                          lambda: _add(two, 'Giro Erst', '1820'), lambda: _add(two, 'Giro Zweit', '1820'))
+
+    assert first == (303, '/masterdata/bankaccounts')
+    assert (second[0], _error(second[1])) == (303, IN_USE.format(n=1820))
+    assert [row[1] for row in two.fetch_accounts() if row[7] == 1820] == ['Giro Erst']
+    assert 'Giro Zweit' not in [row[1] for row in two.fetch_accounts()]
+
+
+def test_two_simultaneous_requests_cannot_both_change_an_account_to_the_same_free_number(two, monkeypatch):
+    two.insert_account('Giro Gamma', 'Erika Probe', IBAN_C, 'TESTDEFF', 'Testbank')
+    beta, gamma = _account(two, 'Giro Beta')[0], _account(two, 'Giro Gamma')[0]
+
+    first, second = _race(monkeypatch, 'update_account',
+                          lambda: _update(two, gamma, 'Giro Gamma', 1820), lambda: _update(two, beta, 'Giro Beta', 1820))
+
+    assert first == (303, '/masterdata/bankaccounts')
+    assert (second[0], _error(second[1])) == (303, IN_USE.format(n=1820))
+    assert [row[1] for row in two.fetch_accounts() if row[7] == 1820] == ['Giro Gamma']
+    assert _skr(two, 'Giro Beta') == 1810
+
+
+def test_the_first_setup_and_a_new_account_at_the_same_time_do_not_get_the_same_number(tmp_db, monkeypatch):
+    """Die Ersteinrichtung sucht die kleinste freie Nummer und legt das Konto an – unter derselben Sperre wie das Formular der Bankkonten."""
+    first, second = _race(monkeypatch, 'insert_account', lambda: _add(tmp_db, 'Giro Erst', '1800'),
+                          lambda: handlers.handle_setup_save(tmp_db, _setup_form(company_name='Muster GmbH', iban=IBAN_A)))
+
+    assert first == (303, '/masterdata/bankaccounts') and second[0] == 303
+    assert (_skr(tmp_db, 'Giro Erst'), _skr(tmp_db, 'Bankkonto')) == (1800, 1810)

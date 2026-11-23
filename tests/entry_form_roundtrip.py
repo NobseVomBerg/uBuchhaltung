@@ -102,12 +102,18 @@ def submit(db, post):
     assert status == 303, (status, location)
 
 
+def row_fields(post):
+    """Die Felder des Buchungssatz-Editors, die je Zeile einen Wert tragen: alle ``split_*`` bis auf ``split_loaded`` – das steht nur
+    einmal im Formular (die Sätze, die die Maske beim Öffnen gezeigt hat) und ändert sich mit keiner Zeile."""
+    return [name for name in post if name.startswith('split_') and name != 'split_loaded']
+
+
 def add_row(post, **values):
     """Eine neue Zeile des Buchungssatz-Editors vor der (leeren) Vorlagenzeile, wie ``splitAdd`` und
     ``splitAdopt`` sie anlegen. ``values``: ``split_id``, ``split_amount``, ``split_coa``, ``split_text``,
     ``split_docnr``, ``split_tax_rate``, ``split_tax_amount``, ``split_counter_coa``; was fehlt, bleibt leer."""
     result = {name: list(items) for name, items in post.items()}
-    template = {name: result[name].pop() for name in list(result) if name.startswith('split_')}
+    template = {name: result[name].pop() for name in row_fields(result)}
     row = dict(template, **{name: str(value) for name, value in values.items()})
     for name, value in row.items():
         result[name] += [value, template[name]]
@@ -131,7 +137,7 @@ def drop_row(post, row_id):
     """Die Zeile mit dieser ``split_id`` aus dem Formular nehmen (✕ in der Zeile)."""
     result = {name: list(values) for name, values in post.items()}
     index = result['split_id'].index(str(row_id))
-    for name in [n for n in result if n.startswith('split_')]:
+    for name in row_fields(result):
         del result[name][index]
     return result
 
