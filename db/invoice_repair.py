@@ -20,7 +20,9 @@ C. Eine **Zuordnung ohne eigene Sätze** mit den heutigen Bausteinen neu schreib
    Zuordnung hängt an einer Bankbewegung mit Zahlungseingang; unter der Bewegung steht kein Satz mit ``SourceGroup`` und keiner
    mit der Nummer dieser Rechnung; jeder andere Satz gehört einer anderen Rechnung, die selbst der Bewegung zugeordnet ist; die
    Forderung der Rechnung ist genau eine und von der App; das Bankkonto hat eine SKR-Nummer; der Betrag hat keinen Bruchteil eines
-   Cents; für den Steuersatz gibt es ein Erlöskonto (nie wird eines angelegt) – und **die Rechnung hat nirgends sonst Sätze**
+   Cents; für den Steuersatz gibt es ein Erlöskonto (nie wird eines angelegt; bei einer Rechnung ohne Steuerausweis das für das Datum der Bankbewegung – 4185 bis 2025,
+   4184 ab 2026 –: Fehlt es im Kontenrahmen, bleibt die Zuordnung mit festem Grund liegen, ``revenue_missing``, eine Wahl gibt es dort nicht; ist das Datum keines, ``revenue_date``)
+   – und **die Rechnung hat nirgends sonst Sätze**
    (``elsewhere``): kein Buchungssatz außer der Forderung und außer denen unter einer Bewegung, der die Rechnung zugeordnet ist,
    trägt ihre Nummer (ohne Rücksicht auf die Schreibweise und auf Leerraum am Rand – so, wie ``str.strip()`` ihn kennt, auch
    Tabulator, Zeilenumbruch und geschütztes Leerzeichen; eigenständig, auf der Kasse, unter einer fremden Bewegung, mit oder ohne
@@ -60,8 +62,8 @@ import json
 from collections import defaultdict, namedtuple
 
 from money import fmt_eur, from_minor
-from .invoice_payments import (NO_REVENUE_COA, PAYMENT_ROW_COLUMNS, RECEIVABLE_STATUSES, STORNO_KIND, has_mixed_rates,
-                               next_payment_status)
+from .invoice_payments import (NO_REVENUE_COA, PAYMENT_ROW_COLUMNS, RECEIVABLE_STATUSES, SMALL_BUSINESS_REVENUE_NUMBERS, STORNO_KIND,
+                               has_mixed_rates, next_payment_status, small_business_revenue_number, uses_small_business_rule)
 from .invoice_versions import is_iso_date
 from .reporting import is_income_account
 
@@ -86,8 +88,11 @@ RebuildPlan = namedtuple('RebuildPlan', 'invoice_id invoice_number actions rows 
 # ausgeführt wurde, und ob das Erlöskonto fehlt (dann wählt der Nutzer eines)
 RebuildResult = namedtuple('RebuildResult', 'ok code message plan executed needs_revenue_coa')
 # Eine Zuordnung, die sich neu aufbauen lässt (C): ihre ID, die Bankbewegung, der Betrag (Minor Units), die Notiz, das bisherige
-# Zahlungsdatum der Zuordnung, das Datum der Bankbewegung und deren Bankkonto (``Accounts.ID``)
-RebuildCandidate = namedtuple('RebuildCandidate', 'payment_id booking_id amount notes pay_date bank_date account_id')
+# Zahlungsdatum der Zuordnung, das Datum der Bankbewegung und deren Bankkonto (``Accounts.ID``). ``revenue_coa``: nur bei einer Rechnung
+# ohne Steuerausweis, deren Erlöskonto am Datum der Bankbewegung hängt (4185 bis 2025, 4184 ab 2026): das Konto dieser Zuordnung (COA-ID);
+# sonst ``None`` – dann gilt das EINE Erlöskonto der Rechnung
+RebuildCandidate = namedtuple('RebuildCandidate', 'payment_id booking_id amount notes pay_date bank_date account_id revenue_coa',
+                              defaults=(None,))
 
 REBUILD_NOT_FOUND = 'Rechnung nicht gefunden'
 REBUILD_CHANGED_MESSAGE = ('Der Bestand hat sich seit dem Probelauf geändert – bitte das neue Ergebnis prüfen und erneut '
@@ -129,6 +134,9 @@ REBUILD_SKIP_REASONS = {
     'cent': 'Zuordnung #{payment} hat einen Betrag mit Bruchteil eines Cents.',
     'not_free': ('Zuordnung #{payment} lässt sich nicht mit genau ihrem Betrag neu buchen (Rechnung oder Bankbewegung '
                  'ausgeschöpft).'),
+    'revenue_missing': ('Zuordnung #{payment}: Das Erlöskonto {number} fehlt im Kontenrahmen – bitte unter Stammdaten → Kontenrahmen '
+                        '„Standardkonten ergänzen“.'),
+    'revenue_date': 'Zuordnung #{payment}: Das Datum der Bankbewegung ist ungültig – davon hängt das Erlöskonto ab.',
 }
 
 # Leerraum am Rand einer Beleg-Nr., wie Pythons ``str.strip()`` ihn kennt: SQLites ``TRIM`` ohne zweites Argument nimmt nur das
@@ -197,10 +205,16 @@ class InvoiceRepairMixin:
         Rechnung (``None``, wenn keines hinterlegt ist und der Nutzer keines gewählt hat – nie wird eines angelegt; bei einem Beleg mit Steuersatz je
         Position und bei einem mit einem Erlöskonto aus den Stammdaten immer ``None``), das SKR-Konto
         jedes Bankkontos ihrer Zuordnungen und die eigenen Bankkonten. Returns ein Kontext-dict oder ein :class:`RebuildResult`
-        (Rechnung unbekannt, gewähltes Konto kein Erlöskonto)."""
+        (Rechnung unbekannt, gewähltes Konto kein Erlöskonto).
+
+        **Eine Rechnung ohne Steuerausweis (§ 19)** bucht nach dem Datum der Bankbewegung jeder Zuordnung (4185 bis 2025, 4184 ab 2026): ``revenue_coa`` ist dort ``None``,
+        und ``revenue_by_number`` {Kontonummer: COA-ID oder ``None``} nennt beide Konten, wie sie im Bestand stehen (``create=False``: die Reparatur legt nie eines an,
+        deshalb dürfen beide aufgelöst werden). ``revenueCoaId`` gilt dort nie – wie bei einem Beleg mit Steuersatz je Position: Eine Wahl, die als Konto gelernt würde, hebelte
+        die Datumsregel für jede künftige Zahlung aus. Fehlt einer Zuordnung ihr Konto, bleibt sie mit festem Grund liegen (``revenue_missing``). Sonst ist es ``None``."""
         invoice = self.get_document(invoice_id, 'invoice')
         if invoice is None:
             return RebuildResult(False, 404, REBUILD_NOT_FOUND, None, False, False)
+        revenue_by_number = None
         if has_mixed_rates(invoice[55] if len(invoice) > 55 else None):          # Spalte 55: MixedTaxRates
             # Beleg mit Steuersatz je Position: Der Satz im Kopf ist nur ein Platzhalter und die Reparatur baut nichts neu (nur D) – kein Erlöskonto
             # zu suchen, keines zu wählen (``revenueCoaId`` gilt nie)
@@ -208,6 +222,10 @@ class InvoiceRepairMixin:
         elif self.invoice_entry_accounts(invoice_id):
             # Ein Erlöskonto aus den Stammdaten (Momentaufnahme eines Steuersatzes): Die Reparatur baut auch hier nichts neu (nur D) – kein Erlöskonto zu suchen
             revenue_coa = None
+        elif uses_small_business_rule(invoice[35]):                                # Spalte 35: TaxRate
+            # Ohne Steuerausweis (§ 19): Das Erlöskonto hängt am Datum der Bankbewegung jeder Zuordnung – beide Konten, wie sie im Bestand stehen; keine Wahl
+            revenue_coa = None
+            revenue_by_number = self._revenue_by_number(invoice[35], SMALL_BUSINESS_REVENUE_NUMBERS, create=False)
         else:
             revenue_coa = self.resolve_revenue_coa(invoice[35], create=False)    # Spalte 35: TaxRate
             if revenue_coa is None and revenue_coa_id not in (None, ''):
@@ -226,7 +244,8 @@ class InvoiceRepairMixin:
             error, bank_coa = self._bank_coa_of(account_id)
             if not error:
                 bank_coas[account_id] = bank_coa
-        return {'revenue_coa': revenue_coa, 'bank_coas': bank_coas, 'bank_coa_ids': self.get_bank_coa_ids()}
+        return {'revenue_coa': revenue_coa, 'revenue_by_number': revenue_by_number, 'bank_coas': bank_coas,
+                'bank_coa_ids': self.get_bank_coa_ids()}
 
     # ── Die Transaktion ──────────────────────────────────────────────────────
     def _rebuild_in(self, tx, invoice_id, ctx, today):
@@ -297,7 +316,7 @@ class InvoiceRepairMixin:
             if candidates and self._overbooked(conn, number, receivables, payments, removed, candidates, numbers, waiting_ids):
                 skip('overbooked')
                 candidates = []
-            if candidates and ctx['revenue_coa'] is None:
+            if candidates and ctx['revenue_by_number'] is None and ctx['revenue_coa'] is None:
                 return RebuildResult(False, 400, NO_REVENUE_COA, None, False, True)
 
         # ── Schreiben ────────────────────────────────────────────────────────
@@ -334,10 +353,12 @@ class InvoiceRepairMixin:
                 tx.log.append(('DELETE FROM InvoicePayments WHERE ID = ?', (cand.payment_id,), 'Rebuild: remove assignment'))
             failed = None
             for cand in pending:                                                       # Phase 2: in zeitlicher Folge neu buchen
-                result = self._assign_in_tx(
-                    tx, invoice_id, cand.booking_id, cand.amount,
-                    {'tax_rate': rate, 'account_id': cand.account_id, 'bank_coa': ctx['bank_coas'][cand.account_id],
-                     'revenue_coa': ctx['revenue_coa'], 'bank_coa_ids': ctx['bank_coa_ids']})
+                context = {'tax_rate': rate, 'account_id': cand.account_id, 'bank_coa': ctx['bank_coas'][cand.account_id],
+                           'revenue_coa': cand.revenue_coa if cand.revenue_coa is not None else ctx['revenue_coa'],
+                           'bank_coa_ids': ctx['bank_coa_ids']}
+                if ctx['revenue_by_number'] is not None:
+                    context['revenue_date_number'] = small_business_revenue_number(cand.bank_date)
+                result = self._assign_in_tx(tx, invoice_id, cand.booking_id, cand.amount, context)
                 stored = (conn.execute('SELECT Amount FROM InvoicePayments WHERE ID = ?', (result.payment_id,)).fetchone()
                           if result.ok else None)
                 if stored is None or stored[0] != cand.amount:
@@ -392,8 +413,20 @@ class InvoiceRepairMixin:
             return RebuildResult(False, 409, REBUILD_UNSAFE_MESSAGE, None, False, False)
         # Der Tag geht nur in die Prüfsumme ein, wenn Dubletten zusammengefasst werden: Nur dann hängt der Status von ihm ab
         return self._rebuild_plan(conn, invoice_id, number, actions, skipped, max_id, status, status_after, due, due_after,
-                                  findings_before, findings_after, ctx['revenue_coa'] if candidates else None,
+                                  findings_before, findings_after, self._plan_revenue_coa(ctx, candidates),
                                   today if removals else None)
+
+    @staticmethod
+    def _plan_revenue_coa(ctx, candidates):
+        """Das Erlöskonto, das der Plan nennt (``RebuildPlan.revenue_coa``, geht in die Prüfsumme): ohne Kandidatin ``None``; das EINE Erlöskonto der Rechnung (COA-ID, wie
+        immer); bei einer Rechnung ohne Steuerausweis, deren Konto am Datum hängt, das Konto der Kandidatinnen – eines als COA-ID (Zuordnungen nur eines Jahres: der
+        Plan ist dann derselbe wie bei einem festen Konto), mehrere (Zuordnungen auf beiden Seiten des Jahreswechsels) als sortierte Liste."""
+        if not candidates:
+            return None
+        if ctx['revenue_by_number'] is None:
+            return ctx['revenue_coa']
+        accounts = sorted({cand.revenue_coa for cand in candidates})
+        return accounts[0] if len(accounts) == 1 else accounts
 
     @staticmethod
     def _rebuild_duplicates(payments, skip):
@@ -528,6 +561,16 @@ class InvoiceRepairMixin:
                 skip('no_skr', payment=payment_id, booking=booking_id)
             elif amount % 100:
                 skip('cent', payment=payment_id, booking=booking_id)
+            elif ctx['revenue_by_number'] is not None:
+                # ohne Steuerausweis: das Erlöskonto hängt am Datum der Bankbewegung (4185 bis 2025, 4184 ab 2026) – kein Datum, kein Konto, nichts wird geraten
+                number = small_business_revenue_number(bank[3])
+                if number is None:
+                    skip('revenue_date', payment=payment_id)
+                elif ctx['revenue_by_number'].get(number) is None:
+                    skip('revenue_missing', payment=payment_id, number=number)
+                else:
+                    candidates.append(RebuildCandidate(payment_id, booking_id, amount, notes, pay_date, bank[3], bank[2],
+                                                       ctx['revenue_by_number'][number]))
             else:
                 candidates.append(RebuildCandidate(payment_id, booking_id, amount, notes, pay_date, bank[3], bank[2]))
         return candidates

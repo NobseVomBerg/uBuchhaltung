@@ -232,14 +232,18 @@ BOX_CASES = {
     'fractions': ('fractions', '2026-01-01', '2026-12-31', None),
     'positive_noise': ('positive_noise', '2026-01-01', '2026-12-31', None),
 }
+# ``demo_2026`` und ``demo_2026_full`` sind in 2.8.2 neu genommen (vorher ``828ead12…`` und ``5a906a4a…``): Es weicht genau EINE Zeile ab, Nummer und Name einer Erlöszeile –
+# ``4185`` „Erlöse als Kleinunternehmer nach § 19 Abs. 1 UStG“ wird ``4184`` „Steuerfreie Erlöse Kleinunternehmer nach § 19 Abs. 1 UStG“ (960,00 € in beiden Fassungen):
+# Die beiden Zahlungen vom 14. und 30.01.2026 auf Rechnungen vom Dezember 2025 ohne Steuerausweis buchen auf das Konto, das für das Datum der Bankbewegung gilt (ab 2026
+# 4184). Jeder andere Kasten bleibt Zeichen für Zeichen, auch ``demo_2025``.
 BOX_SNAPSHOTS = {
     'world_year': 'd3ed0c244aa6c17ec39ce997391445f6dad6faee313104b88ee0e68c60357255',
     'world_march': '09f3f03b1f9e266c58a8a898245d9fc170132ce42a3d0c0f39c942a217b691df',
     'world_q1': '0e9b9777663b8f97d7e7e2d31c1c8a52d885f19e284a68f91bebb7f5ad717b4b',
     'world_alpha': '4959539b496131b129c98f44d5442af8e648f3c979c338e3722e8824aec6cbe6',
     'demo_2025': '70ae1dc736f4d2ea35d2aeeb59ef2c358590549a477f13fb0481444639691bc6',
-    'demo_2026': '828ead12a26bd8b67e2180a655911fc7b3c26cb301671c94e9981b61c93c552b',
-    'demo_2026_full': '5a906a4a565d161f4ab4d87c7cca32c80c125b4313850ba18e704b43008a5bb1',
+    'demo_2026': 'f52d104b53523201b4ded5f4fe2acf0d00c2f4c316b18d73cff2f8722aadb32e',
+    'demo_2026_full': 'b9d032c856f81a5e3cb854d35c1d2624fc975b0fd541af3278948c4966df4ca5',
     'empty': 'af2aef7cbfa1355d765687ce5932b1ff0f3296d54414b625dc2562eae44e58da',
     'extra_year': '0453235a501f42d4c6ed3f4f477e5e54a838a4d75e2972e1c4a31dc2eef3d3b1',
     'extra_march': '0108876b788084ee6363dbb9044a5ebb15b82f086d01e4dfe7e0aa461fb3aac3',

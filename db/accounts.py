@@ -228,7 +228,7 @@ class AccountsMixin:
     def ensure_cash_coa(self):
         """COA-ID des Kassenkontos 1600 liefern. Fehlt es (Datenbank älter als der
         Seed-Eintrag), wird es als Standardkonto im dominanten Kontenrahmen nachgelegt
-        (Vorbild ``_ensure_tax_free_revenue_coa``). Nur aufrufen, wo eine Kasse mit
+        (Vorbild ``_ensure_small_business_revenue_coa``). Nur aufrufen, wo eine Kasse mit
         1600 angelegt wird – nicht bei Seitenaufrufen."""
         return self._ensure_standard_coa(DEFAULT_CASH_ACCOUNT, 'Kasse', 'Umlaufvermögenskonten')
     def insert_account(self, name, holder, number, bic, bank_name, is_cash=0, skr_account=None, business_only=True):

@@ -15,7 +15,7 @@ from db.invoices import InvoiceCol, is_storno_row
 from db.invoice_lock import (CLOSED, EDITABLE, LOCKED_STATUSES, NUMBER_KEPT_MESSAGE, STATUS_LABELS,
                              STORNO_LABEL, STORNO_LOCKED_MESSAGE, allowed_targets, as_document_version,
                              buyer_snapshot, canonical_status, status_group)
-from db.invoice_payments import MIXED_REVENUE_MESSAGE, PAYABLE_STATUSES, has_mixed_rates
+from db.invoice_payments import MIXED_REVENUE_MESSAGE, PAYABLE_STATUSES, has_mixed_rates, uses_small_business_rule
 from db.invoice_versions import DELIVERY_DATE_MESSAGE, PROTOCOL_LABELS, local_date, local_datetime
 from db.payment_matching import reason_text
 from db.tax_rates import entry_snapshot, legacy_expressible
@@ -1017,9 +1017,11 @@ def _rebuild_box_html(db, invoice_id, tax_rate, mixed=False, entry=False):
 
     ``mixed``: Die Rechnung trägt einen Steuersatz je Position (``Invoices.MixedTaxRates``). Dann gibt es nie eine Auswahl: Ihr Kopfsatz ist nur
     ein Platzhalter, und der Neuaufbau rechnet für sie nur den offenen Betrag neu – er braucht kein Erlöskonto. ``entry``: Die Rechnung trägt ein
-    Erlöskonto aus den Stammdaten (``Database.invoice_entry_accounts``): ebenso – der Neuaufbau rechnet nur den offenen Betrag neu (Grund ``tax_entry``)."""
+    Erlöskonto aus den Stammdaten (``Database.invoice_entry_accounts``): ebenso – der Neuaufbau rechnet nur den offenen Betrag neu (Grund ``tax_entry``).
+    Eine Rechnung ohne Steuerausweis (§ 19, ``uses_small_business_rule``) zeigt ebenfalls nie eine Auswahl: Ihr Erlöskonto hängt am Datum der Bankbewegung jeder Zuordnung
+    (4185 bis 2025, 4184 ab 2026), eine Wahl hinge vom heutigen Datum ab und bliebe wirkungslos – fehlt ein Konto, bleibt die Zuordnung mit festem Grund liegen."""
     h = ''
-    if not mixed and not entry and db.resolve_revenue_coa(tax_rate, create=False) is None:
+    if not mixed and not entry and not uses_small_business_rule(tax_rate) and db.resolve_revenue_coa(tax_rate, create=False) is None:
         h += ('        <p class="hint">Für den Neuaufbau ist kein Erlöskonto hinterlegt – bitte wählen.</p>\n'
               f'        <p><label>Erlöskonto: {_revenue_coa_select(db, tax_rate, field_id="rebuildRevenueCoa")}</label></p>\n')
     return h + ('        <p><button type="button" class="coloredButton btn-sm bg-blue" '
@@ -1776,15 +1778,15 @@ function copyInvoiceAsNew(invId) {{
                 </tr>
                 <tr class="no-pdf">
                     <td colspan="7" style="text-align: right; border: none;">
-                        <label><input type="checkbox" id="show_tax" __SHOW_TAX_CHECKED__''' + lock_attr + ''' onchange="calculateTotals()"> Umsatzsteuer ausweisen</label>
+                        <label><input type="checkbox" id="show_tax" ''' + ('checked' if show_tax else '') + lock_attr + ''' onchange="calculateTotals()"> Umsatzsteuer ausweisen</label>
                         <small style="color:#888;">(aus = Kleinunternehmer §&nbsp;19 UStG; der Hinweis darauf wird automatisch gedruckt)</small>
                         ''' + mixed_checkbox_html(mixed_on, mixed_attr) + ' ' + TAX_LINK_HTML + '''
-                        __TAX_PREFILL_NOTE__
+                        ''' + tax_prefill_note + '''
                         ''' + TAX_NOTE_HTML + '''
                     </td>
                 </tr>
                 <tr class="totals-row" id="tax_row">
-                    <td colspan="4" style="text-align: right; border: none;">Mehrwertsteuer ''' + head.html + '''<input type="hidden" id="tax_rate" value="__TAX_PCT__"''' + lock_attr + '''></td>
+                    <td colspan="4" style="text-align: right; border: none;">Mehrwertsteuer ''' + head.html + '''<input type="hidden" id="tax_rate" value="''' + f'{tax_pct:g}' + '"' + lock_attr + '''></td>
                     <td style="text-align: right; border: none;">auf <span id="tax_base">0,00</span> € netto:</td>
                     <td id="tax_amount" style="text-align: right; font-weight: bold;">0,00 €</td>
                     <td class="no-pdf" style="border: none;"></td>
@@ -2925,11 +2927,9 @@ function copyInvoiceAsNew(invId) {{
     </script>
 '''
 
-    # Steuersatz-Feld + USt-Checkbox serverseitig vorbelegen (Platzhalter im Template)
-    s = s.replace('__TAX_PCT__', f'{tax_pct:g}')
-    s = s.replace('__SHOW_TAX_CHECKED__', 'checked' if show_tax else '')
-    s = s.replace('__TAX_PREFILL_NOTE__', tax_prefill_note)
-    # Der Kasten steht voller Daten aus der Datenbank: Er kommt erst nach den Ersetzungen dazu – ebenso das
+    # Steuersatz-Feld, USt-Häkchen und Vorbelegungshinweis stehen an ihrer Stelle im Formular (oben, beim Aufbau): Eine Ersetzung von Platzhaltern über die fertige
+    # Seite träfe auch jeden Wert aus der Datenbank, der einen Platzhaltertext enthält (eine Bezeichnung, einen Kunden, einen Artikel).
+    # Der Kasten steht voller Daten aus der Datenbank: Er kommt erst am Ende dazu – ebenso das
     # Skript zum Stornieren, das die Rechnungsnummer in seiner Rückfrage trägt
     if is_edit_mode and invoice_id:
         s += _versions_box_html(db, invoice_id)

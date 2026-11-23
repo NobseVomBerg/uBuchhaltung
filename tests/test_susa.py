@@ -64,10 +64,13 @@ WAITING = (4340, 4345, 4405)
 
 # SHA-256 der Export-Bytes (Zeitstempel im Vorlauf fest), genommen am Stand 2.5.16 VOR der Auslagerung von ``ledger_form``/``coa_in_soll``:
 # (von, bis, Zeilen, Prüfsumme). Die Zeilen sind die des Handlers: alle Sätze des Zeitraums ohne die weggelassenen Eingangs-Sätze gepaarter Überträge.
+# ``demo_db_2026`` ist in 2.8.2 neu genommen (vorher ``c380d397…``): Die Zeilenzahl (348) bleibt, es weichen genau ZWEI Zeilen ab – die Umbuchungen „4340 an 4185“ der beiden
+# Zahlungen vom 14. und 30.01.2026 auf Rechnungen vom Dezember 2025 ohne Steuerausweis (25R057, 25R058) tragen das Gegenkonto 4184 statt 4185 (das Konto, das für das Datum der
+# Bankbewegung gilt); Betrag, Kennzeichen, Schlüssel und jedes andere Feld bleiben. ``demo_db_2025`` bleibt Byte für Byte.
 EXPORT_SNAPSHOTS = {
     'world': ('2026-01-01', '2026-12-31', 48, '500717a1c49567ac23b0ff87de416fdf7b8ebad09569367705293d35c875f878'),
     'demo_db_2025': ('2025-01-01', '2025-12-31', 284, '57b445f366b8c8a63a6f32618299a15c46706dacfbb6ba919bcb6ed2155c35d9'),
-    'demo_db_2026': ('2026-01-01', '2026-10-31', 348, 'c380d3972d18f665d6572d7516b5eb620682e69ee80adb1757d175456568d4f3'),
+    'demo_db_2026': ('2026-01-01', '2026-10-31', 348, 'f3add39e4ccd18c15073455d2224649d94a208baaf4a89921f198d24b5d56bcc'),
 }
 
 

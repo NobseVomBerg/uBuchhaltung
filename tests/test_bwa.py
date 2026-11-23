@@ -72,7 +72,7 @@ def test_the_ranges_are_sorted_disjoint_and_name_known_groups():
     ([6640, 6641, 6644], 'marketing_travel'),
     ([7326], 'interest_other'),
     ([1940], 'interest_other'),
-    ([4400, 4300, 4185], 'revenue'),
+    ([4400, 4300, 4184, 4185], 'revenue'),
     ([4639, 4646, 4972], 'other_revenue'),
     ([3806], 'vat_collected'),
     ([1401, 1406], 'input_vat'),
@@ -141,7 +141,7 @@ def test_the_layout_names_each_line_once_and_a_sum_only_reads_lines_above_it():
 
 # ═══ Einordnung wie die EÜR ═══════════════════════════════════════════════════
 @pytest.mark.parametrize('number, banks, expected', [
-    (4400, set(), 'income'), (3806, set(), 'income'), (4185, set(), 'income'), (4405, set(), None), (4340, set(), None),
+    (4400, set(), 'income'), (3806, set(), 'income'), (4184, set(), 'income'), (4185, set(), 'income'), (4405, set(), None), (4340, set(), None),
     (10000, set(), None), (6815, set(), 'expense'), (1406, set(), 'expense'), (1050, set(), 'expense'),
     (3150, set(), 'expense'), (3820, set(), 'expense'), (3160, set(), 'other'), (3720, set(), 'other'), (3740, set(), 'other'),
     (2100, set(), None), (2199, set(), None), (2200, set(), 'expense'), (520, set(), None), (999, set(), None),

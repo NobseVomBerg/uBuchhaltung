@@ -89,9 +89,9 @@ READERS = {
                                                  '(nicht _tax_rate_key, der auf ganze Prozent rundet)'),
     ('db/invoices.py', '_book_receivable'): ('Forderung buchen: Satz und Steuer der Forderungszeile; ein Beleg mit Steuersatz je Position (MixedTaxRates) '
                                              'geht über _book_mixed_receivable (je Satzgruppe eine Zeile), nie mit dem Kopfsatz'),
-    ('db/invoices.py', '_learned_revenue_coa'): ('Erlöskonto lernen: Der Satz der Rechnung bestimmt den Schlüssel; bei einem Beleg mit Steuersatz je '
-                                                 'Position (MixedTaxRates) der Satz des Buchungssatzes, nie der Kopf (nur ein Platzhalter); Rechnungen mit einem '
-                                                 'Erlöskonto aus den Stammdaten (Momentaufnahme) lehren nichts'),
+    ('db/invoices.py', '_learned_revenue_row'): ('Erlöskonto lernen (``_learned_revenue_coa`` liest die ID daraus): Der Satz der Rechnung bestimmt den Schlüssel; bei '
+                                                 'einem Beleg mit Steuersatz je Position (MixedTaxRates) der Satz des Buchungssatzes, nie der Kopf (nur ein '
+                                                 'Platzhalter); Rechnungen mit einem Erlöskonto aus den Stammdaten (Momentaufnahme) lehren nichts'),
     ('db/invoices.py', 'convert_quote_to_invoice'): ('Angebot in eine Rechnung umwandeln: Kopfsatz des Angebots kopieren, dazu das Kennzeichen '
                                                      '„Steuersatz je Position“ (MixedTaxRates)'),
     ('db/invoices.py', 'ensure_receivable_booking'): ('Forderung buchen (Demodaten, Tests): Wartekonto des Satzes; ein Beleg mit Steuersatz je Position '

@@ -387,6 +387,8 @@ def test_the_snapshot_decides_among_entries_with_the_same_rate(world, entries, k
     special = head_doc(kind, world, ONE_RATE, entries.special, 0.19)
     preset = head_doc(kind, world, ONE_RATE, entries.preset19, 0.19, number=number(kind, 101))
     plain = make_doc(kind, world, ONE_RATE, mixed=False, number=number(kind, 102))
+    # Seit 2.8.2 schreibt der Server für die Vorbelegung keine Momentaufnahme mehr; ein Entwurf aus 2.8.0 oder 2.8.1 (über die Schnittstelle mit ihrer ID gespeichert) trägt noch eine
+    run_sql(world.db, 'UPDATE InvoiceItems SET TaxRateBp = 1900 WHERE InvoiceId = ?', preset)
 
     assert picked(head_of(page_of(kind, world, special))) == e(entries.special)
     assert picked(head_of(page_of(kind, world, preset))) == '19'              # die Vorbelegung mit Momentaufnahme: die Option, die nur den Satz trägt
@@ -662,8 +664,10 @@ NO_SNAPSHOT = ('S', None, None, None)
 
 
 def doc_state(db, doc_id):
-    """Alles, was ein Speichern der Maske am Beleg schreiben kann: die Zeile ohne ihren Zeitstempel und die Positionen ohne ihre IDs."""
-    return {k: v for k, v in columns(db, doc_id).items() if k != 'UpdatedAt'}, stored_items(db, doc_id)
+    """Alles, was ein Speichern der Maske am Beleg schreiben kann: jede Spalte der Zeile von ``Invoices`` (ohne ihren Zeitstempel ``UpdatedAt``) und jede Spalte der Positionen von
+    ``InvoiceItems`` (ohne ihre ID, die jedes Speichern neu vergibt)."""
+    positions = query_rows(db, 'SELECT * FROM InvoiceItems WHERE InvoiceId = ? ORDER BY Position', doc_id)
+    return {k: v for k, v in columns(db, doc_id).items() if k != 'UpdatedAt'}, [{k: v for k, v in row.items() if k != 'ID'} for row in positions]
 
 
 @NO_NODE
@@ -1194,27 +1198,38 @@ def test_over_the_mask_choosing_a_preset_again_drops_the_snapshot_like_the_form_
     assert columns(world.db, doc_id)['TaxRate'] == 0.19
 
 
+TWO_SEVEN = [item(1, 'Fachbuch', 50.0, 7), item(2, 'Heft', 10.01, 7)]
+
+
+def mixed_preset_doc(kind, world, entries, **over):
+    """Die Vorbelegung mit ihrer ID an den Positionen, daneben ein steuerfreier Eintrag: 19 %, steuerfrei und 7 % in einem Beleg (die Positionen 1 und 3 sind die Vorbelegung)."""
+    items = [entry_item(1, 'Beratung', 100.0, 19, entries.preset19), entry_item(2, 'Nachhilfe', 80.0, 0, entries.free), entry_item(3, 'Fachbuch', 50.0, 7, entries.preset7)]
+    return make_doc(kind, world, items, mixed=True, **over)
+
+
 @NO_NODE
 @pytest.mark.parametrize('kind', KINDS)
-@pytest.mark.parametrize('make', ['head reduced', 'head free', 'mixed', 'head preset 19', 'head special'])
+@pytest.mark.parametrize('make', ['head reduced', 'head free', 'mixed', 'head preset 19', 'head preset 7', 'mixed with presets', 'head special'])
 def test_over_the_mask_a_draft_survives_opening_and_saving_unchanged(world, entries, tmp_path, kind, make):
-    """Beleg speichern, die Seite laden, nichts ändern, speichern: dieselben Zeilen – auch die Momentaufnahmen."""
+    """Beleg speichern, die Seite laden, nichts ändern, speichern: dieselben Zeilen – jede Spalte von ``Invoices`` und ``InvoiceItems`` außer dem Zeitstempel, auch die Momentaufnahmen.
+    Das gilt auch für die Vorbelegung, die über ihre ID gespeichert wurde (2.8.2): Die Maske schickt für sie nie eine ID – der Server hat für sie nie eine Momentaufnahme geschrieben, es
+    gibt nichts, was „Speichern“ wieder auf NULL setzen könnte (bis 2.8.1 stand dort ``TaxRateBp`` 1900, und es fiel beim ersten Speichern)."""
     doc_id = {'head reduced': lambda: head_doc(kind, world, TWO_REDUCED, entries.reduced, 0.055),
               'head free': lambda: head_doc(kind, world, TWO_FREE, entries.free, 0),
               'mixed': lambda: mixed_doc(kind, world, entries),
               'head preset 19': lambda: head_doc(kind, world, ONE_RATE, entries.preset19, 0.19),
+              'head preset 7': lambda: head_doc(kind, world, TWO_SEVEN, entries.preset7, 0.07),
+              'mixed with presets': lambda: mixed_preset_doc(kind, world, entries),
               'head special': lambda: head_doc(kind, world, ONE_RATE, entries.special, 0.19)}[make]()
     before = doc_state(world.db, doc_id)
+    if 'preset' in make:                                                          # die Vorbelegung schreibt auch mit ID keine Momentaufnahme
+        preset_rows = [row for row in before[1] if row['TaxRate'] in (19.0, 7.0)]
+        assert preset_rows and all(row['TaxRateBp'] is None for row in preset_rows)
 
     _payload, answer = saved_through_the_mask(tmp_path, world, kind, doc_id, f'{SAVE_FUNCTION[kind]}();')
 
     assert answer['success'] is True, answer
-    after = doc_state(world.db, doc_id)
-    if make == 'head preset 19':
-        assert after[1] == [{**row, 'TaxRateBp': None} for row in before[1]]            # die Vorbelegung braucht keine ID: Die Momentaufnahme entfällt, die Summen bleiben
-        assert after[0] == before[0]
-    else:
-        assert after == before
+    assert doc_state(world.db, doc_id) == before
 
 
 @NO_NODE

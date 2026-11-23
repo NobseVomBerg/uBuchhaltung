@@ -561,7 +561,7 @@ Die Besteuerungsart der eigenen Firma (`Contacts.VatMethod`, seit 2.4.0, siehe 3
 | Zahlung (Kind der Bankbewegung, `Status='invoice_payment'`) | `Umb. zu Re. X` | Wartekonto → Erlöskonto |
 
 Wartekonten nach Steuersatz: **19 % → 4405**, **7 % → 4345**, **0 %/§19 → 4340**
-(`Database.resolve_open_revenue_coa`). Erlöskonten wie bisher 4400/4300/4185
+(`Database.resolve_open_revenue_coa`). Erlöskonten wie bisher 4400/4300 und für § 19 4185 (Bankbewegung bis 31.12.2025) bzw. 4184 (ab 1.1.2026)
 (`resolve_revenue_coa`). Sätze ohne Wartekonto (z. B. 5 %) werden weiterhin erst
 bei Zahlung gebucht.
 
@@ -624,7 +624,7 @@ Marke `Status='invoice_payment'`. Es gibt eine Stelle, die Zahlungen zuordnet
   Sätzen; *Teilzahlung* = mehrere Bewegungen auf eine Rechnung; bei einer *Überzahlung* bleibt der Rest
   frei (Guthaben beim Kontakt; der DATEV-Export bleibt gesperrt, bis er kontiert ist).
 - **Erlöskonto:** Es ergibt sich aus der Rechnung (`resolve_revenue_coa`: gelernt, sonst 4400 bei
-  19 %, 4300 bei 7 %, 4185 steuerfrei/§ 19). **Gelernt wird nur aus den markierten Sätzen mit positivem
+  19 %, 4300 bei 7 %, steuerfrei 4185, § 19 nach dem Datum der Bankbewegung 4185 bis 2025 und 4184 ab 2026). **Gelernt wird nur aus den markierten Sätzen mit positivem
   Betrag** der Zuordnungen (`Status='invoice_payment'`; die Sätze einer Erstattung lehren nichts) von Rechnungen
   mit demselben Steuersatz, und nur in der Form,
   in der die App sie schreibt: bei der Umbuchung „Wartekonto an Erlöskonto“ (`COA` ist ein Wartekonto)

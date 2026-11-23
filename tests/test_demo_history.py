@@ -398,7 +398,9 @@ def test_the_receipts_of_single_expenses_are_metadata_without_a_file(loaded):
 
 
 def test_the_first_year_is_a_small_business_year_in_the_books(loaded):
-    """Die Rechnungen des Erzeugers im ersten Jahr tragen keinen Steuerausweis (Platzhalter -1) und buchen auf das Erlöskonto 4185."""
+    """Die Rechnungen des Erzeugers im ersten Jahr tragen keinen Steuerausweis (Platzhalter -1) und buchen auf das Erlöskonto für das Datum der Bankbewegung:
+    4185 bis 2025, 4184 ab 2026 – im Profil ``test`` (fester Stichtag 2026-11-03) sind das genau zwei Zahlungen vom Januar 2026 auf Rechnungen vom Dezember 2025
+    (4184), alle übrigen liegen im Jahr 2025 (4185)."""
     generated = [s for s in loaded.history["invoices"] if not s["show_tax"]]
     assert generated
     small = _rows(loaded, "SELECT COUNT(*) FROM Invoices WHERE DocumentType = 'invoice' AND InvoiceKind IS NOT 'storno' AND TaxRate < 0")[0][0]
@@ -407,6 +409,13 @@ def test_the_first_year_is_a_small_business_year_in_the_books(loaded):
     revenue = _rows(loaded, "SELECT COUNT(*) FROM Bookings b JOIN ChartOfAccounts c ON c.ID = b.CounterCOA_ID "
                           "WHERE c.AccountNumber = 4185 AND b.Status = 'invoice_payment'")[0][0]
     assert revenue > 0
+    by_account = _rows(loaded, "SELECT c.AccountNumber, MIN(b.DateBooking), MAX(b.DateBooking), COUNT(*) FROM Bookings b "
+                             "JOIN ChartOfAccounts c ON c.ID = b.CounterCOA_ID WHERE c.AccountNumber IN (4184, 4185) "
+                             "AND b.Status = 'invoice_payment' GROUP BY c.AccountNumber ORDER BY c.AccountNumber")
+    assert [row[0] for row in by_account] == [4184, 4185]
+    new_account, old_account = by_account
+    assert new_account[1] >= '2026-01-01' and new_account[3] == 2                         # die beiden Zahlungen vom Januar 2026
+    assert old_account[2] <= '2025-12-31'                                                 # jede Zahlung mit dem Datum von 2025 liegt auf 4185
 
 
 # ── die App-Änderungen dazu ──────────────────────────────────────────────────

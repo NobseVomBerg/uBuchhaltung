@@ -701,7 +701,7 @@ kein Subagent darauf:
   Rahmen + Nummer vergeben), nennt `Database.missing_standard_accounts()` (rein lesend, Hinweis auf der Seite des
   Kontenrahmens); angelegt wird es allein über `POST /masterdata/skr/add_standard` (`add_missing_standard_accounts`: eine
   Transaktion, `INSERT OR IGNORE`, kein UPDATE, keine `overrides`, keine privaten Konten ohne Standard-Haken). `?added=` wird nur
-  als Zahl gelesen (0 bis `ADDED_MAX`), die Meldung ist fester Text. Seit 2.8.0 führt der Standard-Kontenrahmen zusätzlich 1400 „Abziehbare Vorsteuer“, 4100 „Steuerfreie
+  als Zahl gelesen (0 bis `ADDED_MAX`), die Meldung ist fester Text. Seit 2.8.2 führt er 4184 (*Kleinunternehmer-Erlöse*). Seit 2.8.0 führt der Standard-Kontenrahmen zusätzlich 1400 „Abziehbare Vorsteuer“, 4100 „Steuerfreie
   Umsätze § 4 Nr. 8 ff. UStG“, 4180 „Erlöse, die mit den Durchschnittssätzen des § 24 UStG versteuert werden“, 5170 und 5505 (Einkauf mit 5,5% Vorsteuer) – keine Auswertung hat eine
   Sonderregel für diese Nummern (`tests/test_standard_accounts_purchase.py`: alle Auswertungen und der DATEV-Stapel sind mit und ohne sie gleich). Konten, deren Bezeichnung einen
   jährlich wechselnden Durchschnittssatz nennt (5171, 5540), gehören nicht hinein; 1409 nie (die Nummer der rechnerischen EÜR-Zeile, siehe *EÜR-Ansicht*)
@@ -1112,7 +1112,7 @@ kein Subagent darauf:
   schreibt (Umbuchung „Wartekonto an Erlöskonto“: `COA` ist ein Wartekonto, gelernt wird das Gegenkonto; Einzelsatz „Erlöskonto an Bank“: das Gegenkonto
   ist ein Zahlungskonto, gelernt wird `COA`; der jüngste gewinnt) – was ein Nutzer im Split-Editor in
   eine andere Form gebracht hat, lehrt nichts. Es gilt nur als Erlöskonto 4000–4999 ohne Wartekonten,
-  sonst 4400/4300/4185. Das Konto der Bankzeile (Anzeige-Backfill) und Sätze des WISO-Imports lehren
+  sonst 4400/4300 und für § 19 4185 bzw. ab 2026 4184 (*Kleinunternehmer-Erlöse*). Das Konto der Bankzeile (Anzeige-Backfill) und Sätze des WISO-Imports lehren
   nichts – es kann ein Bank-, Aufwands- oder Wartekonto sein. Ist für den Satz (z. B. 5 %, 16 %)
   keines hinterlegt, wählt der Nutzer es (`revenue_coa_id`): ein Erlöskonto, in der DB-Schicht
   geprüft, sonst Ablehnung; `suggest_revenue_coa` ist nur die Vorauswahl, nie eine Entscheidung.
@@ -1242,6 +1242,31 @@ kein Subagent darauf:
   `execute`) und `revenueCoaId` streng; ein unerwarteter Fehler ist 500 mit `REBUILD_FAILED`, nie ein Ausnahmetext. Die Seite der Rechnung
   zeigt Knopf und Plan unter der Befundliste (nur mit Befund, nicht an einer Stornorechnung; das Skript setzt Werte nur über `textContent`);
   *Sonstiges* verweist darauf. `tests/test_invoice_payment_repair.py`
+- **Kleinunternehmer-Erlöse (seit 2.8.2, `db/invoice_payments.py`):** Das Erlöskonto eines Belegs ohne Steuerausweis (Kopfsatz −1, § 19) hängt am
+  Datum der **Bankbewegung** der Zahlung bzw. Erstattung – nicht am Rechnungsdatum: bis 31.12.2025 **4185**, ab 1.1.2026 **4184**
+  (`small_business_revenue_number`, Stichtag `SMALL_BUSINESS_SWITCH`; der Kontenrahmen ab 2026 führt 4185 nicht mehr). Es gilt nur ein ISO-Datum
+  `JJJJ-MM-TT`; sonst lehnt die Zahlung vor dem Auflösen der Konten ab (`REVENUE_DATE_UNREADABLE`). Ohne Datum (Anzeigen) gilt heute
+  (`_revenue_today`, in Tests festsetzbar). **Die Entscheidung, wer der Regel folgt, steht allein in `uses_small_business_rule`:** nur der
+  Platzhalter −1; Satz 0 mit Steuerausweis bleibt fest auf 4185 (wie bisher). **Gelernt:** Ein gelerntes 4184/4185 im Topf „0 % und § 19“ zählt nicht
+  als gelernt (`resolve_revenue_coa(tax_rate, create, on)`: beide sind Standard der App, keine Wahl des Nutzers); ein anderes gelerntes Konto (4120)
+  gilt in beiden Jahren. **Zahlung:** `_payment_prerequisites(on=)`/`payment_precheck(on=)` (die Maske nimmt ihr Datumsfeld); der Kontext trägt
+  `revenue_date_number`, und `_assign_in_tx` lehnt mit `PAYMENT_CHANGED_MESSAGE` ab, wenn das Datum der Bewegung in der Transaktion zum anderen
+  Konto gehört. **Eine abgelehnte Zuordnung legt kein Konto an:** Betrag ≤ 0, Zahlungsausgang (`INCOMING_ONLY_MESSAGE`) und ausgeschöpfte Bewegung
+  (`NOTHING_TO_ASSIGN_MESSAGE`) werden VOR den Vorbedingungen geprüft (sie legen 4184/4185 bei Bedarf an, nie in einer Transaktion). **Erstattung:**
+  mit markierten Sätzen das Konto der Zahlungen (Teilzahlungen über den Jahreswechsel liegen auf 4185 und 4184: die vorhandene Wahl des Nutzers,
+  `MIXED_REVENUE_MESSAGE`), ohne (Import) das Konto nach dem Datum der Erstattung. **Umzug auf die Ersatzrechnung:** `_payment_move_context` löst
+  je benötigter Nummer ein Konto auf (`revenue_by_number`, nur was eine Zahlung braucht); jede Zahlung zieht auf das Konto ihres Datums um, liegt
+  sie nicht darauf (eine 2026er Zahlung, die 2.8.1 auf 4185 gebucht hat), bleibt sie (`MOVE_SKIP_REASONS['revenue_account']`: „… nicht das für
+  Steuersatz und Zahlungsdatum hinterlegte“), bei unlesbarem Datum `revenue_date`; wechselt der Kopf der Ersatzrechnung zwischen Vorbereitung und
+  Transaktion vom Platzhalter auf 0 %, lehnt `CHANGED_MESSAGE` ab. **Zuordnung neu aufbauen:** § 19 hat dort nie eine Wahl (die Seite zeigt keine
+  Auswahl, `needs_revenue_coa` kommt nie); je Zuordnung das Konto ihres Datums (`RebuildCandidate.revenue_coa`, `create=False`), fehlt es, bleibt
+  sie liegen (`revenue_missing`: „… Standardkonten ergänzen“; `revenue_date` bei unlesbarem Datum). Die Bedingungen von Umzug und Neuaufbau sind
+  nicht gelockert. **Bestand:** Zahlungen ab 2026, die eine frühere Version auf 4185 gebucht hat, bleiben, wie sie sind (kein Befund, keine
+  Umbuchung). Der Standard-Kontenrahmen führt 4184 „Steuerfreie Erlöse Kleinunternehmer nach § 19 Abs. 1 UStG“; ältere Bestände bekommen es über
+  „fehlende Standardkonten“ oder bei der ersten Zahlung. Keine Auswertung hat eine Sonderregel (4184 liegt in denselben Bereichen wie 4185). Das
+  Demo-Profil `test` hat genau zwei Zahlungen auf 4184 (Januar 2026); die Schnappschüsse `demo_2026`, `demo_2026_full` (EÜR-Kasten) und
+  `demo_db_2026` (DATEV) sind dafür neu genommen – nur Nummer und Name einer Zeile bzw. das Gegenkonto zweier Sätze weichen ab (nachgewiesen
+  Zeile für Zeile). `tests/test_small_business_revenue_4184.py`
 - **Zahlungsvorschläge (seit 2.8.1, `db/payment_matching.py` rein, `db/payment_suggestions.py` nur lesend):** Zu einem Zahlungseingang wird die
   passende offene Rechnung **vorgeschlagen – zugeordnet wird allein auf Klick** über die bestehenden Wege (`POST /invoice/link-payment`, Feld
   `invoice_id` der Maske → `assign_invoice_payment`), nichts ist vorausgewählt; nicht einführen, dass ein Speichern still zuordnet. **Vorschlag** =
@@ -1778,7 +1803,7 @@ kein Subagent darauf:
   ein Überhang oder Fehlbetrag in der Reihenfolge der Gruppen an die anderen; **Steuer** – schließt ein Teil die Gruppe, bekommt er den Rest ihrer Steuer, sonst den anteiligen Betrag, höchstens den Rest
   (nie eine Zeile mit Betrag 0 und Steuer). Eingabe: was die anderen Zuordnungen je Satz tragen (`_mixed_booked` liest die markierten Sätze; eine Zuordnung ohne sie – Import, von Hand –, ein fremder Satz
   oder eine Summe, die nicht aufgeht, lehnt mit `MIXED_ALLOCATION_UNREADABLE` ab: die App rät nicht) und die Forderungen (`_receivable_sides_by_rate`: genau die Sätze des Belegs, sonst
-  `MIXED_RECEIVABLE_MISMATCH`). **Das Erlöskonto je Satz** ergibt `_group_revenue_coa` (`resolve_revenue_coa` über `booking_rate`; ein Satz von 0 % hat bewusst keines, nie 4185); der Nutzer wählt keines
+  `MIXED_RECEIVABLE_MISMATCH`). **Das Erlöskonto je Satz** ergibt `_group_revenue_coa` (`resolve_revenue_coa` über `booking_rate`; ein Satz von 0 % hat bewusst keines, nie 4184/4185); der Nutzer wählt keines
   (`revenue_coa_choice(mixed=…)` liefert nichts, `MIXED_NO_REVENUE_COA` lehnt ab, Zahlungskasten und Buchungsmaske zeigen keine Wahl), und `resolve_revenue_coa` lernt es aus dem Satz des Buchungssatzes
   (`_learned_revenue_coa`: bei dem Kennzeichen `Bookings.TaxRate`, nie der Kopf – sonst lernte 19 % das Konto der 7 %). Die Bankzeile bekommt nach der Zuordnung nur Kunde und Beleg-Nr.
   (`_backfill_booking_skr`). Entfernen nimmt die ganze Zuordnung mit (auch das ✕ im Bank-Editor), Stufe 7 des Abgleichs löst die Forderungszeilen gemeinsam auf (*Rechnungszahlung*). Die Auswertungen (EÜR,
@@ -1864,7 +1889,7 @@ kein Subagent darauf:
   und `mixed_groups` nehmen dafür ein drittes Element (`exact` bzw. `bp`); `recompute_invoice_totals(items, default, snapshots)` rechnet die gespeicherten Summen so. Jede Stelle, die
   Gruppen aus Positionen liest, liest `TaxRateBp` mit – sonst laufen Summen, Dokument und Buchung auseinander. Sätze in Texten nur über `pct_text`/`group_label` (aus `bp_pct` ist
   10 % `Decimal('10')`, aus `rate_pct` `1E+1`).
-  **Buchen:** Das Erlöskonto der Momentaufnahme gilt bei Zahlung und Erstattung immer – nie 4185, nie ein gelerntes Konto, keine Wahl des Nutzers (`revenue_coa_choice(…, entry=…)`);
+  **Buchen:** Das Erlöskonto der Momentaufnahme gilt bei Zahlung und Erstattung immer – nie 4184/4185, nie ein gelerntes Konto, keine Wahl des Nutzers (`revenue_coa_choice(…, entry=…)`);
   eine Rechnung mit Stammdaten-Erlöskonto lehrt keines (`_learned_revenue_coa`). Ist es kein Erlöskonto (mehr), lehnt `TAX_PAYMENT_NO_REVENUE` ab; **das Versenden prüft es vorab**
   (`_entry_revenue_blocker`, 409 `TAX_SEND_NO_REVENUE`, vor dem Anlegen von Konten und vor dem ersten Schreiben – ein abgelehntes Versenden legt nie ein Konto an). **Wartekonten
   bleiben fest:** 19 % → 4405, 7 % → 4345, Satz 0 (steuerfrei wie 0 %) → 4340, und zwar genau (`_group_waiting_entry`, bei einer Momentaufnahme nie das gerundete `_tax_rate_key`);
@@ -1887,6 +1912,13 @@ kein Subagent darauf:
   unter dem DATEV-Formular steht ein fester Hinweis, sobald die Stammdaten so einen Satz führen (`DATEV_RATE_NOTE`) – der Stapel bleibt Byte für Byte gleich.
   **Bekannte Grenzen:** kein Wartekonto für weitere Sätze (ein Beleg mit 5,5 % bucht für keinen Satz eine Forderung); ein Eintrag mit genau 100 % lässt sich speichern, der Beleg aber nicht
   versenden; Reverse Charge, innergemeinschaftliche Lieferung und Ausfuhr gibt es nicht (`docs/aufgaben.md`). Keine Steuerberatung in den Texten.
+  **Seit 2.8.2:** Ein Eintrag, den der bisherige Payload trägt (`legacy_expressible`: 19/7 % ohne Erlöskonto), schreibt auch über `taxRateId`
+  keine Momentaufnahme (`handlers._snapshot_to_write`) – „öffnen und unverändert speichern“ ändert so keine Spalte; die Prüfungen der ID bleiben,
+  `TAX_SAME_RATE_TWICE` gilt nach dem, was gespeichert wird. Das Erlöskonto jeder zu schreibenden Momentaufnahme wird als Erstes in der
+  Schreibtransaktion geprüft (`_refuse_gone_revenue_accounts`, `Database.missing_revenue_coas`): fehlt es inzwischen, `TAX_CHOICE_CHANGED`, nichts
+  gespeichert, keine Nummer verbraucht. **Die Masken ersetzen nichts über die fertige Seite:** Platzhalter (`__…__`) nur in konstanten
+  Skriptblöcken ersetzen, nie per `s.replace` über eine Seite, in der schon Werte aus der Datenbank stehen – ein Befreiungsgrund oder Kundenname,
+  der wie ein Platzhalter aussieht, bräche Attribut und JSON (`tests/test_mask_placeholder_values.py` prüft es statisch und mit feindlichen Texten).
   `tests/test_tax_entries_pure.py`, `test_tax_rates_schema_2008.py`, `test_tax_rates_db.py`, `test_tax_rates_page.py`, `test_tax_entries_save.py`, `test_tax_entries_storno.py`,
   `test_tax_entries_bookings.py`, `test_tax_entries_reports.py`, `test_tax_entries_documents.py`, `test_tax_entries_demo_samples.py`, `test_tax_accounts_reports.py`,
   `test_standard_accounts_purchase.py`
