@@ -553,7 +553,8 @@ def test_the_rows_of_a_refund_have_every_column_as_the_rows_of_a_payment_with_th
     assert query_rows(db, 'SELECT * FROM InvoicePayments WHERE InvoiceID = ?', s1) == [
         {'ID': db.get_invoice_payments(s1)[0][0], 'InvoiceID': s1, 'BookingID': bank, 'Amount': -500000,
          'PaymentDate': '2026-07-10', 'Notes': None, 'CreatedAt': query_rows(db, 'SELECT CreatedAt FROM InvoicePayments '
-                                                                                  'WHERE InvoiceID = ?', s1)[0]['CreatedAt']}]
+                                                                                  'WHERE InvoiceID = ?', s1)[0]['CreatedAt'],
+         'SkontoAmount': None}]
     # die Bankbewegung selbst bleibt, wie sie war (kein Backfill, kein Kontakt, keine Beleg-Nr.)
     assert query_rows(db, 'SELECT COA_ID, CounterCOA_ID, TaxRate, TaxAmount, Contact_ID, DocumentNumber, Amount FROM Bookings '
                           'WHERE ID = ?', bank) == [dict(COA_ID=None, CounterCOA_ID=None, TaxRate=None, TaxAmount=None,

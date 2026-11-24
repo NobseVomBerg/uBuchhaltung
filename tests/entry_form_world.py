@@ -296,10 +296,21 @@ def add_roundtrip_rows(db):
                 conn.commit()
 
 
+def to_state_2008(db_path):
+    """Die Datenbank in den Stand zurückversetzen, den 2.8.x geschrieben hat: die Spalte ``SkontoAmount`` an ``InvoicePayments``
+    entfernt, ``PRAGMA user_version`` = 2008. Wiederholbar: Was schon fehlt, wird übersprungen."""
+    with closing(sqlite3.connect(db_path)) as conn:
+        if 'SkontoAmount' in {row[1] for row in conn.execute('PRAGMA table_info(InvoicePayments)')}:
+            conn.execute('ALTER TABLE InvoicePayments DROP COLUMN SkontoAmount')
+        conn.execute('PRAGMA user_version = 2008')
+        conn.commit()
+
+
 def to_state_2007(db_path):
-    """Die Datenbank in den Stand zurückversetzen, den 2.7.x geschrieben hat: die Tabelle ``TaxRates`` und der Index
-    ``idx_invoiceitems_invoice`` weg, die Spalten ``TaxRateBp``, ``TaxExemptReason`` und ``RevenueCoaId`` an ``InvoiceItems``
+    """Die Datenbank in den Stand zurückversetzen, den 2.7.x geschrieben hat: zusätzlich zu 2.8.x (``to_state_2008``) die Tabelle ``TaxRates``
+    und der Index ``idx_invoiceitems_invoice`` weg, die Spalten ``TaxRateBp``, ``TaxExemptReason`` und ``RevenueCoaId`` an ``InvoiceItems``
     entfernt, ``PRAGMA user_version`` = 2007. Wiederholbar: Was schon fehlt, wird übersprungen."""
+    to_state_2008(db_path)
     with closing(sqlite3.connect(db_path)) as conn:
         conn.execute('DROP INDEX IF EXISTS idx_invoiceitems_invoice')
         conn.execute('DROP TABLE IF EXISTS TaxRates')

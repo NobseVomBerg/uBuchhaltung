@@ -122,7 +122,9 @@ def PageTaxRates(db: Database, edit_id=None, err=None):
     entries = db.fetch_tax_rates()
     edit = db.get_tax_rate(edit_id) if edit_id is not None else None
     accounts = {row[0]: (row[2], row[3]) for row in db.fetch_chart_of_accounts()}
-    revenue_choices = [(coa, f'{number} {name}') for coa, number, name in db.get_revenue_coas()]
+    # ohne die Skonto-Konten (``payment_revenue_choices``): Ein Satz, der eines als Erlöskonto trüge, buchte seinen Erlös auf eine Erlösschmälerung. Ein gespeicherter Eintrag, der eines trägt,
+    # bleibt gültig; ``_options`` zeigt sein Konto als eigene, gewählte Option
+    revenue_choices = [(coa, f'{number} {name}') for coa, number, name in db.payment_revenue_choices()]
     tax_choices = db.get_tax_account_choices()
     default_revenue = ' und '.join(f'{pct_text(rate)} %' for rate in MIXED_TAX_RATES)
 

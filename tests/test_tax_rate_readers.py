@@ -74,6 +74,10 @@ READERS = {
     ('db/invoice_payments.py', '_refund_plan'): ('Erstattung einer Stornorechnung: Satz und Steuer der stornierten Rechnung; mit Steuersatz je Position '
                                                  '(MixedTaxRates) an beiden Belegen erstattet sie je Satz (_mixed_refund_parts), der Kopfsatz wird nie gelesen; '
                                                  'trägt nur einer von beiden das Kennzeichen, wird abgelehnt'),
+    ('db/invoice_payments.py', '_skonto_state'): ('Zahlung mit Skonto (assign_invoice_payment(…, skonto=True)): Kopfsatz der Rechnung für das Skonto-Konto und die Steuer des '
+                                                  'Skontos (skonto_rate_key: nur 19 %, 7 %, 0 % und § 19 haben eines, jeder andere Kopfsatz lehnt ab); ein Beleg mit Steuersatz '
+                                                  'je Position (MixedTaxRates) oder mit einem Satz aus den Stammdaten lehnt ab – sein Kopfsatz wird nie als Satz eines Skontos '
+                                                  'gelesen. Dieselben Regeln in der Vorprüfung und, am frisch gelesenen Stand, in der Transaktion'),
     ('db/invoice_repair.py', '_rebuild_in'): ('Zuordnung neu aufbauen: Satz der Rechnung für die neuen Sätze; ein Beleg mit Steuersatz je Position '
                                               '(MixedTaxRates) baut nichts neu auf (Grund mixed: nur der offene Betrag wird neu gerechnet), ebenso einer mit einem '
                                               'Erlöskonto aus den Stammdaten (Grund tax_entry)'),
@@ -100,6 +104,11 @@ READERS = {
                                                       'Wartekonto genau seines Satzes (Momentaufnahme ebenfalls verglichen)'),
     ('db/invoices.py', 'insert_invoice'): 'Beleg anlegen: schreibt den Satz im Kopf und das Kennzeichen „Steuersatz je Position“ (MixedTaxRates: nur NULL oder 1)',
     ('db/invoices.py', 'last_document_shows_tax'): '§ 19-Prüfung: Häkchen „Umsatzsteuer ausweisen“ eines neuen Belegs',
+    ('db/payment_suggestions.py', '<module>'): ('Zahlungsvorschläge: Die Abfrage der offenen Rechnungen liest den Kopfsatz (und das Kennzeichen MixedTaxRates, die Skonto-Bedingungen, ob eine Position die '
+                                                'Momentaufnahme der Stammdaten trägt) nur, um nach den Regeln des Zuordnens (invoice_payments.skonto_terms) zu fragen, ob die Rechnung ein Skonto '
+                                                'zulässt: nur 19 %, 7 %, 0 % und § 19; ein Beleg mit Steuersatz je Position oder mit Stammdaten nie – sein Kopfsatz wird nie als Satz eines Skontos gelesen'),
+    ('db/payment_suggestions.py', 'skonto_offer'): ('Rechnungsseite: Was die Rechnung an Skonto zulässt – dieselbe Frage (skonto_terms) mit dem Kopfsatz und dem Kennzeichen MixedTaxRates der einen '
+                                                    'Rechnung; ein Beleg mit Steuersatz je Position oder mit Stammdaten bekommt den festen Ablehnungssatz, nie ein Skonto'),
     ('db/schema.py', 'initialize_database'): 'Schema: legt die Spalte Invoices.TaxRate (und den Satz je Position) an, liest nichts',
     ('export/einvoice_model.py', 'build_einvoice'): 'E-Rechnung: Standardsatz der Positionen ohne eigenen Satz, § 19 (Kategorie E)',
     ('export/pdf_invoice.py', 'generate_invoice_pdf'): ('PDF der Rechnung: Summenblock mit EINEM Satz, § 19-Hinweis; mit Steuersatz je Position '
@@ -131,6 +140,8 @@ NOT_THE_DOCUMENT_RATE = {
     ('db/invoice_payments.py', '_same_payment_row'): 'Bookings.TaxRate: Vergleich eines gespeicherten Zahlungssatzes mit dem erwarteten',
     ('db/invoice_payments.py', 'payment_rows'): ('Bookings.TaxRate des Zahlungssatzes; der Satz der Rechnung kommt als Parameter tax_rate von '
                                                  '_assign_in_tx und den anderen Aufrufern – dort sind die Lesestellen'),
+    ('db/invoice_payments.py', 'skonto_reversal_rows'): ('Bookings.TaxRate des Rücknahmesatzes beim Stornieren; der Satz kommt als SkontoReversal.rate aus dem Skonto-Satz der Zahlung '
+                                                         '(wie gespeichert), nie aus dem Kopf der Rechnung'),
     ('db/invoice_payments.py', 'suggest_revenue_coa'): 'Bookings.TaxRate: Vorauswahl des Erlöskontos aus den Buchungen',
     ('db/invoice_repair.py', '_rebuild_plan'): 'Bookings.TaxRate: die neuen Buchungssätze im Plan von „Zuordnung neu aufbauen“',
     ('db/reporting.py', 'get_susa'): 'Bookings.TaxRate: Gruppierung der Sätze der Summen- und Saldenliste',

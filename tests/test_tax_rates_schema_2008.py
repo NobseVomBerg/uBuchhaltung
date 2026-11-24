@@ -312,6 +312,8 @@ def test_existing_rows_stay_untouched_and_the_new_values_are_null(stock):
     assert [row[:OLD_ITEM_COLUMNS] for row in after['InvoiceItems']] == before['InvoiceItems']     # jede Spalte jeder Zeile
     assert all(row[OLD_ITEM_COLUMNS:] == (None, None, None) for row in after['InvoiceItems'])      # überall NULL – nichts wird umgedeutet
     assert {row[9] for row in after['InvoiceItems']} == {'S'}                                      # keine Art wird zu 'E'
+    assert all(row[-1] is None for row in after['InvoicePayments'])                                # seit 2.9.0 eine Spalte am Ende, leer (test_skonto_schema_2009.py)
+    after['InvoicePayments'] = [row[:-1] for row in after['InvoicePayments']]
     for table, rows in before.items():
         if table != 'InvoiceItems':
             assert after[table] == rows, table                                                     # alle anderen Tabellen, Zeile für Zeile

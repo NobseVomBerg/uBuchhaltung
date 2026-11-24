@@ -17,6 +17,8 @@ Rein: kein Datenbankzugriff, keine Uhr. Geprüft wird
 * die Rangfolge (``rank_invoices``, ``rank_movements``: höchstens fünf, nach Punkten, Abstand der Daten, ID) und die Eins-zu-eins-Liste
   (``pair_up``: jede Bewegung und jede Rechnung höchstens einmal, zwei gleich hohe Rechnungen und Zahlungen eines Kunden paaren sich nach dem
   Datum, ``ambiguous`` bei gleicher Punktzahl, unabhängig von der Reihenfolge der Eingabe, ``linked`` schließt Paare aus);
+* **das Signal SKONTO (2.9.0):** Der freie Rest der Bewegung ist der offene Betrag nach Abzug des Skontos (``skonto_open_minor`` der Rechnung) – wie BETRAG nie allein ein Vorschlag, mit KUNDE einer,
+  Punkte wie BETRAG, die Begründung „Betrag nach Skonto stimmt“, das Merkmal ``skonto`` am Vorschlag, kein ``REASON_PARTIAL`` mit Nummer; ein Wert, der kein Skonto sein kann, gibt kein Signal;
 * kaputte Werte (kein Fehler, die Zeile ist kein Kandidat) und die Laufzeit bei langem Text.
 
 Alle Namen, Nummern und Beträge sind erfundene Testwerte; Daten stehen fest im Test (kein „heute“).
@@ -30,12 +32,14 @@ import pytest
 
 from db import payment_matching
 from db.payment_matching import (
-    AMBIGUOUS_TEXT, DAYS_BEFORE_INVOICE, MAX_NUMBER_LENGTH, MAX_SUGGESTIONS, POINTS_AMOUNT, POINTS_CUSTOMER, POINTS_NUMBER, REASON_AMOUNT,
-    REASON_CUSTOMER, REASON_NUMBER, REASON_PARTIAL, REASON_SEPARATOR, PaymentSuggestion, pair_up, rank_invoices, rank_movements, reason_text)
+    AMBIGUOUS_TEXT, DAYS_BEFORE_INVOICE, MAX_NUMBER_LENGTH, MAX_SUGGESTIONS, POINTS_AMOUNT, POINTS_CUSTOMER, POINTS_NUMBER, POINTS_SKONTO, REASON_AMOUNT,
+    REASON_CUSTOMER, REASON_NUMBER, REASON_PARTIAL, REASON_SEPARATOR, REASON_SKONTO, PaymentSuggestion, pair_up, rank_invoices, rank_movements, reason_text)
 from db.receipt_matching import MAX_FIELD_LENGTH
 
 DAY = '2026-03-04'                          # das Rechnungsdatum der Tests
 OPEN = 1190000                              # 119,00 EUR in Minor Units (money.SCALE = 4)
+DISCOUNT = 23800                            # 2 % Skonto auf 119,00 EUR: 2,38 EUR
+AFTER_DISCOUNT = OPEN - DISCOUNT            # was der Kunde zahlt, wenn er das Skonto abzieht: 116,62 EUR
 BUYER = 'Käufer AG'                         # der Empfänger einer Bewegung und der Kunde einer Rechnung, die ein Namenswort teilen: „Kunde passt“
 OTHER = 'Müller KG'                         # ein anderer Kunde: kein gemeinsames Namenswort mit BUYER
 
@@ -53,9 +57,12 @@ def movement(ident=1, amount=OPEN, date=DAY, text='', recipient='', number='', c
             'contact_id': contact}
 
 
-def invoice(ident=1, number='R26001', open_minor=OPEN, date=DAY, customer=None, name=''):
-    """Eine offene Rechnung, ohne weitere Merkmale."""
-    return {'id': ident, 'number': number, 'date': date, 'open_minor': open_minor, 'customer_id': customer, 'customer_name': name}
+def invoice(ident=1, number='R26001', open_minor=OPEN, date=DAY, customer=None, name='', skonto_open=None):
+    """Eine offene Rechnung, ohne weitere Merkmale. ``skonto_open``: ``skonto_open_minor`` – der Schlüssel steht nur, wenn er genannt ist (ohne ihn gibt es kein Skonto-Signal)."""
+    row = {'id': ident, 'number': number, 'date': date, 'open_minor': open_minor, 'customer_id': customer, 'customer_name': name}
+    if skonto_open is not None:
+        row['skonto_open_minor'] = skonto_open
+    return row
 
 
 def found_by_text(number, text):
@@ -363,6 +370,114 @@ def test_the_amount_is_compared_to_the_minor_value():
     assert pair_ids(rank_invoices(movement(amount=OPEN, recipient=BUYER), [invoice(name=BUYER)])) == [(1, 1)]      # Kontrolle: derselbe Betrag ist ein Vorschlag
     assert rank_invoices(movement(amount=OPEN + 1, recipient=BUYER), [invoice(name=BUYER)]) == []
     assert rank_invoices(movement(amount=OPEN - 1, recipient=BUYER), [invoice(name=BUYER)]) == []
+
+
+# ── SKONTO: der Betrag nach Abzug des Skontos ───────────────────────────────
+
+def test_the_skonto_constants_and_the_sentence_are_the_planned_ones():
+    assert POINTS_SKONTO == POINTS_AMOUNT == 50
+    assert REASON_SKONTO == 'Betrag nach Skonto stimmt'
+    assert (OPEN, DISCOUNT, AFTER_DISCOUNT) == (1190000, 23800, 1166200)
+
+
+def test_the_amount_after_the_discount_and_the_customer_are_a_suggestion_that_carries_the_skonto_flag():
+    found = rank_invoices(movement(amount=AFTER_DISCOUNT, recipient=BUYER), [invoice(name=BUYER, skonto_open=AFTER_DISCOUNT)])
+    assert [(s.reasons, s.score, s.skonto) for s in found] == [((REASON_SKONTO, REASON_CUSTOMER), POINTS_SKONTO + POINTS_CUSTOMER, True)]
+    assert reason_text(found[0]) == 'Betrag nach Skonto stimmt · Kunde passt'
+    assert [(s.reasons, s.skonto) for s in rank_movements(invoice(name=BUYER, skonto_open=AFTER_DISCOUNT), [movement(amount=AFTER_DISCOUNT, recipient=BUYER)])] == [
+        ((REASON_SKONTO, REASON_CUSTOMER), True)]
+    assert pair_ids(pair_up([movement(amount=AFTER_DISCOUNT, recipient=BUYER)], [invoice(name=BUYER, skonto_open=AFTER_DISCOUNT)])) == [(1, 1)]
+
+
+def test_the_amount_after_the_discount_alone_is_no_suggestion_either():
+    assert rank_invoices(movement(amount=AFTER_DISCOUNT), [invoice(skonto_open=AFTER_DISCOUNT)]) == []
+    assert rank_invoices(movement(amount=AFTER_DISCOUNT, recipient=BUYER), [invoice(name=OTHER, skonto_open=AFTER_DISCOUNT)]) == []        # ein anderer Kunde
+    assert rank_movements(invoice(skonto_open=AFTER_DISCOUNT), [movement(amount=AFTER_DISCOUNT)]) == []
+    assert pair_up([movement(amount=AFTER_DISCOUNT)], [invoice(skonto_open=AFTER_DISCOUNT)]) == []
+
+
+def test_without_a_skonto_open_amount_the_invoice_has_no_skonto_signal():
+    """Fehlt der Schlüssel (eine Rechnung ohne Skonto, ein Beleg mit mehreren Sätzen, mit Stammdaten …), ist der Betrag nach 2 % nur irgendein Betrag."""
+    assert rank_invoices(movement(amount=AFTER_DISCOUNT, recipient=BUYER), [invoice(name=BUYER)]) == []
+    assert rank_invoices(movement(amount=AFTER_DISCOUNT, recipient=BUYER), [{**invoice(name=BUYER), 'skonto_open_minor': None}]) == []
+
+
+@pytest.mark.parametrize('value', [0, -5, -AFTER_DISCOUNT, OPEN, OPEN + 1, 1.5, '1166200', True, False, [AFTER_DISCOUNT], b'x'],
+                         ids=lambda value: stable_id(value))
+def test_a_value_that_cannot_be_a_discounted_amount_gives_no_signal(value):
+    """Ein Betrag, der kein offener Betrag abzüglich eines Skontos sein kann (nicht größer 0, nicht kleiner als der offene Betrag, keine ganze Zahl, ein Wahrheitswert), gibt kein Signal –
+    auch nicht, wenn die Bewegung genau diesen Betrag trägt."""
+    row = {**invoice(name=BUYER), 'skonto_open_minor': value}
+    assert rank_invoices(movement(amount=AFTER_DISCOUNT, recipient=BUYER), [row]) == []
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        assert all(not s.skonto for s in rank_invoices(movement(amount=value, recipient=BUYER), [row]))
+
+
+def test_a_bool_is_no_whole_number_for_the_skonto_value_even_where_it_equals_the_amount():
+    """``True == 1``: Hätte die Bewegung den Betrag 1, träfe ein Wahrheitswert als ``skonto_open_minor`` sie – er zählt nicht (``is_int``)."""
+    assert rank_invoices(movement(amount=1, recipient=BUYER), [{**invoice(name=BUYER, open_minor=OPEN), 'skonto_open_minor': True}]) == []
+
+
+def test_the_full_amount_stays_the_amount_signal_and_is_no_skonto():
+    found = rank_invoices(movement(amount=OPEN, recipient=BUYER), [invoice(name=BUYER, skonto_open=AFTER_DISCOUNT)])
+    assert [(s.reasons, s.score, s.skonto) for s in found] == [((REASON_AMOUNT, REASON_CUSTOMER), POINTS_AMOUNT + POINTS_CUSTOMER, False)]
+
+
+def test_with_the_number_the_reasons_come_in_the_fixed_order_and_name_no_partial_payment():
+    found = rank_invoices(movement(amount=AFTER_DISCOUNT, text='R26001', recipient=BUYER), [invoice(name=BUYER, skonto_open=AFTER_DISCOUNT)])
+    assert [(s.reasons, s.score, s.skonto) for s in found] == [
+        ((REASON_NUMBER, REASON_SKONTO, REASON_CUSTOMER), POINTS_NUMBER + POINTS_SKONTO + POINTS_CUSTOMER, True)]
+    assert REASON_PARTIAL not in found[0].reasons
+    found = rank_invoices(movement(amount=AFTER_DISCOUNT, text='R26001'), [invoice(skonto_open=AFTER_DISCOUNT)])
+    assert [(s.reasons, s.score, s.skonto) for s in found] == [((REASON_NUMBER, REASON_SKONTO), POINTS_NUMBER + POINTS_SKONTO, True)]       # die Nummer trägt den Vorschlag allein
+
+
+def test_a_number_with_another_amount_stays_a_partial_payment_without_the_skonto_flag():
+    found = rank_invoices(movement(amount=500, text='R26001', recipient=BUYER), [invoice(name=BUYER, skonto_open=AFTER_DISCOUNT)])
+    assert [(s.reasons, s.skonto) for s in found] == [((REASON_NUMBER, REASON_CUSTOMER, REASON_PARTIAL), False)]
+
+
+def test_the_date_rule_holds_for_the_skonto_signal_too():
+    early = movement(amount=AFTER_DISCOUNT, recipient=BUYER, date=shifted(-DAYS_BEFORE_INVOICE - 1))
+    assert rank_invoices(early, [invoice(name=BUYER, skonto_open=AFTER_DISCOUNT)]) == []
+    assert rank_invoices({**early, 'text': 'R26001'}, [invoice(name=BUYER, skonto_open=AFTER_DISCOUNT)])[0].skonto is True            # mit der Nummer schon
+    assert rank_invoices(movement(amount=AFTER_DISCOUNT, recipient=BUYER, date=shifted(-DAYS_BEFORE_INVOICE)), [invoice(name=BUYER, skonto_open=AFTER_DISCOUNT)])
+
+
+def test_each_invoice_is_found_once_under_either_amount_and_a_linked_pair_never():
+    invoices = [invoice(name=BUYER, skonto_open=AFTER_DISCOUNT)]
+    assert len(rank_invoices(movement(amount=OPEN, recipient=BUYER), invoices)) == 1                  # der Index nach dem offenen Betrag
+    assert len(rank_invoices(movement(amount=AFTER_DISCOUNT, recipient=BUYER), invoices)) == 1        # … und nach dem Betrag nach Skonto
+    assert len(pair_up([movement(amount=AFTER_DISCOUNT, recipient=BUYER)], invoices)) == 1
+    assert rank_invoices(movement(amount=AFTER_DISCOUNT, recipient=BUYER), invoices, linked=frozenset({(1, 1)})) == []
+    assert pair_up([movement(amount=AFTER_DISCOUNT, recipient=BUYER)], invoices, linked=frozenset({(1, 1)})) == []
+
+
+def test_an_amount_that_is_the_open_amount_of_one_invoice_and_the_discounted_amount_of_another_is_ambiguous():
+    """Zwei Rechnungen eines Kunden: die eine mit dem offenen Betrag 116,62, die andere mit dem Skonto-Betrag 116,62 – gleiche Punkte (50 + 30): mehrdeutig, und die Übersicht nimmt die zeitlich nächste."""
+    invoices = [invoice(ident=1, number='K-1001', open_minor=AFTER_DISCOUNT, date='2026-02-01', name=BUYER),
+                invoice(ident=2, number='K-1002', open_minor=OPEN, date='2026-03-01', name=BUYER, skonto_open=AFTER_DISCOUNT)]
+    found = rank_invoices(movement(amount=AFTER_DISCOUNT, date='2026-03-10', recipient=BUYER), invoices)
+    assert [(s.invoice_id, s.score, s.skonto) for s in found] == [(2, 80, True), (1, 80, False)]        # gleiche Punkte: die zeitlich nähere zuerst
+    result = pair_up([movement(amount=AFTER_DISCOUNT, date='2026-03-10', recipient=BUYER)], invoices)
+    assert [(s.invoice_id, s.ambiguous, s.skonto) for s in result] == [(2, True, True)]                  # ``dataclasses.replace`` behält das Merkmal
+
+
+def test_two_equal_invoices_with_a_discount_pair_by_the_date_and_keep_the_flag():
+    invoices = [invoice(ident=1, number='K-1001', date='2026-01-01', name=BUYER, skonto_open=AFTER_DISCOUNT),
+                invoice(ident=2, number='K-1002', date='2026-02-01', name=BUYER, skonto_open=AFTER_DISCOUNT)]
+    movements = [movement(ident=1, amount=AFTER_DISCOUNT, date='2026-01-10', recipient=BUYER), movement(ident=2, amount=AFTER_DISCOUNT, date='2026-02-10', recipient=BUYER)]
+    result = pair_up(movements, invoices)
+    assert [(s.movement_id, s.invoice_id, s.ambiguous, s.skonto) for s in result] == [(1, 1, True, True), (2, 2, True, True)]
+
+
+def test_the_discount_signal_is_fast_enough_for_a_page_too():
+    invoices = [invoice(ident=n, number=f'26R{n:05d}', open_minor=1000 * n, name=f'Firma{n % 50:02d}', skonto_open=1000 * n - 20) for n in range(1, 501)]
+    movements = [movement(ident=n, amount=1000 * n - 20, recipient=f'Firma{n % 50:02d}', text='Zahlung') for n in range(1, 501)]
+    started = time.perf_counter()
+    result = pair_up(movements, invoices)
+    assert time.perf_counter() - started < 3
+    assert len(result) == 500 and all(s.invoice_id == s.movement_id and s.skonto for s in result)
 
 
 # ── DATUM ────────────────────────────────────────────────────────────────────

@@ -9,13 +9,13 @@ import traceback
 from decimal import Decimal
 import demo
 from db import Database
-from money import fmt_eur, from_minor
+from money import fmt_eur, format_plain, from_minor, round_minor, to_minor
 from db.matching import bank_effect, is_bank_effective, is_mirror_row, purpose_in_counter
 from db.invoices import InvoiceCol
 from db.invoice_payments import PAYABLE_STATUSES, has_mixed_rates
 from db.payment_matching import reason_text
 from .pages import Header1, Header2, Header3, Footer, script_json
-from .pages_invoice import revenue_coa_choice
+from .pages_invoice import SKONTO_JS, revenue_coa_choice, skonto_check_html
 from .period import period_filter_widget
 from .receipt_links import LINK_WIDGET_JS, SEARCH_MAX_LENGTH, linked_documents
 from .upload_handler import STATEMENTS_DEMO_REFUSED
@@ -147,19 +147,48 @@ def invoice_option_label(number, name, due):
     return f"{number} — {name} — offen {fmt_eur(due)}"
 
 
+# Skonto in der Buchungsmaske (seit 2.9.0): Der Haken ``skontoBox`` (Formularfeld ``skonto``) in der versteckten Zeile ``skontoRow``. ``skoMask`` liest die gewählte Option der Auswahl
+# ``invoice_id`` (``data-skonto-open``, ``data-skonto-limit``), das Betragsfeld ``amount`` und ``data-used`` der Zeile; ``skoRest`` (``SKONTO_JS``) ist die eine Regel. Die Bausteine
+# ``skoCents``, ``skoEuro``, ``skoRest``, ``skoShow`` stehen in ``pages_invoice.SKONTO_JS`` (dieselben wie auf der Rechnungsseite).
+SKONTO_MASK_JS = """function skoMask() {
+  var select = document.querySelector('select[name="invoice_id"]'), row = document.getElementById('skontoRow');
+  var box = document.getElementById('skontoBox'), amount = document.getElementById('amount'), label = document.getElementById('skontoRest');
+  if (!select || !row || !box || !amount || !label) { return; }
+  var option = select.options[select.selectedIndex], rest = 0;
+  if (option && option.hasAttribute('data-skonto-limit')) {
+    rest = skoRest(skoCents(option.getAttribute('data-skonto-open')), skoCents(option.getAttribute('data-skonto-limit')),
+                   skoCents(amount.value) - skoCents(row.getAttribute('data-used')));
+  }
+  skoShow(row, box, label, rest);
+}
+function skoMaskInit() {
+  var select = document.querySelector('select[name="invoice_id"]'), amount = document.getElementById('amount');
+  var take = document.querySelector('#invoiceSuggestion button');
+  if (select) { select.addEventListener('change', skoMask); }
+  if (amount) { amount.addEventListener('input', skoMask); }
+  if (take) { take.addEventListener('click', skoMask); }       // „Übernehmen“ setzt den Wert der Auswahl ohne Änderungsereignis (sein onclick läuft zuerst)
+  skoMask();
+}
+"""
+
+
 # ── Zahlungseingänge zu offenen Rechnungen (der Kasten über der Buchungsliste, seit 2.8.1) ───────────────────────────────────────────
 PAY_SUGGEST_LIMIT = 20          # so viele Zeilen zeigt der Kasten höchstens; darunter „… und n weitere“
 PAY_FAILED = 'Die Zahlung konnte nicht zugeordnet werden.'
 
 # „Zuordnen“ ruft den bestehenden Weg (POST /invoice/link-payment, ohne Betrag: so viel wie möglich); das Skript der Fußzeile hängt das CSRF-Token
 # an. Erfolg: die Seite unter derselben Adresse neu laden – der Vorschlag ist dann weg. Fehler: der Klartext der Antwort über appMsg (textContent),
-# die Zeile bleibt. Nur var und function; die IDs stehen als Zahl im Aufruf.
-PAY_SUGGEST_JS = '''function payAssign(invoiceId, bookingId, button) {
-    button.disabled = true;      // ein Doppelklick ordnet nicht doppelt zu
+# die Zeile bleibt. Nur var und function; die IDs stehen als Zahl im Aufruf. **Mit Skonto (seit 2.9.0):** Bei einem Vorschlag mit dem Betrag nach Abzug des Skontos steht neben
+# „Zuordnen“ der Knopf „Mit Skonto zuordnen“ – er ruft ``payAssign(…, true)`` und schickt ``skonto: true``, sonst nie; der Klick ist die Entscheidung. Beide Knöpfe der Zeile sind
+# gesperrt, solange die Anfrage läuft (ein Doppelklick ordnet nicht doppelt zu, auch nicht über den anderen Knopf).
+PAY_SUGGEST_JS = '''function payAssign(invoiceId, bookingId, button, skonto) {
+    var cell = button.parentNode, buttons = cell && cell.querySelectorAll ? cell.querySelectorAll('button') : [button], request = {invoice_id: invoiceId, transaction_id: bookingId}, i;
+    for (i = 0; i < buttons.length; i++) { buttons[i].disabled = true; }      // ein Doppelklick ordnet nicht doppelt zu
+    if (skonto === true) { request.skonto = true; }
     fetch('/invoice/link-payment', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({invoice_id: invoiceId, transaction_id: bookingId})
+        body: JSON.stringify(request)
     }).then(function (r) { return r.json(); }).then(function (data) {
         if (data.success) {
             // ohne eine alte Meldung in der Adresse neu laden (``err`` eines früheren, gescheiterten Speicherns)
@@ -169,14 +198,19 @@ PAY_SUGGEST_JS = '''function payAssign(invoiceId, bookingId, button) {
             window.location.href = window.location.pathname + (rest ? '?' + rest : '');
             return;
         }
-        button.disabled = false;
+        for (i = 0; i < buttons.length; i++) { buttons[i].disabled = false; }
         appMsg(data.error || PAY_FAILED, 'error');
     }).catch(function () {
-        button.disabled = false;
+        for (i = 0; i < buttons.length; i++) { buttons[i].disabled = false; }
         appMsg(PAY_FAILED, 'error');
     });
 }
 '''
+
+# Der Knopf „Mit Skonto zuordnen“ und seine Erklärung: ein fester Satz (``title``), nichts davon kommt aus der Datenbank
+PAY_SKONTO_BUTTON = 'Mit Skonto zuordnen'
+PAY_SKONTO_TITLE = 'Ordnet den Zahlungseingang zu und bucht den Rest der Rechnung als Skonto aus'
+PAY_SKONTO_HINT = ' „Mit Skonto zuordnen“ bucht den Rest der Rechnung als Skonto aus.'
 
 
 def _payment_suggestions_html(db):
@@ -195,8 +229,14 @@ def _payment_suggestions_html(db):
     def esc(value):
         return _html.escape(str(value), quote=True)
 
-    rows = ''
+    rows, with_skonto = '', False
     for suggestion, movement, invoice in overview.items:
+        # Bei einem Betrag nach Abzug des Skontos daneben der Knopf, der das Skonto ausbucht – der Klick darauf ist die Entscheidung, „Zuordnen“ bleibt die Teilzahlung wie bisher
+        skonto_button = ''
+        if suggestion.skonto:
+            with_skonto = True
+            skonto_button = (f' <button type="button" class="coloredButton btn-sm bg-blue" title="{esc(PAY_SKONTO_TITLE)}" '
+                             f'onclick="payAssign({int(invoice["id"])}, {int(movement["id"])}, this, true)">{esc(PAY_SKONTO_BUTTON)}</button>')
         rows += (
             f'<tr><td>{esc(movement["date"] or "–")}</td><td>{esc(movement["recipient"] or "")}</td>'
             f'<td class="num">{esc(fmt_eur(from_minor(movement["amount_minor"])))}</td>'
@@ -204,11 +244,11 @@ def _payment_suggestions_html(db):
             f'<td>{esc(invoice["label"])}</td><td class="num">{esc(fmt_eur(from_minor(invoice["open_minor"])))}</td>'
             f'<td>{esc(reason_text(suggestion))}</td>'
             f'<td><button type="button" class="coloredButton btn-sm bg-green" title="Ordnet den Zahlungseingang dieser Rechnung zu" '
-            f'onclick="payAssign({int(invoice["id"])}, {int(movement["id"])}, this)">Zuordnen</button></td></tr>\n')
+            f'onclick="payAssign({int(invoice["id"])}, {int(movement["id"])}, this)">Zuordnen</button>{skonto_button}</td></tr>\n')
     more = f'<p class="hint">… und {int(overview.more)} weitere</p>\n' if overview.more else ''
     return ('<div class="rectRounded">\n'
             '<h3>Zahlungseingänge zu offenen Rechnungen</h3>\n'
-            '<p class="hint">Vorschläge aus allen Zeiträumen, nicht nur aus dem gewählten. Zugeordnet wird erst mit „Zuordnen“.</p>\n'
+            f'<p class="hint">Vorschläge aus allen Zeiträumen, nicht nur aus dem gewählten. Zugeordnet wird erst mit „Zuordnen“.{esc(PAY_SKONTO_HINT) if with_skonto else ""}</p>\n'
             '<table class="refundTable">\n'
             '<tr><th>Datum</th><th>Auftraggeber</th><th class="num">Betrag (frei)</th><th>Rechnung</th><th>Kunde</th>'
             '<th class="num">offen</th><th>Begründung</th><th></th></tr>\n'
@@ -418,17 +458,30 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
         except Exception:                           # die Maske hängt nicht an den Vorschlägen
             traceback.print_exc()                   # der volle Fehler nur ins Server-Log
     suggested_ids = {sinv['id'] for _pair, sinv in suggestions}
+    # Skonto (2.9.0): Das Skonto, das jede offene Rechnung vorsieht – wo sie eines zulässt, trägt ihre Option den offenen Betrag und das Skonto (``data-skonto-open``, ``data-skonto-limit``:
+    # Euro im Punkt-Format), und das Skript der Maske zeigt den Haken „Rest … als Skonto ausbuchen“, sobald der Rest nach dem Betrag ins Skonto passt. Die Maske hängt nicht daran.
+    skonto_limits = {}
+    if show_invoice_select:
+        try:
+            skonto_limits = db.skonto_limits()
+        except Exception:
+            traceback.print_exc()                   # der volle Fehler nur ins Server-Log
+
+    def skonto_attrs(invoice_id, open_minor):
+        limit = skonto_limits.get(invoice_id)
+        return f' data-skonto-open="{format_plain(open_minor)}" data-skonto-limit="{format_plain(limit)}"' if limit else ''
     invoice_options = ''
     for pair, sinv in suggestions:
         slabel = invoice_option_label(sinv['number'] or sinv['id'], sinv['label'], from_minor(sinv['open_minor']))
-        invoice_options += f'<option value="{int(sinv["id"])}">{_html.escape(f"{slabel} — Vorschlag: {reason_text(pair)}")}</option>'
+        invoice_options += (f'<option value="{int(sinv["id"])}"{skonto_attrs(sinv["id"], sinv["open_minor"])}>'
+                            f'{_html.escape(f"{slabel} — Vorschlag: {reason_text(pair)}")}</option>')
     for oinv in open_invoices:
         if oinv[0] in allocated_ids or oinv[0] in suggested_ids:
             continue
         oinv_due = oinv[39] if oinv[39] is not None else (oinv[38] or 0)
         sel = ' selected' if prefill.get('invoice_id') == oinv[0] else ''
         olabel = invoice_option_label(oinv[1] or oinv[0], oinv[15] or oinv[14] or '', oinv_due)
-        invoice_options += f'<option value="{oinv[0]}"{sel}>{_html.escape(olabel)}</option>'
+        invoice_options += f'<option value="{oinv[0]}"{sel}{skonto_attrs(oinv[0], round_minor(to_minor(oinv_due), 2))}>{_html.escape(olabel)}</option>'
     invoice_field = ''
     if show_invoice_select:
         invoice_field = ('<select name="invoice_id">'
@@ -442,6 +495,15 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                            f'{_html.escape(str(best_invoice["number"] or best_invoice["id"]))} ({_html.escape(reason_text(best_pair))}) '
                            '<button type="button" class="coloredButton btn-sm bg-blue" '
                            f'onclick="this.form.elements[\'invoice_id\'].value = \'{int(best_invoice["id"])}\'">Übernehmen</button></div>')
+    # Der Haken „Rest … als Skonto ausbuchen“ (Formularfeld ``skonto``, Wert ``1``): versteckt und nie angehakt; er steht nur da, wenn eine Option der Auswahl ein Skonto kennt. ``data-used``:
+    # der Teil der Bewegung, den schon andere Zuordnungen und Sätze verbrauchen (Betrag minus freier Rest, Euro) – eine neue Bewegung hat keinen; so rechnet das Skript wie das Zuordnen mit dem
+    # freien Rest. Ein Vorschlag („Übernehmen“) setzt ihn nie.
+    skonto_line = ''
+    if skonto_limits and show_invoice_select:
+        used = 0
+        if edit_trans:
+            used = max(0, round_minor(to_minor(edit_trans[11] or 0), 2) - round_minor(to_minor(booking_free or 0), 2))
+        skonto_line = skonto_check_html('skontoRow', 'skontoBox', 'skontoRest', name='skonto', data=f' data-used="{format_plain(used)}"')
     alloc_note = ''
     if allocations:
         parts = ', '.join(
@@ -451,7 +513,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                       'Lösen über die Rechnungsseite.</small></div>')
     invoice_row = ''
     if invoice_field or alloc_note:
-        invoice_row = f'<tr><td>Rechnung:</td><td>{invoice_field}{suggestion_line}{alloc_note}</td></tr>'
+        invoice_row = f'<tr><td>Rechnung:</td><td>{invoice_field}{suggestion_line}{skonto_line}{alloc_note}</td></tr>'
 
     # Eine Rechnungszahlung braucht das Bankkonto: ohne SKR-Nummer des Kontos lässt sie sich nicht
     # kontieren (Database.assign_invoice_payment)
@@ -834,6 +896,11 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             <div id="suggestNote" class="muted" style="margin-top:6px;"></div>
             </form>
     '''
+    # ── Skonto (2.9.0): der Haken „Rest … als Skonto ausbuchen“ ────────────────
+    # Das Skript steht im rechten Bereich, den ``openEditForm`` austauscht (es läuft dort neu); es hängt sich an die Auswahl „Rechnung“ und an das Betragsfeld, zeigt den Haken nur, wo
+    # der Rest nach dem Betrag ins Skonto der gewählten Rechnung passt, und nimmt ihn beim Verstecken zurück. Nur var und function (Präfix sko), gesetzt wird nur über textContent.
+    if skonto_line:
+        s += ('<script>\n' + SKONTO_JS + SKONTO_MASK_JS + 'skoMaskInit();\n</script>\n')
     # ── Vorschlagsfunktion (todo #1) ─────────────────────────────────────────
     # Füllt die Maske aus der Historie, speichert aber nichts – der Nutzer
     # bleibt im Formular und kann alles überschreiben.

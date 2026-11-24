@@ -15,15 +15,15 @@ from db.invoices import InvoiceCol, is_storno_row
 from db.invoice_lock import (CLOSED, EDITABLE, LOCKED_STATUSES, NUMBER_KEPT_MESSAGE, STATUS_LABELS,
                              STORNO_LABEL, STORNO_LOCKED_MESSAGE, allowed_targets, as_document_version,
                              buyer_snapshot, canonical_status, status_group)
-from db.invoice_payments import MIXED_REVENUE_MESSAGE, PAYABLE_STATUSES, has_mixed_rates, uses_small_business_rule
+from db.invoice_payments import MIXED_REVENUE_MESSAGE, PAYABLE_STATUSES, SKONTO_NO_TERMS, has_mixed_rates, uses_small_business_rule
 from db.invoice_versions import DELIVERY_DATE_MESSAGE, PROTOCOL_LABELS, local_date, local_datetime
 from db.payment_matching import reason_text
 from db.tax_rates import entry_snapshot, legacy_expressible
-from money import fmt_eur, format_plain, from_minor, to_minor
+from money import fmt_eur, format_plain, from_minor, round_minor, to_minor
 import tax_groups
 from tax_groups import EXEMPT, bp_pct, group_label, rate_pct
 from export.einvoice_model import (SCOPE_EN16931, SCOPE_XRECHNUNG, build_einvoice, einvoice_gaps, gap_texts,
-                                   unit_display)
+                                   skonto_until, unit_display)
 from export.invoice_files import stored_invoice_path, version_files, wants_xrechnung
 from .pages import (
     Header1, Header2, Header3, Footer, logo_url, script_json,
@@ -727,6 +727,88 @@ function reissueInvoice(invId) {
 """
 
 
+# ── Skonto beim Zuordnen einer Zahlung (seit 2.9.0) ──────────────────────────
+# Das Häkchen „Rest als Skonto ausbuchen“ steht an drei Stellen (Rechnungsseite je Kandidat, Buchungsmaske, und – als Knopf „Mit Skonto zuordnen“ – im Kasten der Seite Buchungen):
+# Zugeordnet wird mit Skonto nur auf diesen Klick, nie ohne, und nichts ist vorgewählt (das Häkchen ist beim Laden nie angehakt, ``autocomplete="off"`` hält auch den Browser davon ab,
+# einen alten Stand wiederherzustellen). Es erscheint nur, wo der Rest nach der Zahlung (offen − Zahlung) größer 0 und höchstens das Skonto der Rechnung ist; der Server prüft dasselbe
+# noch einmal (``Database.assign_invoice_payment(…, skonto=True)``) und bleibt maßgeblich. Die Frist wird gezeigt, nie erzwungen.
+SKONTO_EXPIRED = ' (Frist abgelaufen)'
+SKONTO_CHECK_TITLE = 'Der Rest der Rechnung nach dieser Zahlung wird als Skonto ausgebucht – nichts geschieht ohne dieses Häkchen.'
+
+
+def skonto_check_html(row_id, box_id, rest_id, name='', data=''):
+    """Das Häkchen „Rest … als Skonto ausbuchen“ als versteckte Zeile (``hidden``: Das Skript zeigt sie, wenn der Rest passt, und nimmt den Haken beim Verstecken zurück). ``row_id``, ``box_id``
+    und ``rest_id``: die ``id`` der Zeile, des Kästchens und der Stelle für den Betrag – feste Texte oder mit einer Zahl gebaut, nie ein Wert aus der Datenbank; ``name``: ein Formularfeld
+    (``skonto`` mit dem Wert ``1``: die Buchungsmaske), sonst keines (die Rechnungsseite schickt es per ``fetch``); ``data``: fertige ``data-``-Attribute der Zeile."""
+    field = ' name="skonto" value="1"' if name else ''
+    return (f'<div id="{row_id}"{data} hidden><label class="hint" title="{_html.escape(SKONTO_CHECK_TITLE, quote=True)}">'
+            f'<input type="checkbox" id="{box_id}"{field} autocomplete="off"> Rest <span id="{rest_id}"></span> als Skonto ausbuchen</label></div>')
+
+
+# Die Bausteine der beiden Skripte: Beträge in ganzen Cent (aus den ``data-``-Attributen im Punkt-Format und aus dem Betragsfeld), nur ``var`` und ``function`` (Präfix ``sko``), gesetzt wird
+# nur über ``textContent``/``hidden``/``checked``. ``skoRest`` ist die EINE Regel: Rest nach der Zahlung, wenn er größer 0 und höchstens das Skonto ist, sonst 0.
+SKONTO_JS = """// Skonto: Beträge in ganzen Cent. skoRest: der Rest nach der Zahlung (offen minus Zahlung), wenn er größer 0 und höchstens das Skonto ist – sonst 0
+function skoCents(text) {
+  var value = parseFloat(text);
+  return isNaN(value) ? 0 : Math.round(value * 100);
+}
+function skoEuro(cents) {
+  var abs = Math.abs(cents), whole = String(Math.floor(abs / 100)), fraction = ('0' + (abs % 100)).slice(-2), grouped = '';
+  while (whole.length > 3) { grouped = '.' + whole.slice(-3) + grouped; whole = whole.slice(0, -3); }
+  return (cents < 0 ? '-' : '') + whole + grouped + ',' + fraction + ' €';
+}
+function skoRest(open, limit, amount) {
+  var paid = Math.min(open, amount), rest = open - paid;
+  return paid > 0 && rest > 0 && rest <= limit ? rest : 0;
+}
+function skoShow(row, box, label, rest) {
+  row.hidden = rest <= 0;
+  if (rest <= 0) { box.checked = false; }
+  label.textContent = rest > 0 ? skoEuro(rest) : '';
+}
+"""
+
+# Rechnungsseite: je Kandidat der Zeile „Vorhandene Buchung verknüpfen“ ein Häkchen (``paySkonto_<ID der Bewegung>``). Die Werte stehen als ``data-``-Attribute: am Absatz mit der Frist
+# (``paySkontoInfo``: ``data-open`` der offene Betrag, ``data-limit`` das Skonto, Euro im Punkt-Format) und an der Zeile des Häkchens (``data-free``: der freie Rest der Bewegung – der
+# Betrag der Zahlung ist höchstens er, wie beim Zuordnen). ``SKO_ROWS``: die IDs der Bewegungen (``script_json``).
+SKONTO_INVOICE_JS = """function skoInvoiceRow(id) {
+  var info = document.getElementById('paySkontoInfo'), row = document.getElementById('paySkontoRow_' + id);
+  var box = document.getElementById('paySkonto_' + id), input = document.getElementById('payAmount_' + id);
+  var label = document.getElementById('paySkontoRest_' + id);
+  if (!info || !row || !box || !input || !label) { return; }
+  var paid = Math.min(skoCents(input.value), skoCents(row.getAttribute('data-free')));
+  skoShow(row, box, label, skoRest(skoCents(info.getAttribute('data-open')), skoCents(info.getAttribute('data-limit')), paid));
+}
+function skoInvoiceInit() {
+  for (var i = 0; i < SKO_ROWS.length; i++) { skoInvoiceRow(SKO_ROWS[i]); }
+}
+"""
+
+
+def _skonto_info_html(offer, invoice_date, open_due, today_iso):
+    """Die Zeile über der Liste „Vorhandene Buchung verknüpfen“: was die Rechnung an Skonto vorsieht – ``Skonto: 2 % = 2,38 € bis 10.03.2025``, nach der Frist mit dem Zusatz „(Frist abgelaufen)“
+    (kein Verbot) – oder, wenn sie Bedingungen trägt, aber kein Skonto zulässt (mehrere Sätze, Stammdaten, ein Satz ohne Skonto-Konto), der feste Satz der Ablehnung. Ohne Bedingungen (oder mit einem
+    Skonto von 0,00 €) steht nichts da. ``offer``: ``Database.skonto_offer``; ``invoice_date``: ``Invoices.InvoiceDate`` (ISO-Text); ``open_due``: der offene Betrag (Euro); ``today_iso``: heute.
+    Der Absatz einer Rechnung mit Skonto trägt die Werte für das Skript (``paySkontoInfo``, ``data-open``, ``data-limit``: Euro im Punkt-Format). Jeder Wert ist maskiert.
+    Returns ``(HTML, buchbar)``: ``buchbar``, wenn der Absatz mit den Werten dasteht – nur dann bekommt jeder Kandidat sein Häkchen."""
+    if offer is None or offer.error == SKONTO_NO_TERMS or (offer.error is None and not offer.limit):
+        return '', False
+    if offer.error is not None:
+        return f'        <p class="hint">{_html.escape(offer.error)}</p>\n', False
+    percent = f'{offer.percent.normalize():f}'.replace('.', ',')
+    text = f'Skonto: {percent} % = {fmt_eur(from_minor(offer.limit))}'
+    try:
+        until = skonto_until(datetime.date.fromisoformat(str(invoice_date)), offer.days)
+    except ValueError:
+        until = None
+    if until is not None:
+        text += f' bis {until.strftime("%d.%m.%Y")}'
+        if until.isoformat() < today_iso:
+            text += SKONTO_EXPIRED
+    return (f'        <p class="hint" id="paySkontoInfo" data-open="{format_plain(round_minor(to_minor(open_due), 2))}" '
+            f'data-limit="{format_plain(offer.limit)}">{_html.escape(text)}</p>\n'), True
+
+
 def delete_question(sent_before):
     return f'{DELETE_DRAFT_QUESTION} {DELETE_SENT_BEFORE_NOTE}' if sent_before else DELETE_DRAFT_QUESTION
 
@@ -738,11 +820,11 @@ def normalize_status(status):
 
 def _revenue_coa_select(db, tax_rate, selected=None, field_id='revenueCoa'):
     """Das Auswahlfeld „Erlöskonto“ (``revenue_coa_id``, Pflichtfeld) mit den wählbaren Erlöskonten
-    (``Database.get_revenue_coas``). Vorgewählt ist ``selected`` (wenn es ein wählbares Erlöskonto ist), sonst der
+    (``Database.payment_revenue_choices``: ohne die Skonto-Konten). Vorgewählt ist ``selected`` (wenn es ein wählbares Erlöskonto ist), sonst der
     Vorschlag ``Database.suggest_revenue_coa`` – eine Vorauswahl, keine Entscheidung; ohne beides steht „bitte wählen“
     da. Alle Werte sind maskiert. ``field_id``: das ``id`` des Felds – eine Seite trägt mehrere Auswahlen (Zahlung, Neuaufbau
     der Zuordnung), jede mit eigener ID."""
-    accounts = db.get_revenue_coas()
+    accounts = db.payment_revenue_choices()
     if selected not in {coa_id for coa_id, _number, _name in accounts}:
         selected = db.suggest_revenue_coa(tax_rate) if tax_rate is not None else None
     options = '<option value="">— bitte wählen —</option>'
@@ -2733,6 +2815,7 @@ function copyInvoiceAsNew(invId) {{
     # Payment history section (edit mode only)
     if is_edit_mode and invoice_id and not is_storno:
         amount_due = existing_invoice[39] if existing_invoice else 0
+        skonto_of = db.get_invoice_skonto(invoice_id)          # das Skonto, das Zuordnungen dieser Rechnung ausgebucht haben: {ID der Zuordnung: Euro}
         s += f'''
     <div style="margin: 30px 0; padding: 20px; border: 1px solid #ddd; border-radius: 4px;">
         <h3>Zahlungsverknüpfungen</h3>
@@ -2759,10 +2842,12 @@ function copyInvoiceAsNew(invId) {{
 '''
             for p in existing_payments:
                 pid, _, booking_id, amount, pay_date, notes, booking_ref = p
+                # Eine Zuordnung, die mit Skonto geschlossen hat: unter dem Geld, das geflossen ist, der Betrag, der als Skonto ausgebucht ist
+                skonto_note = f'<div class="hint">+ Skonto {fmt_eur(skonto_of[pid])}</div>' if pid in skonto_of else ''
                 s += f'''            <tr>
                 <td style="padding:6px 8px;">{_html.escape(str(pay_date or "–"))}</td>
                 <td style="padding:6px 8px;">#{booking_id} {_html.escape(str(booking_ref or ""))}</td>
-                <td style="padding:6px 8px; text-align:right;">{fmt_eur(amount)}</td>
+                <td style="padding:6px 8px; text-align:right;">{fmt_eur(amount)}{skonto_note}</td>
                 <td style="padding:6px 8px; text-align:center;">
                     <a href="javascript:void(0);" onclick="deletePayment({pid})" style="color:#c00;">✕ Entfernen</a>
                 </td>
@@ -2773,7 +2858,16 @@ function copyInvoiceAsNew(invId) {{
                 <td style="padding:6px 8px; text-align:right;">{fmt_eur(total_paid)}</td>
                 <td></td>
             </tr>
-            <tr style="font-weight:bold;">
+'''
+            total_skonto = sum(skonto_of.values())
+            if total_skonto > 0:
+                s += f'''            <tr style="font-weight:bold;">
+                <td colspan="2" style="padding:6px 8px;">Skonto</td>
+                <td style="padding:6px 8px; text-align:right;">{fmt_eur(total_skonto)}</td>
+                <td></td>
+            </tr>
+'''
+            s += f'''            <tr style="font-weight:bold;">
                 <td colspan="2" style="padding:6px 8px;">Noch offen</td>
                 <td style="padding:6px 8px; text-align:right; color:{"#c00" if (amount_due or 0) > 0.01 else "#2a2"};">{fmt_eur(amount_due or 0)}</td>
                 <td></td>
@@ -2810,6 +2904,14 @@ function copyInvoiceAsNew(invId) {{
             s += (f'        <p><a href="/transactions?from_invoice={invoice_id}" '
                   'class="coloredButton btn-sm bg-green" onclick="return bookPayment(this)">'
                   '💶 Zahlung verbuchen</a></p>\n')
+            # Skonto (2.9.0): was die Rechnung vorsieht (mit der Frist), oder der feste Satz, warum sich keines ausbuchen lässt. Nur mit Skonto-Bedingungen steht hier etwas;
+            # die Häkchen der Kandidaten gibt es nur, wo die Rechnung ein Skonto zulässt (``skonto_bookable``). Die Seite hängt nicht daran.
+            try:
+                skonto_html, skonto_bookable = _skonto_info_html(db.skonto_offer(invoice_id), existing_invoice[2], open_due, today_iso)
+            except Exception:
+                traceback.print_exc()               # der volle Fehler nur ins Server-Log
+                skonto_html, skonto_bookable = '', False
+            s += skonto_html
             linked_booking_ids = {p[2] for p in existing_payments}
             candidates = [c for c in
                           db.get_unallocated_bank_bookings(existing_invoice[13])
@@ -2844,16 +2946,25 @@ function copyInvoiceAsNew(invId) {{
                     default_alloc = min(open_due, b_free)
                     match_mark = ' ✓' if b_free == open_due else ''
                     reason_html = f'<div class="hint">{_html.escape(reasons[b_id])}</div>' if b_id in reasons else ''
+                    # Das Häkchen „Rest … als Skonto ausbuchen“ (versteckt, nie angehakt): das Skript zeigt es, wenn der Rest nach dem eingegebenen Betrag ins Skonto passt
+                    skonto_row = oninput = ''
+                    if skonto_bookable:
+                        skonto_row = skonto_check_html(f'paySkontoRow_{int(b_id)}', f'paySkonto_{int(b_id)}', f'paySkontoRest_{int(b_id)}',
+                                                       data=f' data-free="{format_plain(round_minor(to_minor(b_free), 2))}"')
+                        oninput = f' oninput="skoInvoiceRow({int(b_id)})"'
                     s += f'''            <tr>
                 <td style="padding:6px 8px;">{_html.escape(str(b_date or "–"))}</td>
                 <td style="padding:6px 8px;">{_html.escape(str(b_recipient or ""))}{reason_html}</td>
                 <td style="padding:6px 8px; text-align:right;">{fmt_eur(b_amount)}</td>
                 <td style="padding:6px 8px; text-align:right;">{fmt_eur(b_free)}{match_mark}</td>
-                <td style="padding:6px 8px; text-align:right;"><input type="number" step="0.01" class="noButtons" id="payAmount_{b_id}" value="{default_alloc:.2f}" style="width:90px; text-align:right;"></td>
+                <td style="padding:6px 8px; text-align:right;"><input type="number" step="0.01" class="noButtons" id="payAmount_{b_id}" value="{default_alloc:.2f}" style="width:90px; text-align:right;"{oninput}>{skonto_row}</td>
                 <td style="padding:6px 8px;"><button onclick="linkPayment({b_id}, this)" class="coloredButton btn-sm bg-blue">Verknüpfen</button></td>
             </tr>
 '''
                 s += '        </table>\n'
+                if skonto_bookable:
+                    s += ('        <script>var SKO_ROWS = ' + script_json([int(c[0]) for c in candidates]) + ';\n'
+                          + SKONTO_JS + SKONTO_INVOICE_JS + 'skoInvoiceInit();\n        </script>\n')
 
         s += f'''    </div>
     <script>
@@ -2886,6 +2997,8 @@ function copyInvoiceAsNew(invId) {{
             const payload = {{invoice_id: {invoice_id}, transaction_id: bookingId,
                              amount_paid: amount}};
             if (coa) payload.revenue_coa_id = parseInt(coa, 10);
+            const skontoBox = document.getElementById('paySkonto_' + bookingId);
+            if (skontoBox && skontoBox.checked) payload.skonto = true;   // nur mit dem Haken, nie von sich aus
             button.disabled = true;   // ein Doppelklick ordnet nicht doppelt zu
             fetch('/invoice/link-payment', {{
                 method: 'POST',

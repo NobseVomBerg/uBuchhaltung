@@ -32,6 +32,10 @@ Regeln, die den Aufbau tragen:
   steuerfrei mit erfundenem Grund und dem Erlöskonto 4100, 5,5 % mit dem Erlöskonto 4180 – zu 5,5 % gibt es keine Rechnung). ``demo_seed.DemoScenario`` schreibt
   sie vor den Rechnungen; die steuerfreie Position nennt ihren Eintrag (``tax_entry``) und schickt seine ID wie die Maske (``taxRateId``). Profil ``test`` und
   Szenario bleiben auch hier ohne sie – ihre Ausgabe ist dieselbe wie vorher.
+* **Ein drittes Beispiel: eine Rechnung, die der Kunde mit Skonto bezahlt** (seit 2.9.0, 19 %, Skonto 2 % in 7 Tagen), ebenfalls **nur im Profil ``full``**
+  (``profiles.full.skonto_example``, ``_skonto_invoice``): Die Zahlung kommt innerhalb der Skontofrist und ist die Rechnung minus dem Skonto, das sie vorsieht; ``demo_seed``
+  ordnet sie wie der Klick „Mit Skonto zuordnen“ zu (``link_booking_to_invoice_capped(…, skonto=True)``, der Schlüssel ``skonto`` der Zahlung). Profil ``test`` und Szenario
+  bleiben ohne sie – ihre gepinnten Werte (EÜR, Summen- und Saldenliste, Liquidität, DATEV) ändern sich nicht.
 """
 import datetime
 import functools
@@ -131,6 +135,8 @@ class _Ctx:
         self.mixed_example = self.t["profiles"][profile].get("mixed_example")
         # die Einträge der Stammdaten und die eine Beispielrechnung mit steuerfreier Position – ebenso nur ``full``
         self.tax_entry_example = self.t["profiles"][profile].get("tax_entry_example")
+        # die eine Beispielrechnung, die mit Skonto bezahlt wird – ebenso nur ``full``
+        self.skonto_example = self.t["profiles"][profile].get("skonto_example")
         # jüngster erlaubter Tag einer Rechnung: Der Erzeuger legt in den letzten Tagen keine an
         self.recent_limit = today - datetime.timedelta(days=self.t["recent_days"])
 
@@ -359,6 +365,23 @@ def _tax_entry_invoice(ctx):
                     _example_payments(ctx, day, example), tax_mode="mixed")
 
 
+def _skonto_invoice(ctx):
+    """Die eine Beispielrechnung, die der Kunde mit Skonto bezahlt (19 %, Skonto-Bedingungen wie bei den Pauschalrechnungen: 2 % in 7 Tagen) – nur das Profil ``full`` hat
+    sie (``profiles.full.skonto_example``), das Profil ``test`` und das Szenario nie. Der Tag: ``_example_day``. Die EINE Zahlung (``pay_after_days`` nach dem Rechnungstag,
+    innerhalb der Skontofrist) schließt die Rechnung und trägt ``skonto``: ``demo_seed`` zahlt Brutto minus das Skonto der Rechnung und ordnet sie mit Skonto zu. Läge sie nach dem
+    Stichtag, entfällt sie wie bei jeder Rechnung des Erzeugers (dann bleibt die Rechnung offen). ``None``, wenn das Profil keine Beispielrechnung hat oder kein Tag passt."""
+    example = ctx.skonto_example
+    if example is None:
+        return None
+    day = _example_day(ctx, example)
+    if day is None:
+        return None
+    items = [_item(item["description"], item["quantity"], item["unit"], item["price"], item["tax_rate"]) for item in example["items"]]
+    paid = _workday(day + datetime.timedelta(days=example["pay_after_days"]), ctx.today)
+    payments = [] if paid is None else [{"after_days": (paid - day).days, "percent": 100, "closing": True, "skonto": True}]
+    return _invoice(ctx, f"{day.year}-skonto", day, example["customer_number"], example["due_days"], items, False, payments, skonto=True)
+
+
 def _tax_entries(ctx):
     """Die Einträge der Steuersätze, die das Profil ``full`` in den Stammdaten anlegt (``profiles.full.tax_entry_example.entries``): ``[{key, label, kind, bp,
     reason, revenue_account}]``, ``bp`` der Satz in Hundertstel Prozent, ``revenue_account`` die Nummer eines Erlöskontos des Standard-Kontenrahmens. Leer ohne
@@ -387,7 +410,7 @@ def _invoices(ctx):
             spec["payments"] = []          # die eine überfällige Rechnung des Vorjahres
     for year in range(ctx.first_year, ctx.today.year + 1):
         specs.extend(_chain_invoices(ctx, year))
-    for example in (_mixed_invoice(ctx), _tax_entry_invoice(ctx)):
+    for example in (_mixed_invoice(ctx), _tax_entry_invoice(ctx), _skonto_invoice(ctx)):
         if example is not None:
             specs.append(example)
 

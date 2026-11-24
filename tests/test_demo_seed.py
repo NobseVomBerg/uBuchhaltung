@@ -164,3 +164,11 @@ def test_demo_has_a_credit_note_pair_with_a_counter_booking(tmp_path):
         (original_number, storno_number)).fetchone()[0]
     assert debtors == 0
     assert db.find_payment_inconsistencies() == []
+
+
+def test_the_scenario_without_the_generator_has_no_payment_with_a_discount(tmp_path):
+    """Das von Hand gepflegte Szenario bleibt, wie es war: keine Zuordnung mit Skonto (das Beispiel dazu hat nur das Profil ``full`` des Erzeugers, ``tests/test_demo_history.py``)."""
+    db = _build(tmp_path, datetime.date(2026, 11, 3))
+    con = sqlite3.connect(db.db_name)
+    assert con.execute("SELECT COUNT(*) FROM InvoicePayments WHERE SkontoAmount IS NOT NULL").fetchone() == (0,)
+    assert db.find_payment_inconsistencies() == []

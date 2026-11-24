@@ -159,7 +159,9 @@ _ADDED_BY_2004 = {'Contacts': 1}
 #: Schema 2008 (2.8.0): ``InvoiceItems`` bekommt die drei Spalten der Momentaufnahme eines Steuersatzes am Ende (NULL) –
 #: ``test_tax_rates_schema_2008.py``; die neue Tabelle ``TaxRates`` steht in keinem Stand davor.
 _ADDED_BY_2008 = {'InvoiceItems': 3}
-_ADDED_LATER = {**_ADDED_BY_2003, **_ADDED_BY_2004, **_ADDED_BY_2008}
+#: Schema 2009 (2.9.0): ``InvoicePayments`` bekommt ``SkontoAmount`` am Ende (NULL) – ``test_skonto_schema_2009.py``.
+_ADDED_BY_2009 = {'InvoicePayments': 1}
+_ADDED_LATER = {**_ADDED_BY_2003, **_ADDED_BY_2004, **_ADDED_BY_2008, **_ADDED_BY_2009}
 #: Schema 2005 (2.5.0): ``Accounts`` bekommt ``BusinessOnly`` am Ende – beim Bestand überall 1 (= reines Geschäftskonto),
 #: nicht NULL – ``test_business_only_schema_2005.py``. Hier die Werte, die die Spalten tragen.
 _ADDED_BY_2005 = {'Accounts': (1,)}

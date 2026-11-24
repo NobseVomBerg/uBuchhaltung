@@ -9,7 +9,10 @@ geschrieben und nichts zugeordnet – zugeordnet wird allein auf Klick, über ``
 
 * **Offene Rechnungen** (``_open_invoices``): eine Rechnung (kein Angebot, keine Stornorechnung) in einem zahlbaren Status
   (``PAYABLE_STATUSES``) mit offenem Betrag größer 0 – der Betrag, den auch die Maske zeigt: ``AmountDue``, sonst der Brutto. Höchstens
-  ``MAX_INVOICES``, die jüngsten zuerst.
+  ``MAX_INVOICES``, die jüngsten zuerst. **Skonto (seit 2.9.0):** Dieselbe Abfrage liest die Angaben, die darüber entscheiden, ob die Rechnung ein Skonto zulässt (Brutto, Skonto-Bedingungen,
+  Satz im Kopf, das Kennzeichen „Steuersatz je Position“, ob eine Position die Momentaufnahme der Stammdaten trägt – ein ``EXISTS`` je Rechnung über den Index auf ``InvoiceItems``); gerechnet wird mit
+  den Regeln des Zuordnens (``invoice_payments.skonto_terms``, ``skonto_open_minor``), nie mit eigenen: ``skonto_open_minor`` ist der offene Betrag abzüglich des Skontos (das Signal SKONTO der
+  Vorschläge), ``skonto_limit_minor`` das Skonto selbst (für die Häkchen der Seiten); ohne Skonto beides ``None``. Eine Rechnung mit unbrauchbaren Werten ist kein Fehler, sie hat kein Skonto.
 * **Bewegungen mit freiem Rest.** Für EINE Bankbewegung (die Maske, ``suggest_invoices_for_booking``) gilt der freie Rest nach derselben Formel
   wie überall (``_free_minor_sql``: Betrag − MAX(Σ Zuordnungen, Σ bankwirksame Sätze darunter), wie ``get_unallocated_bank_bookings``). Für die
   Listen (die Übersicht der Seite *Buchungen*, die Rechnungsseite) wäre diese Formel für JEDEN Zahlungseingang des Bestands zu lesen: Gemessen an
@@ -24,7 +27,7 @@ Eine Zeile mit einem Betrag, der keine ganze Zahl ist (Text, Kommazahl, NULL), i
 ist, wirft nie (die reinen Funktionen lesen sie als „kein Signal“). Ein Fehler der Datenbank selbst geht weiter."""
 from collections import namedtuple
 
-from .invoice_payments import PAYABLE_STATUSES, STORNO_KIND
+from .invoice_payments import PAYABLE_STATUSES, SKONTO_NO_TERMS, STORNO_KIND, skonto_open_minor, skonto_terms
 from .payment_matching import pair_up, rank_invoices, rank_movements
 
 MAX_INVOICES = 500       # so viele offene Rechnungen liest eine Abfrage höchstens (die jüngsten)
@@ -33,10 +36,16 @@ MAX_MOVEMENTS = 500      # … und so viele Bewegungen (die jüngsten)
 # Das Ergebnis der Übersicht: die Vorschläge (höchstens ``limit``) und wie viele weitere es gäbe
 PaymentOverview = namedtuple('PaymentOverview', 'items more')
 
+# Was eine Rechnung an Skonto zulässt (``Database.skonto_offer``): der Fehlertext der Ablehnung (``invoice_payments.SKONTO_*``) und sonst die Grenze (Minor Units: das Skonto, das die Rechnung
+# vorsieht), dazu die Bedingungen, wie sie gelten (Tage, Prozent). Bei einer Ablehnung sind Grenze, Tage und Prozent ``None``; ``SKONTO_NO_TERMS`` heißt: Die Rechnung sieht kein Skonto vor
+SkontoOffer = namedtuple('SkontoOffer', 'error limit days percent')
+
 # Offene Rechnungen. Platzhalter: der Wert von ``Invoices.InvoiceKind`` einer Stornorechnung, dann die zahlbaren Status. Ein Altbestand ohne
 # ``DocumentType`` zählt als Rechnung (wie ``fetch_invoices``); ``COALESCE(AmountDue, SumGross, 0)`` ist der offene Betrag der Maske.
 _OPEN_INVOICES = f'''
-    SELECT i.ID, i.InvoiceNumber, i.InvoiceDate, COALESCE(i.AmountDue, i.SumGross, 0), i.CustomerId, i.BuyerCompany, i.BuyerName
+    SELECT i.ID, i.InvoiceNumber, i.InvoiceDate, COALESCE(i.AmountDue, i.SumGross, 0), i.CustomerId, i.BuyerCompany, i.BuyerName,
+           i.SumGross, i.SkontoDays, i.SkontoPercent, i.TaxRate, i.MixedTaxRates,
+           EXISTS (SELECT 1 FROM InvoiceItems it WHERE it.InvoiceId = i.ID AND (it.TaxRateBp IS NOT NULL OR it.RevenueCoaId IS NOT NULL))
     FROM Invoices i
     WHERE (i.DocumentType = 'invoice' OR i.DocumentType IS NULL)
       AND i.InvoiceKind IS NOT ?
@@ -63,13 +72,37 @@ def _name(value) -> str:
     return '' if value is None else str(value).strip()
 
 
+def _skonto_offer(gross, days, percent, rate, mixed, carries_entry) -> SkontoOffer:
+    """Was die Rechnung an Skonto zulässt – die Regeln des Zuordnens (``invoice_payments.skonto_terms``), mit den Werten, wie die Tabelle sie trägt. Ein Wert, der sich nicht lesen
+    lässt (Text statt Zahl, per SQL-Konsole geschrieben), ist nie ein Fehler: Die Rechnung sieht dann kein Skonto vor (``SKONTO_NO_TERMS``). ``gross``: ``Invoices.SumGross`` – nur eine ganze
+    Zahl zählt, sonst 0 (dann ist auch das Skonto 0, und die Grenze fehlt)."""
+    from export.einvoice_model import parse_skonto          # ``export`` importiert diese Schicht: erst zur Laufzeit
+    try:
+        error, terms = skonto_terms(gross if type(gross) is int else 0, days, percent, rate, mixed, bool(carries_entry))
+        if error is not None:
+            return SkontoOffer(error, None, None, None)
+        parsed = parse_skonto(days, percent)
+    except (ArithmeticError, TypeError, ValueError):
+        return SkontoOffer(SKONTO_NO_TERMS, None, None, None)
+    return SkontoOffer(None, terms[1], parsed[0], parsed[1])
+
+
 def _invoice_dict(row) -> dict:
     """Eine Zeile von ``_OPEN_INVOICES`` als Eingabe der reinen Funktionen. ``customer_name``: die Firma des Käufers, sonst sein Name – zum
-    Vergleichen der Namenswörter (nicht beides: Der Vorname eines Ansprechpartners ist kein Beweis für den Kunden); ``label``: dasselbe für die Seiten."""
-    ident, number, date, open_minor, customer_id, company, name = row
+    Vergleichen der Namenswörter (nicht beides: Der Vorname eines Ansprechpartners ist kein Beweis für den Kunden); ``label``: dasselbe für die Seiten.
+    ``skonto_open_minor``: der offene Betrag abzüglich des Skontos (``invoice_payments.skonto_open_minor``), ``skonto_limit_minor``: das Skonto, das die Rechnung vorsieht – beides ``None``,
+    wo sie keines zulässt (oder es 0 ist: ein Skonto, das es nicht gibt, bucht nichts)."""
+    ident, number, date, open_minor, customer_id, company, name, gross, days, percent, rate, mixed, entry = row
     company, name = _name(company), _name(name)
+    gross = gross if type(gross) is int else 0
+    offer = _skonto_offer(gross, days, percent, rate, mixed, entry)
+    try:
+        skonto_open = skonto_open_minor(open_minor, gross, days, percent, rate, mixed, bool(entry))
+    except (ArithmeticError, TypeError, ValueError):
+        skonto_open = None
     return {'id': ident, 'number': number, 'date': date, 'open_minor': open_minor, 'customer_id': customer_id,
-            'customer_name': company or name, 'label': company or name}
+            'customer_name': company or name, 'label': company or name,
+            'skonto_open_minor': skonto_open, 'skonto_limit_minor': offer.limit if offer.limit else None}
 
 
 def _movement_dicts(rows) -> list:
@@ -178,3 +211,27 @@ class PaymentSuggestionsMixin:
             conn.close()
         by_movement = {movement['id']: movement for movement in movements}
         return [(pair, by_movement[pair.movement_id]) for pair in rank_movements(invoices[0], movements, linked)]
+
+    def skonto_offer(self, invoice_id):
+        """Was diese Rechnung an Skonto zulässt – für ihre Seite (die Zeile „Skonto: …“ und die Häkchen). Rein lesend, mit denselben Regeln wie das Zuordnen
+        (``invoice_payments.skonto_terms``: Steuersatz je Position, Stammdaten, ein Kopfsatz ohne Skonto-Konto, keine oder unlesbare Bedingungen). Returns
+        :class:`SkontoOffer` – ``(Fehlertext, None, None, None)`` oder ``(None, Grenze, Tage, Prozent)``; eine unbekannte Rechnung sieht kein Skonto vor. Die Frist spielt keine Rolle."""
+        conn = self._get_connection()
+        try:
+            row = conn.execute('SELECT SumGross, SkontoDays, SkontoPercent, TaxRate, MixedTaxRates FROM Invoices WHERE ID = ?', (invoice_id,)).fetchone()
+            if row is None:
+                return SkontoOffer(SKONTO_NO_TERMS, None, None, None)
+            carries_entry = self._carries_snapshot(conn, invoice_id) or self._entry_accounts(conn, invoice_id)
+        finally:
+            conn.close()
+        return _skonto_offer(*row, carries_entry)
+
+    def skonto_limits(self):
+        """Das Skonto, das jede offene Rechnung vorsieht – für die Auswahl „Rechnung“ der Buchungsmaske: ``{ID der Rechnung: Grenze in Minor Units}``, nur für Rechnungen, die ein Skonto
+        zulassen. Die Rechnungen sind die der Vorschläge (``_open_invoices``: höchstens ``MAX_INVOICES``, die jüngsten; Euro). Rein lesend."""
+        conn = self._get_connection()
+        try:
+            invoices = self._open_invoices(conn)
+        finally:
+            conn.close()
+        return {invoice['id']: invoice['skonto_limit_minor'] for invoice in invoices if invoice['skonto_limit_minor']}

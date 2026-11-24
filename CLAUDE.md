@@ -1291,6 +1291,42 @@ kein Subagent darauf:
   Demo-Profil `test` hat genau zwei Zahlungen auf 4184 (Januar 2026); die Schnappschüsse `demo_2026`, `demo_2026_full` (EÜR-Kasten) und
   `demo_db_2026` (DATEV) sind dafür neu genommen – nur Nummer und Name einer Zeile bzw. das Gegenkonto zweier Sätze weichen ab (nachgewiesen
   Zeile für Zeile). `tests/test_small_business_revenue_4184.py`
+- **Skonto bei der Zahlungszuordnung (seit 2.9.0, Schema 2009, `db/invoice_payments.py`):** Zahlt der Kunde eine Rechnung mit Skonto-Bedingungen
+  bis auf höchstens den vorgesehenen Abzug, bucht die Zuordnung den Rest auf Wunsch als Skonto aus (`assign_invoice_payment(…, skonto=True)`) –
+  **nur auf Klick, nie vorausgewählt**. **Speicherung:** `InvoicePayments.SkontoAmount` (Minor Units, NULL = keines; streng gelesen: nur eine
+  positive ganze Zahl zählt). `Amount` bleibt das gezahlte Geld – freier Rest der Bewegung, Guthaben eines Storno-Paares und Erstattung rechnen
+  unverändert damit; was an der Rechnung erledigt ist, ist `Amount` plus Skonto (`settled_sql`, die EINE Stelle: `_recalc_invoice`, `_assign_in_tx`,
+  Prüfliste, Schritt D des Neuaufbaus). **Sätze** (markiert, unter der Bankbewegung, in dieser Reihenfolge; Beispiel 119,00 € / gezahlt 116,62 €):
+  „Bank an Debitoren“ 119,00 (nur mit Forderung), „Wartekonto an Erlöskonto“ bzw. ohne Forderung „Erlöskonto an Bank“ 119,00 mit dem Rest der
+  Rechnungssteuer, zuletzt **„Skonto-Konto an Bank“** (`purpose_first`) −2,38 mit −0,38 Steuer. Die Bankseite ergibt das Geld, und alle Leser stimmen
+  ohne eigene Regel (EÜR 100,00 / −2,00 / 18,62, Debitoren und Wartekonto 0, Summen- und Saldenliste, Liquidität, Dashboard, Split-Summe, Stufe 7) –
+  die Form ist an vier Kandidaten gemessen; ein Satz „Skonto an Debitoren“ liest die EÜR ohne Steuer und die Summen- und Saldenliste unzerlegt. Im
+  DATEV-Stapel stehen dafür zwei Bankzeilen (119,00 und 2,38, zusammen der Betrag des Auszugs). **Konten** (`SKONTO_ACCOUNTS`): 19 % → 4736, 7 % →
+  4731, 0 % und § 19 → 4730 ohne Steuer (Standardkonten; fehlt eines, legt die erste Zuordnung es vor der Transaktion an – eine abgelehnte legt
+  nichts an); ein Skonto-Konto lehrt nie ein Erlöskonto, der Skonto-Satz einer Zuordnung mit Skonto zählt nicht in `_allocations_tax`, und es steht nicht in der Wahl des Erlöskontos einer Zahlung
+  (`payment_revenue_choices`) und eines Stammdaten-Steuersatzes. **Ein Skonto-Satz wird nie allein am Konto erkannt – maßgeblich ist `SkontoAmount` der Zuordnung:**
+  Ein Skonto-Konto kann aus einem Stammdaten-Steuersatz oder einer früheren Wahl des Nutzers auch Erlöskonto einer Zahlung sein; sein Erlössatz zählt deshalb in `_allocations_tax`,
+  löst weder `skonto_mismatch` noch `SKONTO_STORNO_EDITED` aus und ist kein Skonto für `_skonto_booked` (ohne Wert in der Spalte erkennen Stornieren und `_skonto_booked` ein
+  Skonto nur an einem Satz mit negativem Betrag; `tests/test_skonto_revenue_account.py`). **Regeln** (`skonto_terms`, `_skonto_state` – EINE
+  Stelle für Vorprüfung und Transaktion): Skonto = der Rest nach der Zahlung (zahlt der Kunde 117,00, sind es 2,00), in ganzen Cent, höchstens
+  `skonto_amount(Brutto, Prozent)`; die Frist wird gezeigt, nie geprüft; je Rechnung höchstens EIN Skonto; Skonto-Steuer = Skonto × Satz / (100 + Satz),
+  EINMAL auf den Cent gerundet (`skonto_tax`). **Stufe 1:** nur Rechnungen mit einem Satz (19 %, 7 %, 0 %, § 19) – ein Beleg mit Steuersatz je Position,
+  mit einem Satz aus den Stammdaten oder mit einem anderen Kopfsatz lehnt mit festem Satz ab (`SKONTO_*`). **Entfernen:** Die Zahlung mit Skonto geht
+  auf jedem Weg samt Skonto-Sätzen; solange sie an der Rechnung hängt, lässt sich keine ANDERE Zahlung dieser Rechnung entfernen
+  (`SKONTO_REMOVAL_REFUSED`, in der einen Prüfung aller Entfernen-Wege, `_refund_removal_blocker`) – das Skonto stünde sonst an einer Zahlung, die die
+  Rechnung nicht mehr schließt. **Stornieren nimmt das Skonto zurück** (`_reverse_skonto_in`, in der Transaktion von `cancel_invoice`): drei markierte
+  Sätze unter der Bewegung der Zahlung (ohne Forderung zwei), Beleg-Nr. der stornierten Rechnung, Datum = das spätere von Stornodatum und Datum der
+  Bankbewegung, danach `SkontoAmount` NULL – das Guthaben ist das gezahlte Geld, die Erstattung läuft unverändert. Sind die Skonto-Sätze im Editor
+  geändert, lehnt das Stornieren ab (`SKONTO_STORNO_EDITED`: erst die Zahlung entfernen und neu zuordnen). Bekannte Folge: Die Summen- und Saldenliste
+  nennt `child_other_period` für die Monate zwischen Zahlung und Storno. **Umzug und Neuaufbau:** Eine Zahlung mit Skonto zieht nicht auf die
+  Ersatzrechnung um (`MOVE_SKIP_REASONS['skonto']`), und „Zuordnung neu aufbauen“ rechnet für eine solche Rechnung nur den offenen Betrag (Grund
+  `skonto`) – die Bedingungen beider Wege sind nicht gelockert. **Prüfliste:** `skonto_mismatch` (die Skonto-Sätze passen nicht zu `SkontoAmount`,
+  oder die Spalte trägt einen ungültigen Wert). **Vorschläge:** Signal „Betrag nach Skonto stimmt“ (freier Betrag = offen − Skonto, 50 Punkte wie der
+  Betrag; braucht wie er ein Namenswort oder die Nummer). **Oberfläche:** Rechnungsseite (Zeile „Skonto: 2 % = 2,38 € bis …“, je Kandidat das Häkchen
+  „Rest … als Skonto ausbuchen“, nur sichtbar, wenn der Rest passt), Buchungsmaske (dasselbe Häkchen am Feld Rechnung, Feld `skonto=1`, Vorprüfung
+  vor dem Schreiben), Kasten der Zahlungseingänge (Knopf „Mit Skonto zuordnen“); `POST /invoice/link-payment` liest `skonto` streng als
+  Wahrheitswert, an einer Stornorechnung 400 (`SKONTO_REFUND`). Das Demo-Profil `full` hat genau ein Beispiel (`skonto_example`), `test` keines.
+  Keine Steuerberatung in den Texten. `tests/test_skonto_*.py`
 - **Zahlungsvorschläge (seit 2.8.1, `db/payment_matching.py` rein, `db/payment_suggestions.py` nur lesend):** Zu einem Zahlungseingang wird die
   passende offene Rechnung **vorgeschlagen – zugeordnet wird allein auf Klick** über die bestehenden Wege (`POST /invoice/link-payment`, Feld
   `invoice_id` der Maske → `assign_invoice_payment`), nichts ist vorausgewählt; nicht einführen, dass ein Speichern still zuordnet. **Vorschlag** =
@@ -1319,7 +1355,7 @@ kein Subagent darauf:
   (Vorschläge zuerst, Begründung unter dem Auftraggeber, der Haken bei gleichem Betrag bleibt). Scheitert eine der Abfragen, bleibt die Seite stehen
   (leer, Fehler im Server-Log). **Fehlerweg der Maske:** Scheitert die Zuordnung nach dem Speichern, bleibt der Nutzer bei der Buchung
   (303 auf `/transactions/edit?id=<ID>&err=…`, `PAYMENT_NOT_ASSIGNED`: „Die Buchung ist gespeichert, die Zahlung wurde aber nicht zugeordnet: …“),
-  nicht mehr auf der Rechnung. Bekannte Grenzen: Skonto zählt nicht; ein Umbruch der Bank mitten in den Ziffern der Nummer ist kein Treffer; eine
+  nicht mehr auf der Rechnung. Bekannte Grenzen: Skonto zählt nur als voller Rest bis zum vorgesehenen Abzug (seit 2.9.0, *Skonto bei der Zahlungszuordnung*), andere Teilbeträge nicht; ein Umbruch der Bank mitten in den Ziffern der Nummer ist kein Treffer; eine
   Rechnung, die eine Erlöskonto-Wahl braucht, lässt sich im Kasten nicht zuordnen (die Wahl gibt es auf Rechnungsseite und Maske); vorgeschlagen
   wird auch eine Bewegung, deren Bankkonto kein Konto im Kontenrahmen hat (der Klick meldet es). **Werte im Skript des Buchungssatz-Editors**
   (`SPLIT_BANK_TEXT`, `SPLIT_BANK_DOCNR`) stehen als JSON (`script_json`): Ein Zeilenumbruch im Verwendungszweck – der Import eines PDF-Auszugs
@@ -1995,7 +2031,7 @@ kein Subagent darauf:
   Rechnung geprüft, nur bei positivem Brutto und gültigem Rechnungsdatum, die Frist darf nicht nach der Fälligkeit enden) steht im PDF als Absatz nach dem Zahlungshinweis (Frist ab
   Rechnungsdatum, Abzug vom gedruckten Brutto in EINEM Schritt halb auf den Cent gerundet – `skonto_amount`) und in der E-Rechnung als
   erste Zeile der Zahlungsbedingungen in der Schreibweise der XRechnung (`#SKONTO#TAGE=7#PROZENT=2.00#` + Zeilenumbruch, dann der
-  Freitext); die Stornorechnung trägt nie Skonto; eine Skonto-BUCHUNG gibt es nicht (`docs/aufgaben.md`). **Lückenprüfung**
+  Freitext); die Stornorechnung trägt nie Skonto; gebucht wird Skonto bei der Zahlungszuordnung (seit 2.9.0, *Skonto bei der Zahlungszuordnung*). **Lückenprüfung**
   (`einvoice_gaps`): Fehlen Angaben, die die XRechnung verlangt (Leitweg-ID/Käuferreferenz, IBAN, PLZ/Ort, Kontaktname, Telefon und
   E-Mail der eigenen Firma, E-Mail des Kunden, ein Zahlungshinweis ohne „#“ – das Zeichen gehört in der XRechnung der Skonto-Angabe …), wird die UBL-Datei **nicht geschrieben** (ein abgelegtes XML eines Entwurfs wird
   entfernt – am gespeicherten Pfad und am Namensschema, nur Dateien mit der Endung `.xml`, nie das PDF), das PDF mit CII entsteht immer; das Ergebnis trägt den Klartext („XRechnung (XML) nicht erstellt – es fehlt: …“), die
@@ -2384,7 +2420,7 @@ kein Subagent darauf:
   Versionsstelle und `PRAGMA user_version` ziehen automatisch mit; PATCH dabei auf 0.
   Der neue Migrationsschritt prüft gegen die neue Zahl (`if from_version < 2001:`)
 - In der Datenbank steht `SCHEMA_VERSION = MAJOR × 1000 + SCHEMA_STEP` (2.0.x → 2000,
-  2.1.x → 2001, 2.2.x → 2002, 2.3.x → 2003, 2.4.x → 2004, 2.5.x → 2005, 2.6.x → 2006, 2.7.x → 2007, 2.8.x → 2008); Datenbanken aus 1.x tragen 0 bis 6. Eine Datenbank mit höherer Zahl
+  2.1.x → 2001, 2.2.x → 2002, 2.3.x → 2003, 2.4.x → 2004, 2.5.x → 2005, 2.6.x → 2006, 2.7.x → 2007, 2.8.x → 2008, 2.9.x → 2009); Datenbanken aus 1.x tragen 0 bis 6. Eine Datenbank mit höherer Zahl
   als das Programm wird nicht geöffnet (`db.SchemaTooNewError`) – nie zurückstempeln
 - Sonstige Änderungen ohne DB-Bezug: nur `PATCH` +1; große Umbrüche: `MAJOR` +1,
   `SCHEMA_STEP` und `PATCH` auf 0
@@ -2439,6 +2475,9 @@ kein Subagent darauf:
   **Der Bestand behält überall NULL** (keine Momentaufnahme: Der Satz steht allein in `TaxRate`), nichts wird abgeleitet; frische und migrierte Datenbank sind gleich (auch ohne
   Fremdschlüssel an `InvoiceItems.RevenueCoaId`). Die Vorbelegung (19 % und 7 %) entsteht genau einmal beim Anlegen der Tabelle – oder beim nächsten Versuch, wenn der erste nach dem
   Anlegen abbrach und die Datenbank noch auf dem alten Stand ist. `tests/test_tax_rates_schema_2008.py`, `tests/entry_form_world.to_state_2007`
+- Migration auf 2.9.0 (`SKONTO_SCHEMA`, Schema 2009): hängt `InvoicePayments.SkontoAmount` (ganze Zahl in Minor Units, NULL = kein Skonto) als letzte
+  Spalte an – nach der Sicherung und in der Transaktion der Umstellung. **Der Bestand behält überall NULL**, nichts wird umgedeutet; frische und
+  migrierte Datenbank haben dieselbe Spaltenreihenfolge. `tests/test_skonto_schema_2009.py`, `tests/entry_form_world.to_state_2008`
 - Anzeige auf der About-Seite
 
 ---
@@ -2446,7 +2485,7 @@ kein Subagent darauf:
 ## Governance
 
 - **Owner:** NobseVomBerg
-- **Letzte Aktualisierung:** 2026-11-23
+- **Letzte Aktualisierung:** 2026-11-24
 - **Modell-Versionen:** Fable 5.2, Opus 5.5, Sonnet 5.5, Haiku 5.5 (Stand November 2026);
   `settings.json` und Agents nutzen Aliase (`fable`, `opus` …), die der neuesten Version folgen
 - **Bei Modell-Updates:** Modell-Routing oben, `.claude/settings.json` (`modelSettings`

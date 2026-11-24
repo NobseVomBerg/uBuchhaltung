@@ -28,6 +28,16 @@
         ],
         "first_percent": 40,
         "second_after_days": 21
+      },
+      "skonto_example": {
+        "days_ago": 52,
+        "customer_number": "K008",
+        "due_days": 14,
+        "items": [
+          {"description": "Beratung Kassensystem", "quantity": 2, "unit": "HUR", "price": 95.00, "tax_rate": 19},
+          {"description": "Einweisung der Mitarbeitenden", "quantity": 1, "unit": "C62", "price": 120.00, "tax_rate": 19}
+        ],
+        "pay_after_days": 6
       }
     },
     "test": {"years_back": 1}

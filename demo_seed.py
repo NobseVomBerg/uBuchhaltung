@@ -18,7 +18,9 @@ Logik zeigen wie bei echten Daten:
   ``set_invoice_status``.
 * Zahlungen: Bankbewegung + ``link_booking_to_invoice_capped`` → Buchungssätze *Zahlung* und *Umbuchung* Wartekonto→
   Erlöskonto, Status *bezahlt*/*Teilzahlung*. Keine Zahlung vor dem Rechnungsdatum; Zahlungen in der Zukunft entfallen
-  (Rechnung bleibt offen bzw. überfällig).
+  (Rechnung bleibt offen bzw. überfällig). Eine Zahlung mit dem Schlüssel ``skonto`` (seit 2.9.0, nur das Beispiel des Profils ``full``) ist die
+  Rechnung minus dem Skonto, das sie vorsieht, und wird mit Skonto zugeordnet (``skonto=True``, wie der Klick „Mit Skonto zuordnen“): Der Rest ist das Skonto,
+  die Rechnung gilt als bezahlt.
 * Storno: Eine Rechnung mit ``cancel_after_days`` wird nach so vielen Tagen über ``Database.cancel_invoice``
   storniert (Stornorechnung mit eigener Nummer, Gegenbuchung der Forderung). Mit ``replacement`` folgt die niedrigere
   Ersatzrechnung (die Zahlung zieht beim Versenden um) und die Erstattung des Rests (``assign_storno_refund``).
@@ -434,10 +436,17 @@ class DemoScenario:
     def _on_pay(self, day, plan, payment):
         db = self.db
         invoice = db.get_invoice_by_id(plan.invoice_id)
+        skonto = bool(payment.get("skonto"))
         if plan.form:
             gross = money.to_minor(invoice[38])
             minor = gross - plan.paid if payment.get("closing") else \
                 money.round_minor(money.prorate(gross, payment["percent"], 100), 2)
+            if skonto:
+                # Der Kunde zieht das Skonto ab, das die Rechnung vorsieht (``Database.skonto_offer``: dieselben Regeln wie beim Zuordnen); lässt sie keines zu, ist es ein Fehler der Vorgaben
+                offer = db.skonto_offer(plan.invoice_id)
+                if offer.error is not None:
+                    raise RuntimeError(f"Skonto zu {plan.number}: {offer.error}")
+                minor -= offer.limit
             plan.paid += minor
             amount = money.from_minor(minor)
         else:
@@ -450,7 +459,7 @@ class DemoScenario:
             recipient_client=customer[3], contact_id=customer[0],
             text=f"{plan.number} {customer[3]}", booking_type='bank',
             log_description="Demo-Szenario Zahlungseingang")
-        ok, err = self._handlers.link_booking_to_invoice_capped(db, plan.invoice_id, bid)
+        ok, err = self._handlers.link_booking_to_invoice_capped(db, plan.invoice_id, bid, skonto=skonto)
         if not ok:
             raise RuntimeError(f"Zahlung zu {plan.number}: {err}")
 

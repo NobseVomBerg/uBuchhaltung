@@ -10,6 +10,8 @@
 * Hinzufügen und Ändern: der Satz wird streng als Text gelesen (``5,5`` und ``5.5``), jeder Verstoß gegen die Regeln gibt genau seinen Satz auf der Seite und speichert nichts;
   eine ungültige ID ist 400. Umschalten und Löschen sind POST-Aktionen (GET: 405); der letzte wählbare Eintrag bleibt, sonst geht das Löschen immer.
 * Der Fuß der Seite hat keinen Inline-Stil, und ein Konto, das ein Eintrag nennt, lässt sich im Kontenrahmen nicht löschen.
+* Die Auswahl „Erlöskonto“ führt die Skonto-Konten nicht (``Database.payment_revenue_choices``: eine Erlösschmälerung ist kein Erlöskonto, das ein Satz tragen sollte); ein Eintrag, der
+  eines trägt (er bleibt gültig und funktioniert weiter), zeigt es als gewählte Option, und das Speichern ändert es nicht.
 
 Alle Bezeichnungen, Gründe, Konten und Nummern sind erfundene Testwerte.
 """
@@ -23,6 +25,7 @@ from urllib.parse import quote
 import pytest
 
 from db import coa_id
+from db.invoice_payments import SKONTO_ACCOUNT_NUMBERS
 from server import handlers, pages_tax_rates
 from server.pages_tax_rates import ACCOUNTS_HINT, RATES_HINT, WAITING_NONE
 from tax_groups import (TAX_ENTRY_EXEMPT_RATE, TAX_ENTRY_INPUT_TAX_ACCOUNT, TAX_ENTRY_KIND, TAX_ENTRY_LABEL, TAX_ENTRY_LAST_ACTIVE, TAX_ENTRY_RATE,
@@ -256,7 +259,7 @@ def test_the_form_of_a_new_entry_offers_the_revenue_accounts_and_only_the_tax_ac
     text = get(server_port, LIST).text
     db = world.db
 
-    assert [value for value, _ in options(text, 'revenue_coa_id')] == [''] + [str(row[0]) for row in db.get_revenue_coas()]
+    assert [value for value, _ in options(text, 'revenue_coa_id')] == [''] + [str(row[0]) for row in db.payment_revenue_choices()]
     assert [value for value, _ in options(text, 'vat_coa_id')] == [''] + [str(row[0]) for row in db.get_tax_account_choices()['vat']]
     assert [value for value, _ in options(text, 'input_tax_coa_id')] == [''] + [str(row[0]) for row in db.get_tax_account_choices()['input']]
     assert str(world.test_vat) in [value for value, _ in options(text, 'vat_coa_id')] and str(world.test_input) in [value for value, _ in options(text, 'input_tax_coa_id')]
@@ -320,6 +323,33 @@ def test_a_stored_account_the_chart_no_longer_offers_stays_selected_so_that_savi
     assert selected == [str(world.expense)]
     response = submit(server_port, world, f'{LIST}/update', form(world, id=str(entry), revenue_coa_id=selected[0]))
     assert response.status == 303 and response.headers['Location'] == err_location(TAX_ENTRY_REVENUE_NOT_INCOME, f'{LIST}/edit?id={entry}')
+
+
+def test_the_revenue_choice_offers_no_discount_account_but_every_other_revenue_account(server_port, world):
+    """4730, 4731 und 4736 sind Erlösschmälerungen: Ein Satz, der eines als Erlöskonto trüge, buchte seinen Erlös dorthin (``tests/test_skonto_revenue_account.py``). Die Auswahl führt sie nicht."""
+    offered = [value for value, _ in options(get(server_port, LIST).text, 'revenue_coa_id')]
+    discount = {str(world.db.get_coa_id_by_account_number(number)) for number in SKONTO_ACCOUNT_NUMBERS}
+
+    assert None not in {world.db.get_coa_id_by_account_number(number) for number in SKONTO_ACCOUNT_NUMBERS}      # der Standard-Kontenrahmen führt alle drei
+    assert not discount & set(offered)
+    assert {str(world.revenue), str(world.test_revenue)} <= set(offered)
+    assert len(offered) == len(world.db.get_revenue_coas()) + 1 - len(discount)                                # die leere Option plus alle Erlöskonten ohne die drei
+
+
+def test_an_entry_that_carries_a_discount_account_keeps_it_selected_and_saves_unchanged(server_port, world):
+    """Ein vorhandener Eintrag mit 4736 bleibt gültig und funktioniert weiter: Das Formular zeigt das Konto als eigene, gewählte Option (nichts wird still umgestellt), und das Speichern ändert es nicht."""
+    discount = world.db.get_coa_id_by_account_number(4736)
+    entry = world.db.insert_tax_rate(label='Ermäßigt (erfunden)', bp=550, revenue_coa_id=discount)
+
+    text = get(server_port, f'{LIST}/edit?id={entry}').text
+
+    assert [value for value, chosen in options(text, 'revenue_coa_id') if chosen] == [str(discount)]
+    assert f'<option value="{discount}" selected>4736 Gewährte Skonti 19 % USt</option>' in text
+    assert [value for value, _ in options(text, 'revenue_coa_id')][:-1] == [''] + [str(row[0]) for row in world.db.payment_revenue_choices()]      # die Auswahl, dahinter das gespeicherte Konto
+    response = submit(server_port, world, f'{LIST}/update', form(world, id=str(entry), revenue_coa_id=str(discount), sort_order='5'))
+    assert (response.status, response.headers['Location']) == (303, LIST)
+    assert rows(world.db)[2][5] == discount and world.db.get_tax_rate(entry).valid
+    assert '<td>4736 Gewährte Skonti 19 % USt</td>' in html.unescape(get(server_port, LIST).text)           # die Liste nennt es weiter
 
 
 # ── Hinzufügen ────────────────────────────────────────────────────────────────────────────────────────────────────────────────

@@ -43,7 +43,9 @@ Steuersatz je Position (``MixedTaxRates``) gehört dazu (Grund ``mixed``): Zuord
 verlangt EIN Erlöskonto und genau EINE Forderung der App; je Satz zu verallgemeinern wäre eine neue Regel, und die Bedingungen von C werden
 nicht gelockert –, nur sein offener Betrag wird aus den Zuordnungen neu gerechnet (Probelauf und Ausführung, wie bei jedem Beleg). Ebenso eine
 Rechnung mit einem Erlöskonto aus den Stammdaten (``InvoiceItems.RevenueCoaId``, seit 2.8.0; Grund ``tax_entry``): R1 sucht das Erlöskonto des Satzes
-(``resolve_revenue_coa``) und baut damit neu auf – für das Konto der Momentaufnahme wäre es dieselbe Verallgemeinerung.
+(``resolve_revenue_coa``) und baut damit neu auf – für das Konto der Momentaufnahme wäre es dieselbe Verallgemeinerung. Ebenso eine Rechnung mit einer Zahlung mit Skonto
+(seit 2.9.0, Grund ``skonto``; ``InvoicePaymentsMixin._skonto_booked``, auch nach der Rücknahme des Skontos beim Stornieren): C schriebe die Sätze einer Zuordnung mit Geld und Rest,
+ohne das Skonto zu kennen; D rechnet den offenen Betrag aus Geld plus Skonto (``settled_sql``) neu.
 ``_booking_snapshot_unchanged`` prüft das mechanisch: Hat ein Baustein trotzdem einen vorhandenen Satz der Rechnung oder ihrer
 Bewegungen verändert (etwa den Status einer aufgelösten Forderung), wird alles zurückgenommen und nur gemeldet. Ein zweites Netz
 liest die Prüfliste nach dem Schreiben noch einmal: Nennt sie eine Kategorie, die sie vorher nicht nannte (etwa
@@ -63,7 +65,7 @@ from collections import defaultdict, namedtuple
 
 from money import fmt_eur, from_minor
 from .invoice_payments import (NO_REVENUE_COA, PAYMENT_ROW_COLUMNS, RECEIVABLE_STATUSES, SMALL_BUSINESS_REVENUE_NUMBERS, STORNO_KIND,
-                               has_mixed_rates, next_payment_status, small_business_revenue_number, uses_small_business_rule)
+                               has_mixed_rates, next_payment_status, settled_sql, small_business_revenue_number, uses_small_business_rule)
 from .invoice_versions import is_iso_date
 from .reporting import is_income_account
 
@@ -113,6 +115,8 @@ REBUILD_SKIP_REASONS = {
               'nur der offene Betrag wird neu gerechnet.'),
     'tax_entry': ('Die Rechnung trägt einen Steuersatz mit eigenem Erlöskonto aus den Stammdaten – ihre Zuordnungen werden in dieser Version nicht '
                   'automatisch neu aufgebaut; nur der offene Betrag wird neu gerechnet.'),
+    'skonto': ('Die Rechnung trägt eine Zahlung mit Skonto – ihre Zuordnungen werden in dieser Version nicht automatisch neu aufgebaut; '
+               'neu gerechnet wird nur der offene Betrag.'),
     'storno_pair': 'Die Rechnung gehört zu einem Storno-Paar – Zahlungen und Erstattungen werden nicht automatisch neu aufgebaut.',
     'status': 'Bei diesem Status der Rechnung wird nichts neu aufgebaut (nur versendet, überfällig, teilweise oder ganz bezahlt).',
     'amount': 'Die Rechnung hat keinen positiven Betrag – es wird nichts neu aufgebaut.',
@@ -287,6 +291,10 @@ class InvoiceRepairMixin:
             # Ebenso ein Beleg mit einem Erlöskonto aus den Stammdaten: R1 baut mit dem Erlöskonto des Satzes neu auf (``resolve_revenue_coa``) – das Konto der
             # Momentaufnahme je Zuordnung zu verallgemeinern ist dieselbe neue Regel; D rechnet nur den offenen Betrag neu
             skip('tax_entry')
+        elif self._skonto_booked(conn, invoice_id, number):
+            # Ebenso eine Rechnung mit einer Zahlung mit Skonto (auch nach seiner Rücknahme beim Stornieren: ihre Sätze stehen noch da): Der Neuaufbau schriebe die Sätze einer Zuordnung
+            # mit Geld und Rest, ohne das Skonto zu kennen – die Bedingungen von R1 sind dafür nicht gelockert; D rechnet den offenen Betrag aus Geld plus Skonto neu
+            skip('skonto')
         elif paired:
             skip('storno_pair')
         elif status not in REBUILD_STATUSES:
@@ -383,8 +391,9 @@ class InvoiceRepairMixin:
         # ── D: offener Betrag und Status ─────────────────────────────────────
         # Geschrieben wird, wenn A–C etwas geschrieben haben (ihre Bausteine rechnen die Rechnung zwischendurch mit der
         # Uhr von jetzt neu – hier kommt der Status zurück, den sie hatte) oder wenn der Rest nicht zu den Zuordnungen
-        # passt; eine Überzahlung (Rest unter 0, keine Stornorechnung) bleibt ein Befund
-        paid = conn.execute('SELECT COALESCE(SUM(Amount), 0) FROM InvoicePayments WHERE InvoiceID = ?',
+        # passt; eine Überzahlung (Rest unter 0, keine Stornorechnung) bleibt ein Befund. Erledigt ist, was die Zuordnungen an der Rechnung erledigen:
+        # das Geld und das Skonto (``settled_sql``)
+        paid = conn.execute(f'SELECT COALESCE(SUM({settled_sql()}), 0) FROM InvoicePayments WHERE InvoiceID = ?',
                             (invoice_id,)).fetchone()[0]
         due_after = gross - paid
         status_after = next_payment_status(status, gross, paid, due_date, today) if removals else status
