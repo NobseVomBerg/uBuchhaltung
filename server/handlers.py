@@ -525,6 +525,8 @@ def _form_int(text, minimum, maximum, default=None):
 
 
 INVALID_REQUEST = 'Ungültige Anfrage.'
+BOOKING_DATE_INVALID = 'Bitte ein gültiges Buchungsdatum angeben.'
+TAX_DATE_INVALID = 'Bitte ein gültiges Steuerdatum angeben oder das Feld leer lassen.'
 _YEAR_RANGE = (1900, 2999)
 _USEFUL_LIFE_RANGE = (1, 100)
 _COUNTER_MAX = 999_999_999
@@ -903,6 +905,12 @@ def handle_add_transaction(db: Database, post_data):
     skonto = _skonto_from_form(post_data)
     if skonto is None:
         return 400, INVALID_REQUEST
+    # Buchungs- und Steuerdatum gelten nur als Kalendertag ``JJJJ-MM-TT``: Der Browser sorgt über das Datumsfeld dafür, der Server
+    # prüft es selbst – eine Zeile mit einem anderen Wert fehlte in jeder Auswertung (EÜR, Summen- und Saldenliste, DATEV-Stapel).
+    if parse_iso_date(date) is None:
+        return 400, BOOKING_DATE_INVALID
+    if date_tax is not None and parse_iso_date(date_tax) is None:
+        return 400, TAX_DATE_INVALID
     # Erlöskonto, das der Nutzer wählt, wenn für den Steuersatz der Rechnung keines hinterlegt
     # ist (sonst ohne Wirkung)
     raw_revenue_coa = post_data.get("revenue_coa_id", [""])[0].strip()

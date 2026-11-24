@@ -414,6 +414,9 @@ kein Subagent darauf:
 - **Formularwerte (seit 2.4.2, `server/handlers.py`):** IDs aus Formularen nur über `_form_id` (positive ASCII-Ganzzahl in 64 Bit; optionale
   Felder über `_optional_form_ids`), Ganzzahlen nur über `_form_int(text, minimum, maximum, default)` (ASCII-Ziffern im Bereich: Jahr 1900–2999,
   Prozent 0–100, Nutzungsdauer 1–100, Zählerstand 0–999 999 999), Kommazahlen nur über `_finite_number` – nie `int(post_data…)`/`float(post_data…)`.
+  **Buchungs- und Steuerdatum der Buchungsmaske (seit 2.9.1):** nur ein Kalendertag `JJJJ-MM-TT` (`parse_iso_date`; das Steuerdatum darf leer sein), sonst 400
+  (`BOOKING_DATE_INVALID`/`TAX_DATE_INVALID`) vor dem ersten Schreiben, beim Anlegen wie beim Ändern – der Browser sorgt über das Datumsfeld dafür, bis 2.9.0
+  speicherte der Server jeden Text, und die Zeile fehlte in jeder Auswertung (`tests/test_booking_date_strict.py`).
   Ungültig: die Meldung auf dem Fehlerweg der Seite (303 mit `err=`/`error=`/`msg=`, Klartext über `quote(…, safe='')`, angezeigt nur über
   `script_json` + `appMsg`); bei einer ungültigen ID und auf Seiten ohne Fehlerweg 400 mit Klartext. Nichts wird gespeichert. Ein Handler gibt
   `(Status, Text)` zurück, `server/app.py` antwortet über `_respond_form_result`: ab 400 steht der Text im Body (`text/plain`), nie im
