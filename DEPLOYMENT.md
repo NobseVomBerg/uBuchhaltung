@@ -1,13 +1,16 @@
 # uBuchhaltung betreiben (Netzwerk, Docker, Mehrbenutzer, HTTPS)
 
-uBuchhaltung legt die Daten jedes Benutzers isoliert unter `data/users/<user>/`
-ab. Bei der **Ersteinrichtung im Browser** wird der erste Administrator angelegt –
-**mit Passwort** oder **ohne Anmeldung** (der Administrator wird dann automatisch
-angemeldet, das ist der Betrieb für eine Person im eigenen Netz). Das Ergebnis
-steht in `data/config.json` – keine Umgebungsvariable nötig.
+uBuchhaltung legt die Daten jedes Benutzers isoliert unter `data/users/<user>/` ab. Bei der **Ersteinrichtung im
+Browser** wird der erste Administrator angelegt – **mit Passwort** oder **ohne Anmeldung** (der Administrator wird dann
+automatisch angemeldet, das ist der Betrieb für eine Person im eigenen Netz). Das Ergebnis steht in `data/config.json`;
+eine Umgebungsvariable ist dafür nicht nötig. Die App ist für den Betrieb im eigenen Netz gebaut, nicht fürs offene Internet.
 
-Installationen aus Version 1.x (Daten direkt in `data/`) zieht der erste Start von
-Version 2 automatisch um – siehe [Umzug auf Version 2](#umzug-auf-version-2).
+Installationen aus Version 1.x (Daten direkt in `data/`) zieht der erste Start von Version 2 automatisch um – siehe
+[Umzug auf Version 2](#umzug-auf-version-2).
+
+Die Schutzmaßnahmen des Servers (Anmeldung, Anfragegrößen, SQL-Konsole, Zeitgrenzen) stehen in
+`docs/regeln/sicherheit.md`, Sicherung und Wiederherstellung in `docs/regeln/sicherung.md`. Hier steht nur, was
+beim Betrieb zu beachten ist.
 
 ## Konfiguration (`data/config.json`)
 
@@ -15,96 +18,73 @@ Version 2 automatisch um – siehe [Umzug auf Version 2](#umzug-auf-version-2).
 { "mode": "multi", "auto_login": "admin" }
 ```
 
-- Solange es noch keinen Administrator gibt, fragt die **Ersteinrichtung** nach
-  Benutzername und danach, ob mit oder ohne Anmeldung gestartet wird. Beides
-  stellt `"mode": "multi"` ein; „ohne Anmeldung“ trägt zusätzlich `"auto_login"`
-  mit dem Benutzernamen ein.
-- Fehlt die Datei oder ist sie nicht lesbar, obwohl es schon einen Administrator
-  gibt (z. B. nach einem Tippfehler beim Bearbeiten von Hand), zeigt die App einen
-  Hinweis statt der Ersteinrichtung. Dann die Datei wiederherstellen – mit
-  `{"mode": "multi"}` gilt die Anmeldung mit Passwort.
-- `auto_login` (nur bei `"multi"`): dieser Administrator wird ohne Passwort
-  angemeldet, die Anmeldeseite entfällt und andere Benutzer können sich so lange
-  nicht anmelden. In der Benutzerverwaltung lässt sich die automatische Anmeldung
+- `"mode": "multi"` markiert die Installation als eingerichtet. Die Ersteinrichtung trägt es ein; im Browser lässt es
+  sich danach nicht mehr ändern. Jeder andere Wert gilt als „nicht eingerichtet“.
+- `auto_login` (nur bei `"multi"`): Dieser Administrator wird ohne Passwort angemeldet, die Anmeldeseite entfällt und andere
+  Benutzer können sich so lange nicht anmelden. Unter *Stammdaten → Benutzer* lässt sich die automatische Anmeldung
   ein- und ausschalten; beim Ausschalten wird ein Passwort gesetzt.
-- Für ein **Headless-Setup** kann diese Datei vorab mit `{"mode":"multi"}`
-  angelegt werden; die Ersteinrichtung (`/setup`) legt dann den Administrator an –
-  mit oder ohne Anmeldung.
-- `"mode": "multi"` markiert die Installation als eingerichtet. Die Ersteinrichtung
-  trägt es ein; im Browser lässt es sich danach nicht mehr ändern. Jeder andere Wert
-  gilt als „nicht eingerichtet“. Eine Ablage aus Version 1.x (Daten direkt in `data/`)
-  wird beim Start umgezogen (siehe [Umzug auf Version 2](#umzug-auf-version-2)) und
-  trägt danach `"multi"`.
+- **Headless-Setup:** `config.json` vorab mit `{"mode":"multi"}` anlegen; die Ersteinrichtung (`/setup`) legt dann den
+  Administrator an – mit oder ohne Anmeldung.
+- Fehlt die Datei oder ist sie nicht lesbar, obwohl es schon einen Administrator gibt (z. B. nach einem Tippfehler beim
+  Bearbeiten von Hand), zeigt die App einen Hinweis statt der Ersteinrichtung. Dann die Datei wiederherstellen – mit
+  `{"mode": "multi"}` gilt die Anmeldung mit Passwort.
 
-## Netzwerk & HTTPS über Umgebungsvariablen
+## Umgebungsvariablen
 
-| Variable      | Default     | Bedeutung |
-|---------------|-------------|-----------|
-| `UBUCHHALTUNG_HOST` | `localhost` | Bind-Adresse. Für Netzzugriff `0.0.0.0`. |
-| `UBUCHHALTUNG_PORT` | `8080`      | TCP-Port. |
-| `UBUCHHALTUNG_CERT` | *(keine)*   | Pfad zur TLS-Zertifikatsdatei (PEM) ⇒ HTTPS. |
-| `UBUCHHALTUNG_KEY`  | *(keine)*   | Pfad zum privaten TLS-Schlüssel (PEM). |
-| `UBUCHHALTUNG_ALLOWED_HOSTS` | *(leer)* | Zusätzliche Hostnamen (Kommaliste), unter denen die App erreichbar sein darf – siehe „Schutz vor fremden Webseiten“. |
-| `SMTP_HOST` / `SMTP_PORT` | `smtp.gmail.com` / `587` | Ausgangsserver für den E-Mail-Versand von Rechnungen (Port 465: TLS von Anfang an, jeder andere: STARTTLS – siehe unten). |
+| Variable | Default | Bedeutung |
+|---|---|---|
+| `UBUCHHALTUNG_HOST` | `localhost` (Image: `0.0.0.0`) | Bind-Adresse. Für Netzzugriff `0.0.0.0`. |
+| `UBUCHHALTUNG_PORT` | `8080` (Image: `2824`) | TCP-Port. |
+| `UBUCHHALTUNG_CERT` | *(keine)* | Pfad zur TLS-Zertifikatsdatei (PEM) ⇒ HTTPS. |
+| `UBUCHHALTUNG_KEY` | *(keine)* | Pfad zum privaten TLS-Schlüssel (PEM). |
+| `UBUCHHALTUNG_ALLOWED_HOSTS` | *(leer)* | Zusätzliche Hostnamen (Kommaliste), unter denen die App ohne Anmeldung erreichbar sein darf – siehe [Hostnamen](#hostnamen-und-reverse-proxy). |
+| `UBUCHHALTUNG_DEMO` | *(aus)* | `1`, `true`, `yes` oder `on`: [Demo-Modus](#demo-modus-ausprobieren). |
+| `SMTP_HOST` / `SMTP_PORT` | `smtp.gmail.com` / `587` | Ausgangsserver für den E-Mail-Versand von Rechnungen (Port 465: TLS von Anfang an, jeder andere: STARTTLS). |
 | `SMTP_USER` / `SMTP_PASSWORD` | *(leer)* | Zugangsdaten für den Versand; ohne sie lehnt die App den Versand mit einem Hinweis ab. |
+| `SSL_CERT_FILE` | *(keine)* | CA-Datei (PEM) für einen Mailserver mit eigener Zertifizierungsstelle, siehe unten. |
 
-Sind `UBUCHHALTUNG_CERT` **und** `UBUCHHALTUNG_KEY` gesetzt, läuft der Server über HTTPS und
-setzt das `Secure`-Flag der Session-Cookies. Dasselbe gilt hinter einem Reverse-Proxy, der HTTPS
-entgegennimmt und das mit `X-Forwarded-Proto: https` meldet (nginx Proxy Manager, Caddy und Traefik
-tun das von sich aus; bei einem selbst geschriebenen nginx: `proxy_set_header X-Forwarded-Proto $scheme;`).
+Das Docker-Image setzt zusätzlich `PYTHONUNBUFFERED=1`. Die Variablen `UBUCHHALTUNG_MCP_*` gehören zur
+[Diagnose-Schnittstelle](#diagnose-schnittstelle-mcp-nur-lesend) und werden nicht auf der Instanz gesetzt.
 
-**Anmeldung:** Nach fünf Fehlversuchen in Folge ist ein Benutzername 30 Sekunden gesperrt, mit jedem
-weiteren Fehlversuch doppelt so lange, höchstens 15 Minuten; eine gelungene Anmeldung setzt das zurück,
-ein Neustart des Servers ebenfalls. Die Sperre hängt am Namen, nicht an der Adresse des Aufrufers (hinter
-einem Proxy teilen sich alle dieselbe). Ein neues Passwort braucht mindestens 8 Zeichen; bestehende
-kürzere gelten weiter. Wird ein Passwort neu gesetzt oder die automatische Anmeldung ein- oder
-ausgeschaltet, enden die bestehenden Sitzungen.
+**HTTPS:** Sind `UBUCHHALTUNG_CERT` **und** `UBUCHHALTUNG_KEY` gesetzt, läuft der Server über HTTPS und setzt das
+`Secure`-Flag der Session-Cookies. Dasselbe gilt hinter einem Reverse-Proxy, der HTTPS entgegennimmt und das mit
+`X-Forwarded-Proto: https` meldet (nginx Proxy Manager, Caddy und Traefik tun das von sich aus; bei einem selbst
+geschriebenen nginx: `proxy_set_header X-Forwarded-Proto $scheme;`).
 
-**Größe von Anfragen:** Der Server lehnt Anfragen ab, die größer sind als 64 KB (vor der Anmeldung),
-10 MB (Formulare) bzw. 200 MB (Uploads von Kontoauszügen, Belegen und WISO-Textexporten; Logos 5 MB).
-Die WISO-Datenbank (*Daten → Import aus der Datenbank*) wird als Datei hochgeladen und darf je Datei
-bis 2 GB groß sein; der Server nimmt sie nur an, wenn im Datenverzeichnis danach noch 64 MB frei bleiben,
-und löscht sie nach dem Import wieder. Ein Reverse-Proxy davor hat oft eine eigene, kleinere Grenze für
-Uploads (nginx: `client_max_body_size`, Standard 1 MB) – für den Import der WISO-Datenbank muss sie
-mindestens so groß sein wie die Datei, sonst bricht der Upload ab.
+**E-Mail-Versand:** Die App verschlüsselt die Verbindung zum Mailserver immer und prüft dessen Zertifikat samt Hostnamen;
+das lässt sich nicht abschalten. Stammt das Zertifikat von einer eigenen Zertifizierungsstelle (z. B. ein Mailserver im LAN),
+macht man diese dem Container über `SSL_CERT_FILE` bekannt: das CA-Zertifikat als PEM-Datei einbinden und ihren Pfad
+eintragen, z. B. `-v /opt/ubuchhaltung/ca.pem:/certs/ca.pem:ro -e SSL_CERT_FILE=/certs/ca.pem` (Compose: unter `volumes`
+und `environment`). Scheitert die Prüfung, meldet die App „Das Zertifikat des Mailservers konnte nicht geprüft werden.“;
+Einzelheiten stehen im Server-Log.
 
-**Zeitgrenze je Verbindung:** Eine Verbindung, auf der 120 Sekunden lang nichts gelesen oder gesendet wird (eine nicht zu Ende
-gesendete Anfrage, eine Antwort, die der Client nicht abholt, eine ungenutzte Keep-Alive-Verbindung), schließt der Server. Die Grenze
-gilt je Schritt, nicht für die ganze Anfrage: Ein Upload, der stetig sendet, läuft beliebig lange, und die Bearbeitung einer Anfrage hat
-keine Zeitgrenze. Ein Reverse-Proxy davor sollte ungenutzte Verbindungen zur App kürzer als 120 Sekunden offen halten (zum Beispiel
-60 Sekunden). Mit `UBUCHHALTUNG_CERT`/`UBUCHHALTUNG_KEY` wartet der Server je Verbindung höchstens 15 Sekunden auf den
-TLS-Handshake.
+## Hostnamen und Reverse-Proxy
 
-**E-Mail-Versand:** Die App verschlüsselt die Verbindung zum Mailserver immer (Port 465 mit TLS von
-Anfang an, jeder andere Port per STARTTLS) und prüft dessen Zertifikat samt Hostnamen; jede Verbindung hat
-ein Zeitlimit von 30 Sekunden. Bietet der Server kein STARTTLS an, sendet die App nichts und meldet sich nie
-unverschlüsselt an. Die Prüfung lässt sich nicht abschalten – der Mailserver braucht ein gültiges
-Zertifikat. Stammt es von einer eigenen Zertifizierungsstelle (z. B. ein Mailserver im LAN), macht man diese
-dem Container über die Umgebungsvariable `SSL_CERT_FILE` bekannt: das CA-Zertifikat als PEM-Datei einbinden
-und ihren Pfad eintragen, z. B. `-v /opt/ubuchhaltung/ca.pem:/certs/ca.pem:ro -e SSL_CERT_FILE=/certs/ca.pem`
-(Compose: unter `volumes` und `environment`). Scheitert die Prüfung, meldet die App „Das Zertifikat des
-Mailservers konnte nicht geprüft werden.“; Einzelheiten stehen im Server-Log.
-
-## Schutz vor fremden Webseiten
-
-- Schreibende Anfragen (POST) nimmt die App nur von ihren eigenen Seiten an
-  (Prüfung von `Sec-Fetch-Site` bzw. `Origin` gegen `Host`). Löschen und Ändern
-  laufen ausschließlich per POST.
-- Ohne Login (Ersteinrichtung, automatische Anmeldung, Demo-Modus) antwortet die App nur unter
-  IP-Adressen, `localhost`, Namen ohne Punkt, Namen mit den Endungen `.local`,
-  `.lan`, `.home.arpa`, `.internal`, `.fritz.box`, `.localhost` und dem eigenen
-  Rechnernamen. Das schützt vor DNS-Rebinding. Für andere Namen (z. B. eigene
-  Domain am Reverse-Proxy, Tailscale-Name):
+- Ohne Login (Ersteinrichtung, automatische Anmeldung, Demo-Modus) antwortet die App nur unter IP-Adressen, `localhost`,
+  Namen ohne Punkt, Namen mit den Endungen `.local`, `.lan`, `.home.arpa`, `.internal`, `.fritz.box`, `.localhost` und dem
+  eigenen Rechnernamen (Schutz vor DNS-Rebinding). Für andere Namen (eigene Domain am Reverse-Proxy, Tailscale-Name):
   ```bash
   UBUCHHALTUNG_ALLOWED_HOSTS=buch.example.org,server.tailnet.ts.net
   ```
-- Reverse-Proxy: `Host` durchreichen oder `X-Forwarded-Host` setzen (nginx Proxy
-  Manager, Caddy und Traefik tun das von sich aus); sonst den öffentlichen Namen
-  in `UBUCHHALTUNG_ALLOWED_HOSTS` eintragen.
+- Reverse-Proxy: `Host` durchreichen oder `X-Forwarded-Host` setzen (nginx Proxy Manager, Caddy und Traefik tun das von
+  sich aus); sonst den öffentlichen Namen in `UBUCHHALTUNG_ALLOWED_HOSTS` eintragen.
+- **Größe von Uploads:** Die App nimmt Uploads bis 200 MB an (Logos 5 MB), die WISO-Datenbank (*Daten → Import aus der
+  Datenbank*) bis 2 GB je Datei, und nur, wenn im Datenverzeichnis danach noch 64 MB frei bleiben. Ein Reverse-Proxy hat
+  oft eine kleinere eigene Grenze (nginx: `client_max_body_size`, Standard 1 MB); sie muss mindestens so groß sein wie die
+  größte Datei, die hochgeladen werden soll.
+- **Zeitgrenzen:** Der Server schließt eine Verbindung, auf der 120 Sekunden lang nichts gelesen oder gesendet wird; die
+  Bearbeitung einer Anfrage selbst hat keine Zeitgrenze. Ein Reverse-Proxy sollte ungenutzte Verbindungen zur App kürzer
+  offen halten (z. B. 60 Sekunden). Beim Herunterladen großer Sicherungen darf er die Antwort nicht nach kurzer Zeit
+  abbrechen (nginx: `proxy_read_timeout`).
+- Anmeldung: Nach fünf Fehlversuchen in Folge ist ein Benutzername zeitweise gesperrt (je Name, nicht je Adresse – hinter
+  einem Proxy teilen sich alle dieselbe). Ein Neustart des Servers hebt die Sperre auf. Ein neues Passwort braucht
+  mindestens 8 Zeichen.
 
-## Erststart
+## Erststart (ohne Docker)
 
-1. Netz + TLS setzen und starten (Beispiel Windows/PowerShell):
+Voraussetzung: Python 3.13 oder neuer, `pip install -r requirements.txt`.
+
+1. Netz + TLS setzen und starten (Windows/PowerShell):
    ```powershell
    $env:UBUCHHALTUNG_HOST = "0.0.0.0"
    $env:UBUCHHALTUNG_CERT = "cert.pem"
@@ -115,29 +95,20 @@ Mailservers konnte nicht geprüft werden.“; Einzelheiten stehen im Server-Log.
    ```bash
    UBUCHHALTUNG_HOST=0.0.0.0 UBUCHHALTUNG_CERT=cert.pem UBUCHHALTUNG_KEY=key.pem python main.py
    ```
-2. Im Browser öffnen: Die **Ersteinrichtung** legt das **Administrator-Konto** an –
-   **mit Passwort** oder **ohne Anmeldung** (automatische Anmeldung, Betrieb für eine
-   Person). Der Administrator legt unter **Stammdaten → Benutzer** weitere Nutzer an.
-   Jeder Nutzer richtet beim ersten Login seine eigenen Firmen-/Kontaktdaten ein.
+2. Im Browser öffnen: Die **Ersteinrichtung** legt das Administrator-Konto an. Der Administrator legt unter
+   *Stammdaten → Benutzer* weitere Nutzer an. Jeder Nutzer richtet beim ersten Login seine eigenen Firmen- und
+   Kontaktdaten ein.
 
-## Schnellstart mit HTTPS (Windows)
-
-Das Skript `run_https.ps1` erzeugt beim ersten Aufruf automatisch ein
-selbst-signiertes Zertifikat (`cert.pem`/`key.pem`) und startet den Server per
-HTTPS:
+**Schnellstart mit HTTPS (Windows):** `run_https.ps1` erzeugt beim ersten Aufruf ein selbst-signiertes Zertifikat
+(`cert.pem`/`key.pem`, per `.gitignore` ausgeschlossen; braucht `openssl`) und startet den Server per HTTPS:
 
 ```powershell
 .\run_https.ps1            # nur lokal (localhost)
 .\run_https.ps1 -BindAll   # im LAN erreichbar (0.0.0.0)
 ```
 
-`cert.pem`/`key.pem` sind per `.gitignore` ausgeschlossen und werden nie
-eingecheckt.
-
-## Selbst-signiertes Zertifikat erzeugen (manuell)
-
-Ein selbst-signiertes Zertifikat genügt im privaten LAN (der Browser zeigt beim
-ersten Besuch eine Warnung, die einmalig bestätigt wird):
+**Zertifikat von Hand erzeugen:** Ein selbst-signiertes Zertifikat genügt im privaten LAN (der Browser warnt beim ersten
+Besuch einmalig). `subjectAltName` auf die tatsächliche LAN-IP bzw. den Hostnamen des Servers setzen:
 
 ```bash
 openssl req -x509 -newkey rsa:2048 -nodes -keyout key.pem -out cert.pem \
@@ -145,45 +116,35 @@ openssl req -x509 -newkey rsa:2048 -nodes -keyout key.pem -out cert.pem \
   -addext "subjectAltName=IP:192.168.1.10,DNS:ubuchhaltung.local"
 ```
 
-`subjectAltName` auf die tatsächliche LAN-IP / den Hostnamen des Servers setzen.
+## Daten und Sicherung
 
-## Daten & Backup
-
-- `data/auth.db` – zentrale Benutzer-/Session-Verwaltung.
-- `data/users/<user>/` – pro Nutzer: `buch.db` sowie `Belege/`, `invoices/`,
-  `quotes/`, `worktime/`, `logos/`, `backup/`, die SQL-Protokolle
-  (`sql_operations.log`/`.sql`) und, wenn angelegt, `db-export.sql`. `upload_tmp/` hält nur Zwischendateien (den Upload der
-  WISO-Datenbank, das Lesen eines hochgeladenen PDF auf der Seite *Belege*); die Datensicherung der App lässt den Ordner aus.
-  Die Dateien der Seite *Belege* liegen unter `Belege/<Jahr>/` und gehören zur Datensicherung.
-- Für ein Backup genügt es, das gesamte `data/`-Verzeichnis zu sichern.
-- Die Sicherungen eines Benutzers (die Archive der App und die Kopien der Datenbank vor einer Programm-Umstellung) lassen sich über
-  die Oberfläche herunterladen: *Daten → Datensicherung*. Eine große Datei liefert der Server direkt aus, in Stücken und nicht
-  über den Speicher; ein Reverse-Proxy davor darf die Antwort nicht nach kurzer Zeit abbrechen (nginx: `proxy_read_timeout`).
-- Die Wiederherstellung in der App prüft das Archiv, bevor sie am Datenverzeichnis etwas
-  ändert. Während sie läuft, beantwortet der Server andere Anfragen desselben Benutzers mit einem
-  Hinweis (503), und sie beginnt erst, wenn keine andere mehr läuft. Das gilt je Serverprozess: Auf einen
-  Datenordner gehört nur ein Serverprozess. Bleibt nach einem Absturz mitten im Wiederherstellen ein Ordner
-  `backup/replaced_…` zurück, enthält er den Stand von davor – von dort zurückkopieren
-  und den Ordner erst danach löschen.
-- Ist ein Ordner im Datenverzeichnis nur ein Link auf einen anderen Ort (z. B. Belege auf
-  einem NAS), ersetzt „vorher löschen“ den Link durch einen normalen Ordner; das Linkziel
-  bleibt unberührt. Als eigenes Volume eingebundene Ordner bleiben eingebunden.
-- Das Löschen eines Nutzers in der Benutzerverwaltung entfernt nur das Login;
-  das zugehörige Datenverzeichnis bleibt erhalten und kann bei Bedarf manuell
-  entfernt werden.
-- Die SQL-Konsole (Seite *About*, ganz unten) steht nur Administratoren zur Verfügung und
-  arbeitet immer nur auf der eigenen Datenbank des angemeldeten Nutzers. Wer sie
-  braucht, bekommt in der Benutzerverwaltung das Administratorrecht. Sie läuft nur
-  lesend, solange „Schreiben erlauben“ nicht angekreuzt ist; mit Haken laufen alle
-  Befehle einer Anfrage in einer Transaktion (scheitert einer, wird nichts geändert)
-  und stehen danach im SQL-Protokoll. Vor Änderungen eine Datensicherung anlegen. Eine
-  schreibende Anfrage sperrt die Datenbank, solange sie läuft (höchstens 60 Sekunden) –
-  andere Schreibzugriffe warten so lange oder scheitern mit einer Meldung.
+- `data/auth.db` – zentrale Benutzer- und Sitzungsverwaltung.
+- `data/users/<user>/` – je Nutzer: `buch.db`, `Belege/`, `invoices/`, `quotes/`, `worktime/`, `logos/`, `backup/`, die
+  SQL-Protokolle (`sql_operations.log`/`.sql`) und, wenn angelegt, `db-export.sql`. `upload_tmp/` hält nur Zwischendateien;
+  die Datensicherung der App lässt den Ordner aus.
+- Für ein Backup von außen genügt es, das gesamte `data/`-Verzeichnis zu sichern (Server vorher stoppen oder die
+  Sicherung der App benutzen; eine laufende Datenbank nicht einfach kopieren).
+- *Daten → Datensicherung* legt Archive an und bietet sie samt den Kopien der Datenbank vor einer Programm-Umstellung zum
+  Herunterladen an; die Wiederherstellung steht auf derselben Seite. Auf einen Datenordner gehört nur ein Serverprozess.
+  Bleibt nach einem Absturz mitten im Wiederherstellen ein Ordner `backup/replaced_…` zurück, enthält er den Stand von
+  davor – von dort zurückkopieren und den Ordner erst danach löschen. Regeln: `docs/regeln/sicherung.md`.
+- Ist ein Ordner im Datenverzeichnis nur ein Link auf einen anderen Ort (z. B. Belege auf einem NAS), ersetzt „vorher
+  löschen“ bei der Wiederherstellung den Link durch einen normalen Ordner; das Linkziel bleibt unberührt. Als eigenes
+  Volume eingebundene Ordner bleiben eingebunden.
+- Das Löschen eines Nutzers in der Benutzerverwaltung entfernt nur das Login; sein Datenverzeichnis bleibt erhalten und
+  kann bei Bedarf von Hand entfernt werden.
+- Die **SQL-Konsole** und der **DB-Export** stehen auf der Seite *About* (ganz unten) und nur Administratoren zur
+  Verfügung; die Konsole arbeitet nur auf der eigenen Datenbank des angemeldeten Nutzers und läuft lesend, solange
+  „Schreiben erlauben“ nicht angekreuzt ist. Vor Änderungen eine Datensicherung anlegen. Regeln und Grenzen:
+  `docs/regeln/sicherheit.md`.
+- Schema-Migrationen: Bestehende Datenbanken werden beim Start automatisch auf den aktuellen Stand gebracht. Davor legt die
+  App `backup/JJJJMMTT_vor_<Version>_buch.db` im Datenordner des Nutzers an; ein Zurück auf eine ältere Version gibt es nur
+  über diese Sicherung (Anleitung im README, Abschnitt „Gut zu wissen“). Eine Datenbank von einer neueren Version öffnet die
+  App nicht (`docs/regeln/versionierung.md`).
 
 ## Docker (Unraid, Proxmox, NAS)
 
-Zielplattformen sind Server, die ohnehin Docker anbieten. Das fertige Image
-kommt aus der GitHub Container Registry – gebaut und veröffentlicht durch
+Das fertige Image kommt aus der GitHub Container Registry, gebaut und veröffentlicht durch
 `.github/workflows/docker-publish.yml`:
 
 ```
@@ -193,60 +154,39 @@ ghcr.io/nobsevomberg/ubuchhaltung:latest
 | Tag | Inhalt |
 |---|---|
 | `:latest` | neuester Release (empfohlen) |
-| `:2.3.2`, `:2.3`, `:2` (Beispiel) | fester Release bzw. neuester innerhalb der Reihe – zum Festhalten einer Version (nach einer Schemaänderung führt nur die Sicherung zurück) |
-| `:edge` | aktueller Entwicklungsstand von `main`, ungetestet im Betrieb |
+| `:2.9.1`, `:2.9`, `:2` (Beispiel) | fester Release bzw. neuester innerhalb der Reihe – zum Festhalten einer Version (nach einer Schemaänderung führt nur die Sicherung zurück) |
+| `:edge` | aktueller Stand von `main`, auch ohne Versionssprung |
 
-Releases entstehen automatisch: Kommt auf `main` eine neue Version aus
-`version.py` an (noch kein Tag dafür), laufen die Tests, das Image wird gebaut
-und danach Tag und GitHub-Release mit Release-Notizen angelegt. Änderungen ohne
-neue Version (z. B. Doku) bauen nur `:edge`.
+Ein Versionssprung in `version.py` auf `main` ist der Release: Tests, Image, Tag und GitHub-Release entstehen automatisch.
+Änderungen ohne neue Version (z. B. Doku) bauen nur `:edge`.
 
-Standardport ist **2824** („BUCH" auf der Telefontastatur – von verbreiteten
-Docker-Projekten nicht belegt). Alle Nutzdaten (auth.db, Nutzer-Verzeichnisse,
-Datensicherungen) liegen unter `/app/data` – für ein Backup genügt weiterhin
-dieses eine Verzeichnis.
-
-- Beim ersten Aufruf erscheint die Ersteinrichtung (Administrator anlegen, mit
-  Passwort oder ohne Anmeldung). Headless-Setup: im Daten-Verzeichnis vorab
-  `config.json` mit `{"mode":"multi"}` anlegen. Wer von Version 1.x kommt: der erste
-  Start zieht die bestehenden Daten um – siehe [Umzug auf Version 2](#umzug-auf-version-2).
-- Der Container startet als root, übereignet das Daten-Volume einmalig dem
-  unprivilegierten App-Benutzer (UID 1000) und gibt die Rechte dann ab –
-  root-eigene appdata-Verzeichnisse (Unraid) funktionieren so ohne Handarbeit.
-- Das Firmenlogo lädt man in den Stammdaten beim eigenen Kontakt über „Datei
-  wählen“ hoch – der Dialog zeigt den eigenen Rechner, die Datei landet im
-  Daten-Volume (`users/<Name>/logos/`). Erlaubt sind PNG, JPG, GIF und WEBP bis 5 MB;
-  SVG, HTML und alles andere lehnt die App ab. Als Logo (Seite und PDF) gilt nur eine
-  Datei in diesem Ordner (oder unter `seed_data/private/`), nur ihr Dateiname zählt: Ein von
-  Hand eingetippter Pfad – vom eigenen PC oder irgendwo auf dem Server – ergibt kein
-  Logo; das Formular weist dann darauf hin.
-- `seed_data/private/` (eigenes Logo/Briefpapier) ist bewusst **nicht** im
-  Image; bei Bedarf als Read-only-Volume nach `/app/seed_data/private` mounten.
-- HTTPS: Zertifikate mounten und `UBUCHHALTUNG_CERT`/`UBUCHHALTUNG_KEY` setzen –
-  oder (üblicher) einen Reverse-Proxy (nginx Proxy Manager, Caddy, Traefik)
-  davorschalten.
-- 7-Zip ist im Image enthalten – Datensicherungen entstehen als `.7zip`,
-  die Log-Rotation komprimiert nach `.7z`.
+- Standardport ist **2824** („BUCH“ auf der Telefontastatur). Alle Nutzdaten liegen unter `/app/data` – für ein Backup
+  genügt dieses eine Verzeichnis.
+- Beim ersten Aufruf erscheint die Ersteinrichtung. Headless-Setup: im Datenverzeichnis vorab `config.json` mit
+  `{"mode":"multi"}` anlegen. Von Version 1.x: siehe [Umzug](#umzug-auf-version-2).
+- Der Container startet als root, übereignet das Daten-Volume einmalig dem unprivilegierten App-Benutzer (UID 1000) und gibt
+  die Rechte dann ab – root-eigene appdata-Verzeichnisse (Unraid) funktionieren so ohne Handarbeit. Mit `--user` gestartet,
+  läuft der Container direkt unter diesem Benutzer.
+- Der Healthcheck des Images fragt die Startseite ab (bei gesetztem `UBUCHHALTUNG_CERT` über HTTPS).
+- Das Firmenlogo lädt man in den Stammdaten beim eigenen Kontakt hoch (PNG, JPG, GIF oder WEBP bis 5 MB); es landet in
+  `users/<Name>/logos/`. Ein von Hand eingetippter Serverpfad ergibt kein Logo.
+- `seed_data/private/` (eigenes Logo/Briefpapier) ist bewusst **nicht** im Image; bei Bedarf als Read-only-Volume nach
+  `/app/seed_data/private` mounten.
+- HTTPS: Zertifikate mounten und `UBUCHHALTUNG_CERT`/`UBUCHHALTUNG_KEY` setzen – oder (üblicher) einen Reverse-Proxy davorschalten.
+- 7-Zip ist im Image enthalten – Datensicherungen entstehen als `.7zip`, die Log-Rotation komprimiert nach `.7z`.
 
 ### Unraid
 
-Variante 1 – Community Applications (empfohlen): im Tab **Apps** nach
-„uBuchhaltung" suchen und installieren. Port und appdata-Pfad
-(`/mnt/user/appdata/ubuchhaltung`) sind vorbelegt.
-
-Variante 2 – Template von Hand: `unraid-template.xml` aus dem Projektstamm nach
-`/boot/config/plugins/dockerMan/templates-user/` kopieren, dann unter
-**Docker → Add Container** das Template „uBuchhaltung" auswählen. Port und
-appdata-Pfad (`/mnt/user/appdata/ubuchhaltung`) sind vorbelegt.
-
-Variante 3 – manuell: **Docker → Add Container**, Repository
-`ghcr.io/nobsevomberg/ubuchhaltung:latest`, Port `2824 → 2824`, Pfad
-`/mnt/user/appdata/ubuchhaltung → /app/data`.
+- **Community Applications:** im Tab **Apps** nach „uBuchhaltung“ suchen und installieren. Port und appdata-Pfad
+  (`/mnt/user/appdata/ubuchhaltung`) sind vorbelegt.
+- **Template von Hand:** `unraid-template.xml` aus dem Projektstamm nach `/boot/config/plugins/dockerMan/templates-user/`
+  kopieren, dann unter **Docker → Add Container** das Template „uBuchhaltung“ auswählen.
+- **Manuell:** **Docker → Add Container**, Repository `ghcr.io/nobsevomberg/ubuchhaltung:latest`, Port `2824 → 2824`, Pfad
+  `/mnt/user/appdata/ubuchhaltung → /app/data`.
 
 ### Proxmox
 
-Docker läuft unter Proxmox üblicherweise in einer VM oder einem LXC mit
-Docker; dort `compose.yaml` verwenden oder direkt:
+Docker läuft unter Proxmox üblicherweise in einer VM oder einem LXC mit Docker; dort `compose.yaml` verwenden oder direkt:
 
 ```bash
 docker run -d --name ubuchhaltung --restart unless-stopped \
@@ -262,35 +202,31 @@ Im Projektverzeichnis (`Dockerfile` und `compose.yaml` liegen im Stamm):
 docker compose up -d --build
 ```
 
-`compose.yaml` mountet `./data` – **Container und nativen Server nie
-gleichzeitig auf demselben `data/` betreiben** (SQLite-Locking).
+`compose.yaml` mountet `./data` – **Container und nativen Server nie gleichzeitig auf demselben `data/` betreiben**
+(SQLite-Locking).
 
-## Dauerbetrieb (Prozess-Manager)
+## Dauerbetrieb ohne Docker
 
 - **Linux:** als `systemd`-Service mit gesetzten `Environment=`-Zeilen.
-- **Windows:** z. B. via [NSSM](https://nssm.cc/) als Dienst registrieren; die
-  Umgebungsvariablen im Dienst hinterlegen.
-- In einer VM/Container-Umgebung (Unraid/Proxmox): `data/` als persistentes
-  Volume einbinden, `UBUCHHALTUNG_HOST=0.0.0.0` setzen, Port veröffentlichen –
-  für Docker siehe den Abschnitt **Docker** oben.
+- **Windows:** z. B. via [NSSM](https://nssm.cc/) als Dienst registrieren; die Umgebungsvariablen im Dienst hinterlegen.
 
-## Belegerkennung (gelesene Belege)
+## Belegerkennung
 
-Die Seite *Belege* liest hochgeladene Belege aus: E-Rechnungen (XRechnung, ZUGFeRD) und PDFs mit Textebene; für Scans und Fotos gibt es keine
-Texterkennung. Dafür startet die App **je Beleg einen kurzlebigen Python-Kindprozess** (derselbe Interpreter und dieselben Pakete – es ist kein
-weiteres Programm und keine zusätzliche Installation nötig). Er hat ein hartes Zeitlimit von 15 Sekunden; unter Linux, also auch im Container, gilt
-zusätzlich eine Speichergrenze von 768 MB. Je Serverprozess läuft höchstens ein Lesen zurzeit, Dateien über 30 MB werden nicht gelesen. Die Lesungen
-stehen in der Datenbank (Tabelle `DocumentReadings`) und gehören damit zur Datensicherung. Im Demo-Modus ist das Lesen abgeschaltet.
+Die Seite *Belege* liest hochgeladene Belege aus: E-Rechnungen (XRechnung, ZUGFeRD) und PDFs mit Textebene; für Scans und
+Fotos gibt es keine Texterkennung. Dafür startet die App je Beleg einen kurzlebigen Python-Kindprozess (derselbe Interpreter
+und dieselben Pakete – keine zusätzliche Installation). Er hat ein hartes Zeitlimit von 15 Sekunden; unter Linux, also auch
+im Container, gilt zusätzlich eine Speichergrenze von 768 MB. Je Serverprozess läuft höchstens ein Lesen zurzeit, Dateien über
+30 MB werden nicht gelesen. Die Lesungen stehen in der Datenbank (Tabelle `DocumentReadings`) und gehören zur Datensicherung.
+Im Demo-Modus ist das Lesen abgeschaltet. Regeln: `docs/regeln/belege.md`.
 
 ## Diagnose-Schnittstelle (MCP, nur lesend)
 
-Mit `tools/mcp_ubuchhaltung.py` lässt sich eine laufende Instanz (z. B. der
-Docker-Container im LAN) von einem MCP-fähigen Client untersuchen, ohne Browser. Der Server
-läuft **lokal auf dem Rechner des Clients** – der Client startet ihn als stdio-MCP-Server – und
-fragt die Instanz per HTTP ab wie ein Skript. Auf dem NAS bzw. im Container ist nichts zu
-installieren; nötig sind nur Python (ab 3.13) und die Standardbibliothek.
+Mit `tools/mcp_ubuchhaltung.py` lässt sich eine laufende Instanz (z. B. der Docker-Container im LAN) von einem MCP-fähigen
+Client untersuchen, ohne Browser. Der Server läuft **lokal auf dem Rechner des Clients** (der Client startet ihn als
+stdio-MCP-Server) und fragt die Instanz per HTTP ab. Auf dem NAS bzw. im Container ist nichts zu installieren; nötig sind
+nur Python (ab 3.13) und die Standardbibliothek. Aufbau und Sperren: `docs/regeln/werkzeuge.md`.
 
-**Was er kann** – fünf Werkzeuge:
+**Fünf Werkzeuge:**
 
 | Werkzeug | Zweck |
 |---|---|
@@ -300,184 +236,120 @@ installieren; nötig sind nur Python (ab 3.13) und die Standardbibliothek.
 | `schema` | alle Tabellen mit Zeilenzahl; mit Tabellenname: `CREATE`-Anweisung, Spalten, Fremdschlüssel, Indizes |
 | `page` | eine geprüfte Anzeigeseite der App per GET, als Text (z. B. `/about`, `/invoice?id=3`, `/users`) |
 
-`sql` gibt zuerst die Spaltennamen als JSON-Array aus, dann jede Zeile als JSON-Array (`NULL`
-als `null`, Zahlen als Zahlen); so bleiben Zeilenumbrüche und Semikolons in Werten
-eindeutig. **Geldbeträge stehen als Ganzzahl in Minor Units** (Skalierung 4: `1190000` =
-119,00 €). Gleich benannte Spalten (`a.ID`, `b.ID`) benennt SQLite um (`ID`, `ID:1`) – besser
-mit `AS` unterscheiden. BLOB-Spalten lassen sich nur über `hex(x)` oder `length(x)` abfragen.
+`sql` gibt zuerst die Spaltennamen als JSON-Array aus, dann jede Zeile als JSON-Array. **Geldbeträge stehen als Ganzzahl in
+Minor Units** (Skalierung 4: `1190000` = 119,00 €). Gleich benannte Spalten benennt SQLite um (`ID`, `ID:1`) – besser mit
+`AS` unterscheiden. BLOB-Spalten lassen sich nur über `hex(x)` oder `length(x)` abfragen.
 
-**Was er nicht kann – und seine Grenzen:**
+**Grenzen:**
 
-- **SQL:** nur ein einzelnes `SELECT` ohne `;` (kein `INSERT`/`UPDATE`/`DELETE`, kein
-  `PRAGMA` zum Setzen, keine zweite Anweisung). `pragma_<name>` als Tabellenfunktion ist nur
-  für rein lesende Namen erlaubt (`_READ_PRAGMAS`, z. B. `table_info`, `foreign_key_check`,
-  `quick_check`, `user_version`); `pragma_optimize` zum Beispiel würde schreiben. Gesperrt
-  sind außerdem `WITH`/`RECURSIVE`, `zeroblob`, `randomblob`, Blockkommentare außer am Anfang
-  und Abfragen über 20 000 Zeichen.
-- **Seiten:** nur aus einer Positivliste geprüfter Anzeigeseiten mit den je Seite erlaubten
-  Query-Parametern (`_PAGE_ALLOWLIST` in `tools/mcp_ubuchhaltung.py`). Manche GET-Routen der
-  App ändern Daten oder erzeugen PDFs, und manche Seiten schreiben je nach Parameter.
-  Aktionen, PDF-Erzeugung, `/login` und `/logout` stehen nicht in der Liste.
-- **Sonst:** Außer der Anmeldung und der SQL-Konsole (`/execute_sql`) sendet er keine POSTs.
-  Antworten der Instanz begrenzt er auf 16 MiB und auf die doppelte Zeitgrenze je Anfrage.
-  Das Passwort steht nie in Ausgaben oder Logs.
-- **Lesemodus der Instanz:** Der Server schickt nie die Freigabe zum Schreiben; die SQL-Konsole der
-  Instanz (ab 2.3.11) lehnt dann selbst jeden ändernden Befehl ab.
-- **Restrisiko:** Die SQL-Konsole der Instanz bricht jede Anfrage nach 60 Sekunden ab. Die
-  Sperren lassen die üblichen Endlosabfragen gar nicht erst durch, aber nicht jede aufwendige
-  (etwa Kreuzprodukte großer Tabellen). Solche Abfragen belasten die Instanz und blockieren
-  Schreibzugriffe, bis sie enden oder abgebrochen werden.
+- Nur ein einzelnes `SELECT` ohne `;`; kein `WITH`/`RECURSIVE`, keine Abfragen über 20 000 Zeichen. Seiten nur aus einer
+  Positivliste (`_PAGE_ALLOWLIST` in `tools/mcp_ubuchhaltung.py`); Aktionen, PDF-Erzeugung, `/login` und `/logout` fehlen.
+- Außer der Anmeldung und der SQL-Konsole (`/execute_sql`) sendet er keine POSTs und nie die Freigabe zum Schreiben.
+  Antworten der Instanz begrenzt er auf 16 MiB. Das Passwort steht nie in Ausgaben oder Logs.
+- **Restrisiko:** Die SQL-Konsole der Instanz bricht jede Anfrage nach 60 Sekunden ab, aber nicht jede aufwendige Abfrage
+  (etwa Kreuzprodukte großer Tabellen) wird vorher abgewiesen. Solche Abfragen belasten die Instanz und blockieren
+  Schreibzugriffe, bis sie enden.
 
-**Voraussetzung:** ein Konto mit Administratorrechten – die SQL-Konsole steht nur
-Administratoren zur Verfügung und sieht ausschließlich die Datenbank des angemeldeten
-Kontos. Bei automatischer Anmeldung braucht der Server keine Zugangsdaten; dort gilt die
-Hostnamen-Prüfung aus „Schutz vor fremden Webseiten“ (bei einem Namen außerhalb der
-dort genannten Endungen `UBUCHHALTUNG_ALLOWED_HOSTS` auf der Instanz setzen).
+**Voraussetzung:** ein Konto mit Administratorrechten (die SQL-Konsole steht nur Administratoren zur Verfügung). Bei
+automatischer Anmeldung braucht der Server keine Zugangsdaten; dort gilt die Hostnamen-Prüfung aus
+[Hostnamen](#hostnamen-und-reverse-proxy).
 
 **Einrichtung unter Windows (PowerShell):**
 
-1. Zugangsdaten ablegen. `cmdkey` fragt das Passwort ab; es liegt danach verschlüsselt in
-   der Windows-Anmeldeinformationsverwaltung, nicht im Projektordner:
+1. Zugangsdaten ablegen. `cmdkey` fragt das Passwort ab; es liegt danach verschlüsselt in der
+   Windows-Anmeldeinformationsverwaltung:
    ```powershell
    cmdkey /generic:uBuchhaltung-MCP /user:<Benutzer> /pass
    ```
-2. Server registrieren. Der lokale Scope hält die Adresse außerhalb des Repos. **Empfohlen
-   ist HTTPS** (`https://…`, bei eigenem Zertifikat zusätzlich
-   `--env UBUCHHALTUNG_MCP_CAFILE=<Pfad>`). Über `http://` sendet der Server Benutzername und
-   Passwort nur an den eigenen Rechner (`localhost`, `127.0.0.1`, `::1`). Im reinen LAN ohne
-   HTTPS muss die Ausnahme bewusst gesetzt werden; Passwort und Sitzung gehen dann
-   unverschlüsselt durchs Netz:
+2. Server registrieren. Der lokale Scope hält die Adresse außerhalb des Repos. **Empfohlen ist HTTPS** (`https://…`, bei
+   eigenem Zertifikat zusätzlich `--env UBUCHHALTUNG_MCP_CAFILE=<Pfad>`). Über `http://` sendet der Server Benutzername und
+   Passwort nur an den eigenen Rechner (`localhost`, `127.0.0.1`, `::1`). Im reinen LAN ohne HTTPS muss die Ausnahme bewusst
+   gesetzt werden; Passwort und Sitzung gehen dann unverschlüsselt durchs Netz:
    ```powershell
    claude mcp add --scope local ubuchhaltung --env UBUCHHALTUNG_MCP_URL=http://nas.local:2824 --env UBUCHHALTUNG_MCP_ALLOW_HTTP=1 -- python <Projektordner>\tools\mcp_ubuchhaltung.py
    ```
-   Bei automatischer Anmeldung der Instanz werden keine Zugangsdaten gesendet; dort braucht
-   es die Ausnahme nicht.
-3. Optional ohne Nachfrage freigeben, in `.claude/settings.local.json` (steht nicht im Repo).
-   Alle Werkzeuge:
+   Bei automatischer Anmeldung der Instanz werden keine Zugangsdaten gesendet; dort braucht es die Ausnahme nicht.
+3. Optional ohne Nachfrage freigeben, in `.claude/settings.local.json` (steht nicht im Repo). Alle Werkzeuge:
    ```json
    {"permissions": {"allow": ["mcp__ubuchhaltung"]}}
    ```
-   Oder nur einzelne, z. B. die reinen Prüfwerkzeuge – bei `sql` und `page` fragt der Client
-   dann weiter nach:
+   Oder nur die reinen Prüfwerkzeuge (bei `sql` und `page` fragt der Client dann weiter nach):
    ```json
    {"permissions": {"allow": ["mcp__ubuchhaltung__info", "mcp__ubuchhaltung__schema", "mcp__ubuchhaltung__db_check"]}}
    ```
 
-**Andere Systeme und Sonderfälle:**
+**Andere Systeme und Variablen:**
 
-- Linux/macOS: in der Registrierung zusätzlich `--env UBUCHHALTUNG_MCP_USER=<Benutzer>`
-  angeben und das Passwort mit dem Paket `keyring` ablegen
-  (`keyring set uBuchhaltung-MCP <Benutzer>`). Als Notlösung geht
-  `UBUCHHALTUNG_MCP_PASSWORD` im Klartext – nur zusammen mit `UBUCHHALTUNG_MCP_USER`.
-- HTTPS mit eigenem Zertifikat: `UBUCHHALTUNG_MCP_CAFILE` auf die Zertifikatsdatei (PEM)
-  zeigen lassen, in der Registrierung zusätzlich `--env UBUCHHALTUNG_MCP_CAFILE=<Pfad>`.
-- Weitere Variablen: `UBUCHHALTUNG_MCP_CREDENTIAL` (Zielname in der Anmeldeinformationsverwaltung bzw. keyring-Dienst,
-  Standard `uBuchhaltung-MCP`), `UBUCHHALTUNG_MCP_TIMEOUT` (Sekunden je Anfrage, Standard 30)
-  und `UBUCHHALTUNG_MCP_ALLOW_HTTP` (`1`/`true`/`yes`/`ja`: Zugangsdaten bewusst über
-  unverschlüsseltes `http://` an einen fremden Rechner senden).
-- Meldet der Server „Eintrag in der Anmeldeinformationsverwaltung ist kein UTF-16-Text“, den Eintrag mit `cmdkey` neu
-  anlegen (Schritt 1).
+- Linux/macOS: in der Registrierung zusätzlich `--env UBUCHHALTUNG_MCP_USER=<Benutzer>` angeben und das Passwort mit dem
+  Paket `keyring` ablegen (`keyring set uBuchhaltung-MCP <Benutzer>`). Als Notlösung geht `UBUCHHALTUNG_MCP_PASSWORD` im
+  Klartext – nur zusammen mit `UBUCHHALTUNG_MCP_USER`.
+- `UBUCHHALTUNG_MCP_URL` (Pflicht): Adresse der Instanz. `UBUCHHALTUNG_MCP_CAFILE`: PEM-Datei für HTTPS mit eigenem
+  Zertifikat. `UBUCHHALTUNG_MCP_CREDENTIAL`: Zielname in der Anmeldeinformationsverwaltung bzw. keyring-Dienst (Standard
+  `uBuchhaltung-MCP`). `UBUCHHALTUNG_MCP_TIMEOUT`: Sekunden je Anfrage (Standard 30). `UBUCHHALTUNG_MCP_ALLOW_HTTP`
+  (`1`/`true`/`yes`/`ja`): Zugangsdaten bewusst über unverschlüsseltes `http://` an einen fremden Rechner senden.
+- Meldet der Server „Eintrag in der Anmeldeinformationsverwaltung ist kein UTF-16-Text“, den Eintrag mit `cmdkey` neu anlegen.
 
 ## Umzug auf Version 2
 
-**Was sich ändert:** Ab Version 2.0.0 gibt es nur noch die Ablage `data/users/<Name>/`.
-Das Datenbankschema selbst ändert sich nicht. Der frühere
-Einzelbenutzer-Betrieb (Daten direkt in `data/`, ohne Anmeldung) heißt jetzt
-„automatische Anmeldung“: Ein Administrator wird ohne Passwort angemeldet
-(`auto_login` in `data/config.json`, siehe oben).
+Ab Version 2.0.0 gibt es nur noch die Ablage `data/users/<Name>/`; das Datenbankschema ändert sich dabei nicht. Der frühere
+Einzelbenutzer-Betrieb (Daten direkt in `data/`, ohne Anmeldung) heißt jetzt „automatische Anmeldung“.
 
-**Was beim ersten Start von Version 2 automatisch passiert** (nur bei einer
-Einzelbenutzer-Installation, also `"mode": "single"` oder einer `data/buch.db`
-ohne `config.json`):
+**Vorher eine Datensicherung anlegen:** Server bzw. Container stoppen und das ganze Datenverzeichnis kopieren (Docker: den
+eingebundenen Ordner für `/app/data`, Unraid z. B. `/mnt/user/appdata/ubuchhaltung`).
 
-- Der Inhalt von `data/` wandert nach `data/users/admin/` – außer `config.json`,
-  `auth.db`, `users/` und `tests/`. Nichts wird gelöscht oder überschrieben.
-- Die gespeicherten Pfade von Rechnungsdokumenten (PDF, XML) und Belegen werden auf den
-  neuen Ort angepasst.
-- Der Benutzer `admin` wird angelegt und **automatisch angemeldet**. An der Bedienung
-  ändert sich nichts: Es gibt weiterhin keine Anmeldeseite. (Ist der Name `admin` schon
-  vergeben, heißt der Benutzer `admin2` usw.)
-- Ein früheres Demo-Verzeichnis (Marker `.demo`) wird zum Benutzer `demo`, ohne
-  automatische Anmeldung (siehe [Demo-Modus](#demo-modus-ausprobieren)).
+**Was beim ersten Start automatisch passiert** (nur bei `"mode": "single"` oder einer `data/buch.db` ohne `config.json`):
 
-Bestehende **Mehrbenutzer-Installationen** sind nicht betroffen.
+- Der Inhalt von `data/` wandert nach `data/users/admin/` – außer `config.json`, `auth.db`, `users/`, `tests/` und
+  `lost+found`. Nichts wird gelöscht oder überschrieben. Die gespeicherten Pfade von Rechnungsdokumenten und Belegen werden
+  auf den neuen Ort angepasst.
+- Der Benutzer `admin` wird angelegt und **automatisch angemeldet**; es gibt weiterhin keine Anmeldeseite. Ist der Name
+  vergeben, heißt der Benutzer `admin2` usw.
+- Ein früheres Demo-Verzeichnis (Marker `.demo`) wird zum Benutzer `demo`, ohne automatische Anmeldung.
 
-**Vorher eine Datensicherung anlegen:** Server bzw. Container stoppen und das ganze
-Datenverzeichnis kopieren (Docker: den eingebundenen Ordner für `/app/data`, Unraid
-z. B. `/mnt/user/appdata/ubuchhaltung`).
+Bestehende Mehrbenutzer-Installationen sind nicht betroffen.
 
-**Woran man den erfolgreichen Umzug erkennt:**
+**Erfolg erkennt man daran:** Das Log des ersten Starts nennt den Umzug (`'./data' → './data/users/admin'`), die Zahl der
+angepassten Dateipfade und den automatisch angemeldeten Benutzer; `data/config.json` lautet
+`{"mode": "multi", "auto_login": "admin"}`; direkt in `data/` liegen nur noch `config.json`, `auth.db` und `users/`. Beim
+nächsten Start steht davon nichts mehr im Log.
 
-- Das Log des ersten Starts nennt den Umzug (`'./data' → './data/users/admin'`), die
-  Zahl der angepassten Dateipfade und den automatisch angemeldeten Benutzer.
-- `data/config.json` lautet `{"mode": "multi", "auto_login": "admin"}`.
-- Direkt in `data/` liegen nur noch `config.json`, `auth.db` und `users/`.
-- Beim nächsten Start steht davon nichts mehr im Log: Der Umzug läuft nur einmal.
+**Bei Abbruch:** Der Umzug ist wiederaufnehmbar. `config.json` trägt bis zum Ende die Marke `migrating_to`; einfach neu
+starten. Meldet der Start „… existiert bereits“, wurde nichts überschrieben: Im Ziel unter `data/users/<Name>/` liegt schon
+etwas mit demselben Namen. Das muss von Hand geklärt werden (Eintrag umbenennen oder zusammenführen), danach neu starten.
 
-**Bei Abbruch:** Der Umzug ist wiederaufnehmbar. `config.json` trägt bis zum Ende die
-Marke `migrating_to`; einfach neu starten. Meldet der Start „… existiert bereits“, wurde
-nichts überschrieben: Im Ziel unter `data/users/<Name>/` liegt schon etwas mit
-demselben Namen. Das muss von Hand geklärt werden (vorhandenen Eintrag umbenennen oder
-zusammenführen), danach neu starten.
+**Zurück auf 1.x:** Server stoppen, den Inhalt von `data/users/admin/` zurück nach `data/` verschieben, `config.json` auf
+`{"mode": "single"}` setzen und das alte Image bzw. die alte Version starten. Die in der Datenbank gespeicherten Pfade werden
+dabei nicht zurückgeschrieben: Rechnungs-PDFs findet die alte Version über das Namensschema wieder, die Pfadangaben in der
+Belegliste zeigen dann noch auf den neuen Ort. Soll später doch wieder Version 2 laufen, vorher das leere
+`data/users/admin/` und `data/auth.db` entfernen – sonst ist der Name vergeben und der Umzug legt `admin2` an.
 
-**Zurück auf 1.x:** Server stoppen, den Inhalt von `data/users/admin/` zurück nach
-`data/` verschieben, `config.json` auf `{"mode": "single"}` setzen und das alte Image
-bzw. die alte Version starten. Die in der Datenbank gespeicherten Pfade werden dabei
-nicht zurückgeschrieben: Rechnungs-PDFs findet die alte Version über das Namensschema
-wieder, die Pfadangaben in der Belegliste zeigen dann noch auf den neuen Ort. Soll
-später doch wieder Version 2 laufen, vorher das leere `data/users/admin/` und
-`data/auth.db` (sie enthält nur den beim Umzug angelegten `admin`) entfernen – sonst
-ist der Name vergeben und der Umzug legt den Benutzer `admin2` an.
-
-**Anmeldung nachträglich einschalten:** Unter **Stammdaten → Benutzer** die
-automatische Anmeldung ausschalten und dabei ein Passwort setzen. Das Passwort des
-Benutzers `admin` kennt sonst niemand – es wird beim Umzug zufällig erzeugt. Wurde
-`auto_login` von Hand aus `config.json` entfernt, ohne vorher ein Passwort zu setzen,
-den Eintrag `"auto_login": "admin"` wieder hinzufügen und es dann in der
-Benutzerverwaltung setzen.
+**Anmeldung nachträglich einschalten:** Unter *Stammdaten → Benutzer* die automatische Anmeldung ausschalten und dabei ein
+Passwort setzen. Das Passwort des Benutzers `admin` kennt sonst niemand – es wird beim Umzug zufällig erzeugt. Wurde
+`auto_login` von Hand aus `config.json` entfernt, ohne vorher ein Passwort zu setzen, den Eintrag `"auto_login": "admin"`
+wieder hinzufügen und das Passwort dann in der Benutzerverwaltung setzen.
 
 ## Demo-Modus (ausprobieren)
 
-`UBUCHHALTUNG_DEMO=1` startet uBuchhaltung mit erfundenen Beispieldaten – ohne
-Ersteinrichtung:
+`UBUCHHALTUNG_DEMO=1` startet uBuchhaltung mit erfundenen Beispieldaten, ohne Ersteinrichtung:
 
     docker run -p 2824:2824 -e UBUCHHALTUNG_DEMO=1 ghcr.io/nobsevomberg/ubuchhaltung:latest
     UBUCHHALTUNG_DEMO=1 python main.py        # Linux/macOS (Windows: $env:UBUCHHALTUNG_DEMO = "1")
 
-- Die Demodaten gehören dem Benutzer `demo` und liegen **ausschließlich unter
-  `data/users/demo/`**. Geladen werden sie nur, wenn dieses Verzeichnis fehlt oder leer
-  ist **und** es noch keinen Benutzer `demo` gibt; sonst gibt es eine Warnung im Log und
-  einen normalen Start. Andere Daten in `data/` werden nie angefasst – echte Bücher
-  und Demo können nebeneinander liegen.
-- Solange die Variable gesetzt ist, arbeitet jeder Besucher ohne Anmeldung als `demo`.
-  `demo` ist **kein Administrator**: keine Benutzerverwaltung, keine SQL-Konsole.
-  Andere Benutzer können sich so lange nicht anmelden (auch ein Administrator mit
-  automatischer Anmeldung nicht).
-- Im Demo-Modus nimmt die App keine Dateien an (Belege, Kontoauszüge, Logos, Importe).
-- Ohne die Variable läuft die Instanz normal. `demo` ist dann ein gewöhnlicher
-  Benutzer ohne bekanntes Passwort: Ein Administrator kann ihm in der Benutzerverwaltung
-  eines setzen oder ihn löschen (sein Verzeichnis `data/users/demo/` bleibt dabei
-  liegen). Enthält `data/` nur die Demo und noch keinen Administrator, zeigt der Start
-  ohne Variable die Ersteinrichtung.
-- Inhalt: Musterfirma mit gut drei Jahren erfundener Buchhaltung (rund 300 Rechnungen mit
-  Zahlungen, Angebote, Storno und Ersatzrechnung, offene und überfällige Posten, Ausgaben,
-  Splits, Kasse und Tagesgeld, Anlagen mit AfA, Fahrtenbuch, Arbeitszeiten; das erste Jahr als
-  Kleinunternehmerjahr); alle Daten sind relativ zum Startdatum datiert (`demo_seed.py`,
-  `demo_history.py`). Das erste Laden dauert einige Sekunden; PDF und E-Rechnung gibt es nur für
-  die Rechnungen der letzten 30 Tage („PDF + E-Rechnung“ erzeugt sie für ältere).
-- Ein Neustart mit demselben Verzeichnis befüllt nicht erneut (Marker
-  `data/users/demo/.demo`).
-- Auf jeder Seite erscheint der Hinweis „Demo-Modus – Beispieldaten, nicht für die
-  echte Buchhaltung“.
-- **Nicht für öffentliches Hosting:** keine Anmeldung, und jeder Besucher darf die
-  Demodaten ändern. Nur lokal oder im vertrauenswürdigen LAN verwenden.
-
-## Schema-Migrationen
-
-Bestehende Nutzer-Datenbanken werden beim Start automatisch auf den aktuellen
-Schemastand gebracht (`PRAGMA user_version` spiegelt die `SCHEMA_VERSION` aus
-`version.py`). Davor legt die App eine Sicherung unter
-`backup/JJJJMMTT_vor_<Version>_buch.db` im Datenordner des Nutzers an; ein Zurück auf
-eine ältere Version gibt es nur über diese Sicherung (Anleitung im README, Abschnitt
-„Gut zu wissen“). Eine Datenbank, die von einer neueren Version stammt, öffnet die App
-nicht.
+- Die Demodaten gehören dem Benutzer `demo` und liegen **ausschließlich unter `data/users/demo/`**. Geladen werden sie nur,
+  wenn dieses Verzeichnis fehlt oder leer ist **und** es noch keinen Benutzer `demo` gibt; sonst gibt es eine Warnung im Log
+  und einen normalen Start. Andere Daten in `data/` werden nie angefasst. Ein Neustart mit demselben Verzeichnis befüllt
+  nicht erneut (Marker `data/users/demo/.demo`).
+- Solange die Variable gesetzt ist, arbeitet jeder Besucher ohne Anmeldung als `demo`. `demo` ist **kein Administrator**
+  (keine Benutzerverwaltung, keine SQL-Konsole); andere Benutzer können sich so lange nicht anmelden. Die App nimmt keine
+  Dateien an (Belege, Kontoauszüge, Logos, Importe) und zeigt auf jeder Seite den Hinweis „Demo-Modus – Beispieldaten, nicht
+  für die echte Buchhaltung“.
+- Ohne die Variable läuft die Instanz normal. `demo` ist dann ein gewöhnlicher Benutzer ohne bekanntes Passwort: Ein
+  Administrator kann ihm in der Benutzerverwaltung eines setzen oder ihn löschen (sein Verzeichnis bleibt dabei liegen).
+  Enthält `data/` nur die Demo und noch keinen Administrator, zeigt der Start ohne Variable die Ersteinrichtung.
+- Inhalt: Musterfirma mit gut drei Jahren erfundener Buchhaltung (rund 300 Rechnungen mit Zahlungen, Angebote, Storno,
+  offene und überfällige Posten, Ausgaben, Kasse, Anlagen mit AfA, Fahrtenbuch, Arbeitszeiten; das erste Jahr als
+  Kleinunternehmerjahr), datiert relativ zum Startdatum. Das erste Laden dauert einige Sekunden; PDF und E-Rechnung gibt es
+  nur für die Rechnungen der letzten 30 Tage („PDF + E-Rechnung“ erzeugt sie für ältere). Einzelheiten:
+  `docs/regeln/werkzeuge.md`.
+- **Nicht für öffentliches Hosting:** keine Anmeldung, und jeder Besucher darf die Demodaten ändern. Nur lokal oder im
+  vertrauenswürdigen LAN verwenden.

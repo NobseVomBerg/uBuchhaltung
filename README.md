@@ -123,107 +123,16 @@ Anmeldung). Vorher eine Datensicherung anlegen – Ablauf und Rückweg unter
 
 | Bereich | Was drin ist |
 |---|---|
-| **Buchen** | Bankbewegungen und Buchungssätze, Split-Buchungen, Kontierungs-Vorschlag aus der Historie, Belege verknüpfen. Zu einem Zahlungseingang schlägt die App die passende offene Rechnung vor (Rechnungsnummer im Verwendungszweck, sonst Betrag und Kunde) – zugeordnet wird erst auf Klick |
-| **Belege** | Dateien hochladen, ansehen und mit Buchungen verknüpfen. Die App liest Belege aus (nach dem Hochladen gleich, vorhandene auf Knopfdruck): E-Rechnungen (XRechnung, ZUGFeRD) strukturiert, PDFs mit Textebene über feste Regeln. Die gelesenen Werte stehen mit ihrer Herkunft am Beleg, dazu Vorschläge für die passende Bankbewegung – verknüpft wird erst auf Klick. Keine Texterkennung für Scans und Fotos; die Regeln lesen nicht jede Rechnung, gelesene Werte sind zu prüfen |
+| **Buchen** | Bankbewegungen und Buchungssätze, Split-Buchungen, Kontierungs-Vorschlag aus der Historie, Belege verknüpfen. Zu einem Zahlungseingang schlägt die App die passende offene Rechnung vor – zugeordnet wird erst auf Klick |
+| **Belege** | Dateien hochladen, ansehen und mit Buchungen verknüpfen. E-Rechnungen (XRechnung, ZUGFeRD) werden strukturiert gelesen, PDFs mit Textebene über feste Regeln; dazu Vorschläge für die passende Bankbewegung – verknüpft wird erst auf Klick. Keine Texterkennung für Scans und Fotos; gelesene Werte sind zu prüfen |
 | **Kontenrahmen** | SKR04 vorbelegt, eigene Konten (auch weiterer Rahmen wie SKR03) anlegbar, DATEV-Steuerschlüssel |
-| **Auswertung** | Dashboard mit Monatsverlauf, Einnahmen-Überschuss-Rechnung (EÜR, auch als eigene Seite und PDF), monatliche betriebswirtschaftliche Auswertung, Summen- und Saldenliste und Liquiditätsrechnung (je Seite und PDF; die beiden ersten auch als CSV für eine Tabellenkalkulation) |
-| **Rechnungen & Angebote** | PDF als hybride E-Rechnung (ZUGFeRD/Factur-X, EN 16931) und XRechnung, auf Wunsch mit Steuersatz je Position (mehrere Sätze in einem Beleg), weitere Steuersätze und steuerfreie Leistungen aus einer eigenen Liste der Stammdaten (mit Befreiungsgrund auf dem Beleg), E-Mail-Versand, Nummernkreise, Stornorechnung als eigener Beleg (auf Wunsch mit Entwurf der neuen Rechnung), offene Posten, Mahnwesen, Kleinunternehmerregelung (der Hinweis auf § 19 UStG steht automatisch im Dokument) |
+| **Auswertung** | Dashboard mit Monatsverlauf, Einnahmen-Überschuss-Rechnung (EÜR), betriebswirtschaftliche Auswertung, Summen- und Saldenliste und Liquiditätsrechnung – als Seite und PDF, die BWA und die Summen- und Saldenliste auch als CSV |
+| **Rechnungen & Angebote** | PDF als hybride E-Rechnung (ZUGFeRD/Factur-X, EN 16931) und XRechnung, Steuersatz je Position, E-Mail-Versand, Nummernkreise, Stornorechnung, offene Posten, Mahnwesen, Kleinunternehmerregelung |
 | **Anlagen** | Anlagenverzeichnis mit AfA (linear, degressiv, GWG) |
-| **Import & Export** | Kontoauszüge im Bankformat CAMT.053 (XML oder ZIP, jede Bank), als PDF (DKB, Volksbank Rottweil) oder als CSV (Umsatzliste der DKB) – bei einem gemischt genutzten Konto lassen sich einzelne Umsätze auswählen, [Datenübernahme aus WISO Mein Büro](#datenübernahme-aus-wiso-mein-büro), DATEV-Buchungsstapel |
+| **Import & Export** | Kontoauszüge als CAMT.053 (XML oder ZIP, jede Bank), PDF (DKB, Volksbank Rottweil) oder CSV (Umsatzliste der DKB), [Datenübernahme aus WISO Mein Büro](#datenübernahme-aus-wiso-mein-büro), DATEV-Buchungsstapel |
 | **Außerdem** | Arbeitszeiten mit Stundenzettel, Fahrtenbuch, ein Benutzer ohne Anmeldung oder mehrere mit Login, Datensicherung, Dark Mode |
 
 Alle Funktionen ausführlich: [Funktionen im Detail](#funktionen-im-detail).
-
-## Datenübernahme aus WISO Mein Büro
-
-uBuchhaltung kann vorhandene Daten aus WISO Mein Büro (Desktop) übernehmen –
-direkt aus der Datenbankdatei oder aus den Textexporten:
-
-- **Import aus der Datenbank** (*Daten → Import aus der Datenbank*):
-  liest die Firebird-Dateien (`.FDB`) des Mandanten direkt in Python – ohne
-  Firebird-Installation, Treiber oder DLL. Die Dateien `DB1.FDB` (Mandant) und,
-  optional, `DB0.FDB` (Standard-Kontenrahmen) aus dem DB-Verzeichnis von WISO
-  werden im Browser ausgewählt und hochgeladen (bis 2 GB je Datei) – auch, wenn
-  uBuchhaltung in einem Container oder auf einem anderen Rechner läuft; nach dem
-  Import löscht der Server sie wieder. Übernommen werden Buchungen aller
-  Jahre einschließlich der Zusammengehörigkeit von Teilbuchungen, Anlagen,
-  Kunden sowie Rechnungen mit ihren Positionen. Gelesen wird je Datensatz der letzte abgeschlossene Stand:
-  War WISO beim Kopieren der Datei geöffnet oder wurde es nicht sauber beendet, übernimmt der Import keine
-  halbfertigen Änderungen und nennt nach dem Lauf, wie viele Sätze das betraf. Am sichersten bleibt eine Kopie
-  bei geschlossenem WISO.
-- Konten werden von SKR03 nach SKR04 umgeschlüsselt. Konten ohne eindeutige
-  Zuordnung werden gemeldet, nicht geraten. Selbst angelegte Unterkonten (z. B. je
-  Fahrzeug) behalten die SKR04-Nummer, die WISO zu ihnen speichert; nur wo WISO keine
-  nennt, gilt ersatzweise die Nummer des Basiskontos – solche Unterkonten fallen dann auf
-  dem Basiskonto zusammen. Ältere Versionen haben Unterkonten auf das
-  Basiskonto geschrieben: Ein erneuter Import legt diese Buchungen nicht doppelt an und ändert
-  sie nicht, meldet sie aber (für getrennte Konten die Daten in eine frische Datenbank
-  importieren). Ist ein Unterkonto eines Bank-, Kassen- oder Verrechnungskontos in der App
-  kein Zahlungskonto, meldet der Import es: Buchungen darauf würden als Umbuchung gelesen und
-  erschienen nicht in der EÜR – das Konto vorher als Bank- oder Kassenkonto anlegen und neu
-  importieren.
-- Der AfA-Plan der Anlagen wird übernommen, aber nur gebucht, was zum Importtag fällig ist:
-  WISO schreibt die AfA aller Jahre sofort als Buchungssätze, auch für künftige. Sätze mit einem
-  Datum nach dem Importtag legt der Import nie als Buchung an; was ein früherer Import schon
-  gebucht hat, bleibt unverändert, und sein Jahr gilt als gebucht. Der Status eines Jahres im
-  AfA-Plan folgt der Buchung: Steht der AfA-Satz in den Büchern, gilt das Jahr als gebucht,
-  sonst steht es als geplant im Plan und ist im jeweiligen Jahr in der App zu buchen (das
-  geschieht nicht von selbst). Hat die App ein Jahr schon gebucht, legt ein späterer Import den
-  AfA-Satz dafür nicht an und meldet es. Die Anlage der App wird über die Inventarnummer
-  gefunden; fehlt sie oder ist sie mehrfach vergeben, meldet der Import das. Beim Buchen rechnet
-  die App die offenen Jahre aus dem Restbuchwert der gebuchten Jahre neu (verteilt auf die
-  Restnutzungsdauer); weicht ihr Plan für ein geplantes Jahr um mehr als 1 € von dem aus WISO
-  ab, meldet der Import das: Beim Buchen gilt der Plan der App. Ein gebuchtes Jahr steht mit dem
-  Betrag, den die Bücher führen (eine Korrektur mit vertauschten Konten mindert ihn); ein erneuter
-  Import ändert gebuchte Jahre nicht, gleicht nur einen abweichenden Planbetrag an die Bücher an.
-  Plant WISO nichts mehr, die App aber noch ein offenes Jahr, meldet der Import den Restbuchwert.
-- Der Anschaffungswert einer Anlage ist die Summe ihrer Zahlungen plus ein von Hand
-  eingetragener Wert; ein Behelfsbetrag bis 1 € und ein Wert, der der Zahlungssumme gleicht
-  (dieselbe Anschaffung doppelt erfasst), zählen nicht. Zählen beide Beträge, weist der Import
-  darauf hin.
-- Vor dem Schreiben prüft der Import die Tabellenstruktur und bricht ab, wenn
-  sie nicht der erwarteten entspricht.
-- **CSV-Import** der Textexporte (Original- und Tabellen-Export), auch
-  wiederholt im Parallelbetrieb – Details in [PARSER_README.md](PARSER_README.md).
-- CSV- und Datenbank-Import lassen sich nacheinander nutzen: Der Datenbank-Import
-  erkennt Buchungen des CSV-Imports an Beleg-Nr., Datum, Konto, Betrag und Text
-  wieder (das Gegenkonto darf nicht widersprechen) und ergänzt sie, statt sie zu
-  verdoppeln. Was nicht genau übereinstimmt – etwa eine CSV-Zeile mit nachträglich
-  geändertem Text, Gegenkonto oder Betrag, oder eine von Hand erfasste Buchung –,
-  legt er neu an und meldet ähnliche vorhandene Buchungen als „möglicherweise
-  doppelt“: lieber eine sichtbare zweite Buchung als eine still falsch übernommene.
-- Der Datenbank-Import ist für einen **leeren Bestand** und **eine** WISO-Datenbank je Bestand
-  gedacht; ein weiterer Import ist möglich, verlangt aber eine ausdrückliche Bestätigung (ein
-  Hinweis auf *Daten* nennt, was schon im Bestand steht). Legt WISO Buchungen neu an (etwa
-  nach einem DATEV-Export), erkennt der Import sie an Datum, Konten, Steuersatz, Betrag und Beleg-Nr.
-  wieder, hängt die vorhandene Buchung an die neue Kennung um und legt sie nicht doppelt an.
-  Buchungen, die es in WISO nicht mehr gibt (gelöscht oder mit anderem Inhalt neu angelegt),
-  bleiben im Bestand stehen und stehen in einer Liste auf *Daten* – gelöscht wird nichts,
-  das bleibt Handarbeit. Eine nachträgliche Änderung innerhalb einer weiter bestehenden Buchung
-  (anderer Betrag, entfallene Teilbuchung) bemerkt der Import nicht.
-
-- Der **BU-Schlüssel** der Buchung (aus der Datenbank `DATEVVATKEY`, aus dem Textexport `SCHLUESSEL`) bleibt am Buchungssatz und geht
-  unverändert in den DATEV-Stapel; ein erneuter Import der Datenbank trägt ihn an schon importierten Buchungen nach – nur dort, wo er fehlt
-  und die Buchung denselben Steuersatz trägt wie in WISO (sonst leitet der Export den Schlüssel aus dem Satz der App ab; die Seite
-  *Daten* nennt die Zahl solcher Buchungen). Berater- und Mandantennummer übernimmt der Datenbank-Import in die Stammdaten der
-  eigenen Firma, wenn beide Felder dort leer sind.
-- Beide Importe melden, was sie nicht sicher lesen können: Sätze mit **negativem Bruttobetrag**
-  und genau einem Bank-, Kassen- oder Verrechnungskonto (dort bestimmt die Geldbewegung das
-  Vorzeichen; WISO schreibt Beträge üblicherweise nicht negativ, ein solcher Satz fällt aus dem Muster),
-  im Textexport **Steuerschlüssel, die die App nicht kennt** (die Zeile kommt ohne Steuersatz), Buchungen
-  auf **Konten 1000–1099** (in SKR04
-  Vorräte; ältere Versionen haben sie als Kasse gelesen – bitte prüfen, ob hier eine Kasse gemeint
-  ist; Buchungen gegen diese Konten werden als Umbuchung gelesen und erscheinen nicht in der EÜR) und
-  **ältere Überträge** zwischen Bank, Kasse und Verrechnungskonto, die noch nach der alten Lesart
-  gespeichert sind: Der Import erkennt sie wieder, legt sie nicht doppelt an und ändert ihre Form nicht.
-  Dasselbe gilt für Buchungen auf Konten 1000–1099, die eine ältere Version als Kasse gespeichert hat.
-
-Empfehlung: den Datenbank-Import mit einer Kopie der Datenbankdatei durchführen.
-
-> WISO, MeinBüro, DATEV und die genannten Banken sind Marken ihrer jeweiligen Inhaber. uBuchhaltung ist ein
-> unabhängiges Projekt und steht in keiner Verbindung zu den Markeninhabern oder
-> dem Hersteller. Die Namen dienen allein der Bezeichnung der unterstützten
-> Importformate.
 
 ## Gut zu wissen
 
@@ -231,590 +140,234 @@ Empfehlung: den Datenbank-Import mit einer Kopie der Datenbankdatei durchführen
   Verantwortung für eine ordnungsgemäße Buchführung und für Steuererklärungen
   bleibt beim Anwender. Eine Prüfung oder Zusicherung der GoBD-Konformität gibt
   es nicht.
-- **Updates mit Schemaänderung (ab 2.1.0):** Vor jeder Umstellung einer bestehenden Datenbank legt
-  uBuchhaltung beim Start automatisch eine Sicherung an: `<Datenordner>/backup/JJJJMMTT_vor_<Version>_buch.db`
-  (z. B. `20261111_vor_2.1.0_buch.db`; eine vorhandene Datei wird nie überschrieben). Gelingt die Sicherung
-  nicht, öffnet die Datenbank nicht und bleibt unverändert; bricht die Umstellung selbst ab, ist die
-  Datenbank danach so wie vorher. Danach gibt es **kein Zurück auf 2.0.x** – ältere Versionen öffnen
-  eine 2.1-Datenbank nicht. Die Umstellung ändert keine Auswertung: EÜR, DATEV-Export und Dashboard
-  zeigen danach dieselben Werte wie vorher. Das Update auf 2.2.0 (Fassungen und Protokoll versendeter
-  Rechnungen, ebenfalls eine Schemaänderung) legt vor der Umstellung genauso eine Sicherung an; ein Zurück auf
-  2.1.x gibt es nur über diese Sicherung. Dasselbe gilt für das Update auf 2.3.0 (BU-Schlüssel am Buchungssatz und
-  DATEV-Nummern der eigenen Firma): Zurück auf 2.2.x nur über die Sicherung. Anders als die früheren Umstellungen ändert 2.3.0 den
-  **DATEV-Export**: Er schreibt andere BU-Schlüssel (siehe unten). Auch das Update auf 2.4.0 (Besteuerungsart an der
-  eigenen Firma, eine neue Spalte) legt die Sicherung an – zurück auf 2.3.x nur über sie; es ändert keine Buchung, keine
-  Auswertung und keinen Export. Dasselbe gilt für das Update auf 2.5.0 (Kennzeichen „Reines Geschäftskonto“ am
-  Bankkonto, eine neue Spalte; alle bestehenden Konten gelten danach als reine Geschäftskonten): Sicherung vor der Umstellung,
-  zurück auf 2.4.x nur über sie; es ändert keine Buchung und keine Auswertung.
-  **Sicherung zurückspielen** (die Oberfläche bietet das für diese Kopien nicht an; herunterladen lassen sie sich auf der Seite
-  *Daten* im Abschnitt Datensicherung, mit Datum und Größe): uBuchhaltung beenden, die Datei
-  `backup/<Datum>_vor_<Version>_buch.db` im Datenordner des Nutzers (`data/users/<Name>/`, im Container
-  das eingebundene Datenverzeichnis) über `buch.db` kopieren – liegen daneben Dateien `buch.db-journal`,
-  `buch.db-wal` oder `buch.db-shm`, diese vorher löschen – und eine ältere Programmversion starten.
-  Was nach der Umstellung eingegeben wurde, geht dabei verloren.
 - **Noch nicht enthalten:** Umsatzsteuer-Voranmeldung bzw. ELSTER-Übermittlung,
-  Soll-Versteuerung (Umsatzsteuer mit der Leistung) – die App führt Erlös und Umsatzsteuer nach dem
-  Zahlungseingang; die Besteuerungsart lässt sich an der eigenen Firma festhalten, ändert aber keine Buchung –,
-  Bankanbindung per FinTS/PSD2 sowie Kontoauszüge im MT940-Format.
+  Soll-Versteuerung (die App führt Erlös und Umsatzsteuer nach dem Zahlungseingang; die
+  Besteuerungsart lässt sich an der eigenen Firma festhalten, ändert aber keine Buchung),
+  Bankanbindung per FinTS/PSD2 und Kontoauszüge im MT940-Format.
 - **Für den Betrieb im eigenen Netz gebaut**, nicht fürs offene Internet –
   siehe [Sicherheitshinweise](#sicherheitshinweise).
+- **Updates mit Schemaänderung:** Vor jeder Umstellung einer bestehenden Datenbank legt die App
+  beim Start automatisch eine Sicherung an: `<Datenordner>/backup/JJJJMMTT_vor_<Version>_buch.db`
+  (eine vorhandene Datei wird nie überschrieben). Gelingt die Sicherung nicht, öffnet die Datenbank
+  nicht und bleibt unverändert; bricht die Umstellung ab, ist die Datenbank danach so wie vorher.
+  Eine Datenbank einer neueren Version öffnet die App nie – ein Zurück auf eine ältere Version gibt
+  es nur über die Sicherung. Die Sicherungen lassen sich auf der Seite *Daten* (Abschnitt
+  Datensicherung) herunterladen.
+  **Sicherung zurückspielen** (die Oberfläche bietet das für diese Kopien nicht an): uBuchhaltung
+  beenden, die Datei `backup/<Datum>_vor_<Version>_buch.db` im Datenordner des Nutzers
+  (`data/users/<Name>/`, im Container das eingebundene Datenverzeichnis) über `buch.db` kopieren –
+  liegen daneben `buch.db-journal`, `buch.db-wal` oder `buch.db-shm`, diese vorher löschen – und die
+  ältere Programmversion starten. Was nach der Umstellung eingegeben wurde, geht dabei verloren.
 
 Fehler gefunden oder eine Idee? → [Issues](https://github.com/NobseVomBerg/uBuchhaltung/issues).
 Beiträge sind willkommen, siehe [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ---
 
+## Datenübernahme aus WISO Mein Büro
+
+uBuchhaltung kann vorhandene Daten aus WISO Mein Büro (Desktop) übernehmen –
+direkt aus der Datenbankdatei oder aus den Textexporten (*Daten* → *Import aus der Datenbank* bzw. WISO-Import):
+
+- **Import aus der Datenbank:** liest die Firebird-Dateien (`.FDB`) des Mandanten direkt in Python – ohne
+  Firebird-Installation. `DB1.FDB` (Mandant) und optional `DB0.FDB` (Standard-Kontenrahmen) aus dem
+  DB-Verzeichnis von WISO werden im Browser hochgeladen (bis 2 GB je Datei, auch bei Betrieb im Container);
+  nach dem Import löscht der Server sie wieder. Übernommen werden Buchungen aller Jahre mit ihren Teilbuchungen,
+  Anlagen samt AfA-Plan, Kunden sowie Rechnungen mit Positionen. Am sichersten ist eine Kopie der Datei bei
+  geschlossenem WISO; ein nicht sauber beendeter Stand wird nicht halbfertig übernommen, der Import nennt, wie viele Sätze das betraf.
+- **Textexport:** der Original- und der Tabellen-Export, auch wiederholt im Parallelbetrieb – Details in
+  [PARSER_README.md](PARSER_README.md). CSV- und Datenbank-Import lassen sich nacheinander nutzen; bereits
+  übernommene Buchungen werden erkannt und nicht verdoppelt.
+- **Konten:** SKR03 wird nach SKR04 umgeschlüsselt. Konten ohne eindeutige Zuordnung werden gemeldet, nicht geraten.
+- **BU-Schlüssel** der Buchungen und die Berater-/Mandantennummer (bei leeren Feldern der eigenen Firma) werden übernommen und gehen in den DATEV-Stapel.
+- **Ein Import in einen leeren Bestand** ist der vorgesehene Weg; ein weiterer Import verlangt eine ausdrückliche
+  Bestätigung. Buchungen, die es in WISO nicht mehr gibt, bleiben im Bestand stehen und stehen in einer Liste auf *Daten* –
+  gelöscht wird nichts.
+- **Meldungen statt Raten:** Was der Import nicht sicher lesen oder zuordnen kann (Sätze mit negativem Bruttobetrag, unbekannte Steuerschlüssel,
+  Buchungen auf Konten 1000–1099, mögliche Doppelungen, abweichende Anlagenpläne), meldet er nach dem Lauf – lieber eine sichtbare zweite Buchung als eine still falsche.
+
+Empfehlung: den Datenbank-Import mit einer Kopie der Datenbankdatei durchführen. Die genauen Regeln stehen in
+[`docs/regeln/import.md`](docs/regeln/import.md).
+
+> WISO, MeinBüro, DATEV und die genannten Banken sind Marken ihrer jeweiligen Inhaber. uBuchhaltung ist ein
+> unabhängiges Projekt und steht in keiner Verbindung zu den Markeninhabern oder
+> dem Hersteller. Die Namen dienen allein der Bezeichnung der unterstützten
+> Importformate.
+
+---
+
 ## Funktionen im Detail
 
-uBuchhaltung verwaltet Belege, Konten und Buchungen auf Basis des deutschen
-Standardkontenrahmens (SKR). Bankbewegungen (`BookingType='bank'`) und
-Buchungssätze (`BookingType='entry'`) werden in einer gemeinsamen Tabelle
-geführt und automatisch verknüpft.
+Jede Funktion mit ihrer Seite im Browser. Die Regeln hinter den Funktionen stehen in [`docs/regeln/`](docs/regeln/).
 
-### 1. Belege-Verwaltung (`/receipts`)
-- Übersicht aller Belege mit Nummer, Datum, Dateiname, Datei und Zusatzinfos
-- Dateien hochladen (auch mehrere auf einmal): Jede Datei wird sofort ein Beleg mit Nummer aus dem Kreis *Belegnummern Firma*, Datum und
-  Dateiname, liegt unter `Belege/<Jahr>/` und lässt sich in der Liste ansehen (PDF und Bilder) und herunterladen; ein Kontoauszug ist dort
-  ein Beleg wie jede andere Datei – importiert wird er auf der Seite „Buchungen“
-- Hinzufügen, Bearbeiten, Löschen – gelöscht wird ein Beleg nur, solange keine Buchung, Anlage oder Fahrt auf ihn verweist; seine
-  hochgeladene Datei geht mit, und die zuletzt vergebene Nummer wird wieder frei
-- Belege und Buchungen verknüpfen – am Beleg (Seite des Belegs) eine Buchung suchen und zuordnen, in der Buchungsmaske einen Beleg
-  suchen und zuordnen; die Liste zeigt je Beleg die Zahl der verknüpften Buchungen. Trägt die Buchung noch keine Beleg-Nr.,
-  übernimmt sie die Nummer des Belegs – sofern keine andere Buchung diese oder eine ähnliche Nummer trägt; Lösen lässt sie stehen.
-- Belege lesen – nach dem Hochladen liest die Seite die neuen Dateien nacheinander, vorhandene Belege lassen sich mit einem Knopf über der
-  Liste (alle ungelesenen) oder auf der Seite des Belegs („Lesen“/„Neu lesen“) nachlesen; die Spalte „Gelesen“ zeigt je Beleg Betrag und Absender.
-  **E-Rechnungen** (XRechnung als XML, ZUGFeRD/Factur-X als PDF mit eingebettetem XML) werden aus ihren Feldern gelesen, **gewöhnliche PDFs mit
-  Textebene** über feste Regeln: Belegdatum, Rechnungsnummer, Absender, USt-IdNr., Brutto, Netto, Steuer, Steuersatz, Währung. Jeder gelesene Wert
-  nennt seine Herkunft (die Zeile im Beleg bzw. das Feld der E-Rechnung); ist ein Wert nicht eindeutig, bleibt das Feld leer, und die Seite nennt den
-  Grund. Zu einem gelesenen Beleg schlägt die Seite passende Bankbewegungen vor (derselbe Betrag, dazu Rechnungsnummer, Name und Datum) –
-  **verknüpft, gebucht oder am Beleg geändert wird nichts ohne Klick**; „Gelesenes Datum übernehmen“ setzt nur das Datumsfeld des Formulars.
-  Grenzen: Für gescannte PDFs und Fotos gibt es keine Texterkennung, die Regeln lesen nicht jede Rechnung, und ein gelesener Wert ist eine
-  Lesung der Datei, kein geprüfter Inhalt – bitte prüfen. Im Demo-Modus ist das Lesen abgeschaltet.
+### Belege (`/receipts`)
+- Dateien hochladen (auch mehrere): Jede Datei wird sofort ein Beleg mit Nummer aus dem Kreis *Belegnummern Firma*, liegt unter
+  `Belege/<Jahr>/` und lässt sich ansehen (PDF, Bilder) und herunterladen. Ein Kontoauszug ist dort ein Beleg wie jede andere Datei –
+  importiert wird er auf der Seite *Buchungen*.
+- Bearbeiten und Löschen; gelöscht wird ein Beleg nur, solange keine Buchung, Anlage oder Fahrt auf ihn verweist.
+- Belege und Buchungen verknüpfen: am Beleg eine Buchung suchen, in der Buchungsmaske einen Beleg.
+- Belege lesen: E-Rechnungen (XRechnung, ZUGFeRD/Factur-X) aus ihren Feldern, PDFs mit Textebene über feste Regeln – Belegdatum,
+  Rechnungsnummer, Absender, USt-IdNr., Brutto, Netto, Steuer, Steuersatz, Währung. Jeder Wert nennt seine Herkunft; ist er nicht eindeutig,
+  bleibt das Feld leer. Dazu Vorschläge für passende Bankbewegungen – **verknüpft oder gebucht wird nichts ohne Klick**.
+  Grenzen: keine Texterkennung für Scans und Fotos, nicht jede Rechnung ist lesbar, ein gelesener Wert ist eine Lesung, kein geprüfter Inhalt.
+  Im Demo-Modus ist das Lesen abgeschaltet.
+- Regeln: [`docs/regeln/belege.md`](docs/regeln/belege.md)
 
-### 2. Buchungen (`/transactions`)
-Zentrale Verwaltung aller Buchungstransaktionen:
-- **Zwei Buchungstypen**:
-  - `bank` – echte Bankbewegung (Import aus Kontoauszug oder WISO-Tabellen-Export)
-  - `entry` – Buchungssatz (aus WISO-Original-Export oder manuell)
-- **Kontoauszug-Import**: CAMT.053 (XML/ZIP, alle Banken), PDF (DKB, Volksbank Rottweil) oder CSV (Umsatzliste der DKB) –
-  Vorschau mit Duplikat-Erkennung und Saldo-Prüfung (auch für PDF, soweit der Auszug seine Salden nennt; eine CSV nennt
-  keinen Anfangssaldo, das zeigt die Vorschau an), erst dann übernehmen. Bei einem **gemischt genutzten Konto** (in den
-  Stammdaten des Bankkontos den Haken „Reines Geschäftskonto“ entfernen) lassen sich in der Vorschau einzelne Umsätze
-  auswählen – mit Suchfeld sowie „Alle“ und „Keine“; auf einem reinen Geschäftskonto (der Standard) wird der Auszug
-  vollständig importiert, einzelne private Umsätze bucht man als Privatentnahme oder -einlage.
-  Ein CAMT-Auszug, der nicht auf Euro lautet, wird nicht übernommen. Duplikate erkennt
-  der Import an Konto, Datum und Betrag – auch wenn derselbe Auszug mehrfach im Upload steckt;
-  weicht der Text eines solchen Umsatzes ab, weist die Vorschau darauf hin. Umsätze ohne Datum
-  oder Betrag legt der Import nicht an.
-  Grenzen: Eine CAMT-Sammelbuchung (in Einzelumsätze zerlegt) trifft keine Summenzeile derselben
-  PDF und wird doppelt angelegt; zwei verschiedene Auszüge desselben Tags mit je einem echten,
-  gleichen Umsatz behalten nur einen davon (der andere lässt sich nur von Hand nachtragen).
-  Details in [PARSER_README.md](PARSER_README.md)
-- **Automatische Verknüpfung**: Bank↔Entry über `ParentBooking_ID` (via `link_bank_to_entries()`)
-- **Merged Display**: Bankbuchungen zeigen verknüpfte Entry-Daten (SKR-Konto, Steuersatz, Belegnr.)
-- **Status-Badges**: ✓ verknüpft / offen für Bankbuchungen; ✓ für Einzelbuchungen und Split-Gruppenköpfe mit vollständig gebuchten Kinder-Einträgen
-- **Doppik-Filter**: Reine Gegenbuchungen auf Bankkonten (z.B. SKR 1810) werden automatisch ausgeblendet
-- **Erweiterte Buchungsfelder**:
-  - Buchungsdatum und Steuerdatum (getrennt)
-  - SKR-Sollkonto (`COA_ID`) und Gegenkonto (`CounterCOA_ID`)
-  - Steuersatz und berechneter Steuerbetrag
-  - Multi-Währung (EUR, USD, GBP, CHF)
-  - Kontakt-, Kategorie- und Dokumentnummer-Zuordnung
-  - Fremde IBAN (`ForeignBankAccount`)
-- **Split-Buchungen**: mehrere Buchungssätze je Bankbewegung (`ParentBooking_ID`), im Buchungssatz-Editor der Bankbewegung gepflegt
-- **Vorschlag** (🪄): kontiert eine offene Buchung aus der Historie desselben
-  Empfängers – SKR-Konto und Steuersatz der letzten passenden Buchung, dazu die
-  nächste Beleg-Nr. aus dem Nummernkreis *Belegnummern Firma*. War die Vorlage
-  ein Split, wird nach Rückfrage die ganze Aufteilung übernommen (inklusive
-  Umbuchungen wie Privatanteilen); die Beträge passt man danach an. Gespeichert
-  wird nichts – der Nutzer bleibt im Formular, und die Beleg-Nr. wird erst beim
-  Speichern verbraucht
-- **Belege**: in der Maske suchen, zuordnen, ansehen, herunterladen und lösen (nach dem ersten Speichern)
-- **Erweiterte Filter**: Datum, Konto, Kunde, Währung, Betragsbereich – alle kombinierbar
+### Buchungen (`/transactions`)
+- Bankbewegungen (Import oder Erfassung) und Buchungssätze in einer Liste; Split-Buchungen (mehrere Buchungssätze je Bankbewegung),
+  Status „verknüpft/offen“, Filter nach Datum, Konto, Kunde, Währung und Betrag.
+- **Kontoauszug-Import:** CAMT.053 (XML/ZIP, alle Banken), PDF (DKB, Volksbank Rottweil) oder CSV (Umsatzliste der DKB), mit Vorschau,
+  Duplikat-Erkennung und Saldo-Prüfung; erst danach wird übernommen. Bei einem **gemischt genutzten Konto** (Haken „Reines Geschäftskonto“
+  in den Stammdaten entfernen) lassen sich einzelne Umsätze auswählen. Grenzen und Einzelheiten:
+  [PARSER_README.md](PARSER_README.md), [`docs/regeln/import.md`](docs/regeln/import.md)
+- **Vorschlag** (🪄): kontiert eine offene Buchung aus der Historie desselben Empfängers (Konto, Steuersatz, nächste Beleg-Nr.); gespeichert
+  wird erst beim Speichern.
+- Belege in der Maske suchen, zuordnen, ansehen und lösen.
+- Regeln: [`docs/regeln/buchungen.md`](docs/regeln/buchungen.md)
 
-### 3. Konten-Verwaltung (`/masterdata/bankaccounts`)
-- Übersicht aller Bank-/Kassenkonten (Name, Inhaber, IBAN, BIC, BankName)
-- SKR-Kontozuordnung (`SKRAccount`) für automatische Doppik-Erkennung
-- Kennzeichen „Reines Geschäftskonto“ (Standard: angehakt; nicht bei der Kasse): Auf einem reinen Geschäftskonto werden
-  Kontoauszüge vollständig importiert; ohne den Haken (gemischt genutztes Konto) lassen sich beim Import einzelne Umsätze
-  auswählen. Das Kennzeichen ändert keine Buchung und keine Auswertung
-- Kasse als Sonderform (automatisch beim Start angelegt, nicht löschbar); eine neue Kasse führt das Kassenkonto 1600 (SKR04)
-- Anlegen, Bearbeiten, Löschen – ein Konto, auf das Buchungen, Rechnungen oder Angebote verweisen, lässt sich nicht löschen (die Seite nennt, was daran hängt)
+### Stammdaten (`/masterdata`)
+- **Bankkonten** (`/masterdata/bankaccounts`): Name, IBAN, BIC, zugeordnetes SKR-Konto, Kennzeichen „Reines Geschäftskonto“ (Standard).
+  Die Kasse legt die App selbst an (SKR04 1600, nicht löschbar).
+- **Kontenrahmen** (`/masterdata/skr`): Standardkonten SKR04 aus `seed_data/`; eigene Konten und weitere Rahmen (SKR03, SKR07, Branchen) anlegbar.
+  Fehlende Standardkonten einer neueren Version ergänzt die Seite auf Knopfdruck, nie von selbst.
+- **Kontakte** (`/masterdata/contacts`): Unternehmen und Personen als Kunde, Lieferant, eigene Firma u. a., mit Adressen und Logo
+  (PNG, JPG, GIF, WEBP bis 5 MB).
+- **Artikel** (`/masterdata/articles`): Bezeichnung, Einheit, Nettopreis, Steuersatz; für Rechnungen und Angebote.
+- **Nummernkreise** (`/masterdata/numberranges`): Rechnungen, Angebote, Belegnummern Firma und Kategorien, Format z. B. `26R001`.
+- **AfA-Kategorien** (`/asset_categories`) und **Steuersätze/Befreiungsgründe** für Rechnungen.
+- Gelöscht werden kann nur, worauf nichts mehr verweist; die Seite nennt, was daran hängt.
 
-### 4. Standardkontenrahmen (SKR) (`/masterdata/skr`)
-- Kontenrahmen-Auswahlliste beim Anlegen: SKR 03/04 (Deutschland), SKR 07 (Österreich),
-  SKR 14/49/51/70 (Branchen) – Server validiert Rahmen und Kontonummer
-- **Standard-Umschalter**: eigene Konten als Standard anlegbar; Standard-Konten werden
-  nach Entfernen des Hakens editier- und löschbar (Referenz-Schutz bleibt)
-- **Automatisches Seeding**: Standard-SKR04-Konten beim DB-Erstellen aus `seed_data/`
-- **Standardkonten ergänzen**: Bringt eine neuere Version Standardkonten mit, die im Bestand fehlen, nennt die Seite sie und
-  legt sie auf Knopfdruck an – nie von selbst; vorhandene Konten bleiben unverändert
-- CRUD-Funktionalität, UNIQUE(Framework, AccountNumber), Menü-Sichtbarkeit je Konto
+### Rechnungen (`/invoice`)
+- PDF-Rechnung mit Logo; jede neu erzeugte Rechnungs-PDF ist PDF/A-3b mit eingebetteter `factur-x.xml` (ZUGFeRD/Factur-X, Profil EN 16931).
+  Die **XRechnung** (UBL) entsteht bei einer Rechnung mit Leitweg-ID, wenn die Pflichtangaben vollständig sind – sonst nennt die Seite, was fehlt.
+  Eine Zusicherung der Konformität gibt es nicht.
+- Steuersatz je Position, weitere Sätze und steuerfreie Leistungen aus den Stammdaten; bei Kleinunternehmern steht der Hinweis auf § 19 UStG im Dokument.
+- E-Mail-Versand per SMTP (nur verschlüsselt, mit Zertifikatsprüfung), Empfänger aus den Kontakten; Einrichtung: [DEPLOYMENT.md](DEPLOYMENT.md).
+- Status: Entwurf → Abgeschlossen → Versendet → Bezahlt (dazu Teilzahlung, Überfällig, Storniert). Storno über „Stornieren“: Die **Stornorechnung**
+  ist ein eigener Beleg mit eigener Nummer; „Stornieren und neu ausstellen“ legt den Entwurf einer neuen Rechnung an.
+- **Zahlungen** (Bankbewegung ganz, teilweise oder auf mehrere Rechnungen zuordnen; Überschuss bleibt als Guthaben), **Skonto** (Prozent und Frist im PDF,
+  Abzug wird beim Zuordnen auf Klick ausgebucht), **Erstattung** auf der Seite der Stornorechnung. Mit dem Status *Versendet* steht die Rechnung als
+  offener Posten in den Büchern; die EÜR bleibt eine Ist-Rechnung (Einnahme erst mit der Zahlung). Eine Prüfliste unter *Daten* zeigt Unstimmigkeiten.
+- **Mahnwesen** (`/invoice/reminders`): überfällige Rechnungen mit drei Mahnstufen nach Verzugstagen (bis 30, bis 60, über 60 Tage) und eine Vorschau der in 7 Tagen fälligen.
+- **Angebote** (`/quote`): gleiche Positionen und PDF-Logik, eigener Nummernkreis, Gültigkeitsdatum, Umwandlung in eine Rechnung.
+- Regeln: [`docs/regeln/rechnungen.md`](docs/regeln/rechnungen.md), [`docs/regeln/zahlungen.md`](docs/regeln/zahlungen.md); Datenmodell: [DB_MODEL.md](DB_MODEL.md)
 
-### 5. Kontakte (`/masterdata/contacts`)
-Normalisiertes 3NF-Schema (6 Tabellen):
-- **Entitätstypen**: Unternehmen und Personen mit separaten Formularen
-- **Kontakttypen**: Kunde, Lieferant, Eigene Daten, Versicherung, Sonstiges –
-  Mehrfachzuordnung über ContactTypeLinks, Personen-Rollen über PersonRoles
-- **Logo-Verwaltung**: File-Picker mit Live-Vorschau (PNG, JPG, GIF, WEBP bis 5 MB)
-- **Tabellen**: Contacts (Basis) + ContactAddresses (1:n) + CompanyDetails (1:1)
-  + PersonDetails (1:1) + ContactTypeLinks (n:m) + PersonRoles (n:m)
-- **Löschen** nur, solange keine anderen Daten auf den Kontakt verweisen (Rechnungen, Angebote, Buchungen, Anlagen,
-  zugeordnete Personen, Arbeitszeiten, Fahrten) – die Seite nennt, was daran hängt
+### Dashboard und Auswertungen (`/`, `/bwa`, `/euer`, `/susa`, `/liquiditaet`)
+- **Dashboard** (`/`): Monatsverlauf für Einnahmen, Betriebsausgaben und Privatentnahmen, Jahresübersicht mit Saldo (nach Konto filterbar) und
+  EÜR-Kasten (Betriebseinnahmen, Betriebsausgaben, „Sonstige Ausgaben“ separat). Überträge zwischen eigenen Konten zählen weder als Einnahme noch als Ausgabe.
+- Unter *Auswertungen* vier Seiten, jede auch als PDF; der Zeitraum kommt aus der Zeitraum-Menüzeile:
+  - **Betriebswirtschaftliche Auswertung** (`/bwa`): Monat und aufgelaufenes Jahr, im Vergleich mit dem Vorjahr oder mit Anteilen; Konten aufklappbar; auch als CSV.
+  - **Einnahmenüberschussrechnung** (`/euer`): frei gewählter Zeitraum, dieselben Zahlen wie das Dashboard ohne Kontofilter. Kein amtliches Formular.
+  - **Summen- und Saldenliste** (`/susa`): je Konto Anfangssaldo, Soll, Haben und Endsaldo, nach Kontenklassen; auch als CSV. Eine Eröffnungsbilanz
+    und einen Jahresabschluss gibt es nicht. Kein amtliches Formular.
+  - **Liquiditätsrechnung** (`/liquiditaet`): vom Ergebnis der BWA zur Veränderung der flüssigen Mittel, daneben die Bewegungen von Bank und Kasse.
+- Abschreibungen erscheinen in der EÜR, nicht in den Zahlungskarten des Dashboards. Keine Steuerberatung, kein Ersatz für die Auswertung eines Steuerbüros.
+- Regeln: [`docs/regeln/auswertungen.md`](docs/regeln/auswertungen.md)
 
-### 6. Rechnungserstellung (`/invoice`)
-Professionelle Rechnungserstellung mit PDF, E-Mail-Versand und XRechnung:
-- **Multi-Company-Support**: Eigene Firma wählbar, dynamisches Logo
-- **Snapshot-Prinzip**: Verkäufer- und Käuferdaten werden bei Erstellung als Kopie gespeichert
-- **Positionstabelle**: Beliebig viele Positionen, Artikelverzeichnis-Integration
-- **PDF-Generierung** (`export/pdf_invoice.py` auf Basis von `export/pdf_core.py`): A4-Layout, Logo, Umlaute, dreispaltiger Footer
-- **E-Mail-Versand**: SMTP (nur verschlüsselt, mit Zertifikatsprüfung), PDF-Anhang, Empfänger aus Kontakten
-- **ZUGFeRD / Factur-X** (`export/cii_invoice.py`, `export/pdfa.py`): jede neu erzeugte Rechnungs-PDF ist PDF/A-3b mit eingebetteter `factur-x.xml` (Profil EN 16931)
-- **XRechnung XML-Export** (`export/xrechnung_invoice.py`, UBL): nach EN 16931 erzeugt; die Beispieldateien der CI werden mit Mustang (XSD, Schematron) geprüft, eine Zusicherung der Konformität gibt es nicht. Die XML-Datei entsteht bei einer Rechnung mit Leitweg-ID (Käuferreferenz) und nur, wenn die Pflichtangaben vollständig sind – sonst nennt die Rechnungsseite, was fehlt (das PDF mit eingebetteter E-Rechnung entsteht immer)
-- **Skonto**: Prozent und Frist stehen im PDF (Frist, Abzug und Zahlbetrag ausgerechnet) und in der E-Rechnung; zahlt der Kunde mit Abzug, bucht die Zahlungszuordnung den Rest auf Klick als Skonto aus (eigenes Skonto-Konto mit Korrektur der Umsatzsteuer; bisher nur für Rechnungen mit einem Steuersatz)
-- **Rechnungsstatus**: Entwurf → Finalisiert → Versendet → Bezahlt (+ Teilzahlung, Überfällig, Storniert); storniert wird über „Stornieren“ (Stornodatum nicht in der Zukunft): Die **Stornorechnung** entsteht als eigener Beleg mit eigener Nummer (Gutschrift Typ 381, UBL `CreditNote`, PDF „Stornorechnung“), die Forderung bekommt eine Gegenbuchung statt gelöscht zu werden; eine Rechnung ohne positiven Betrag (Gutschrift, 0-€-Rechnung) bekommt keine Stornorechnung und wird über den Status storniert. „Stornieren und neu ausstellen“ legt dazu den Entwurf einer neuen Rechnung mit den Angaben der alten an (auch nachträglich über „Neu ausstellen“ an der stornierten Rechnung); beim Versenden gehen die Zahlungen der stornierten Rechnung auf sie über, was sich nicht eindeutig umschreiben lässt, bleibt dort, und ein Hinweis nennt es. Zahlungen, die an der stornierten Rechnung bleiben, zeigt die App als Guthaben des Kunden (Rechnungsliste, Belegseiten, offene Posten des Kontakts); eine ausgehende Bankbewegung lässt sich auf der Seite der Stornorechnung als Erstattung zuordnen und nimmt den Erlös am Tag der Erstattung zurück; eine Zahlung, die dafür gebraucht wird, lässt sich auf keinem Weg entfernen, solange die Erstattung steht, und auf die Ersatzrechnung zieht höchstens das verbleibende Guthaben um. Eine von Hand stornierte Rechnung bekommt ihre Stornorechnung nachträglich
-- **Nummernkreise**: Format YY[Buchstabe][Präfix]### mit Auto-Inkrementierung
-- **Zahlungsverknüpfung**: Eingehende Bankbewegungen einer versendeten Rechnung zuordnen – ganz, in Teilen (Teilzahlung) oder eine Überweisung auf mehrere Rechnungen (Sammelzahlung); ein Überschuss bleibt als Guthaben beim Kunden stehen. Die Zuordnung legt ihre Buchungssätze selbst an und nimmt sie beim Entfernen wieder mit; eine Prüfliste unter *Daten* zeigt Unstimmigkeiten; auf der Seite einer Rechnung lässt sich die Zuordnung nach einem Probelauf neu aufbauen, wo das ohne Löschen von Buchungssätzen geht – der Rest bleibt ein Hinweis
-- **Offene Posten**: Mit dem Status *Versendet* wird die Rechnung als Forderung
-  gebucht (10000 Debitoren an Wartekonto 4405 / 4345 / 4340 je nach Steuersatz);
-  die Zahlung erzeugt zwei Buchungssätze – *Zahlung* (Bank an Debitoren) und
-  *Umbuchung* (Wartekonto an Erlöskonto). So sieht das Steuerbüro im
-  DATEV-Export die noch offenen Posten. Die EÜR bleibt Ist-Rechnung:
-  Forderungen und Wartekonten sind auswertungsneutral, die Einnahme entsteht
-  mit der Umbuchung. Details in [DB_MODEL.md](DB_MODEL.md)
+### Anlagenverzeichnis (`/assets`)
+- AfA-Methoden: linear (anteilig), degressiv (25 %), GWG (bis 800 €); 30 BMF-Kategorien aus `seed_data/`; Inventarnummern `INV-YY-###`; Live-Vorschau des Plans.
+- Die AfA wird je Anlage und Jahr als Umbuchung „Aufwand an Anlagekonto“ gebucht; gebuchte Jahre bleiben, wie sie gebucht sind, offene Jahre verteilen
+  den Restbuchwert neu. Erweiterungen (nachträgliche Anschaffungskosten) werden mit der Hauptanlage abgeschrieben. Ob das steuerlich passt, klärt das Steuerbüro.
+  Ein GWG, das schon beim Kauf auf das Aufwandskonto gebucht wurde, darf nicht zusätzlich abgeschrieben werden – das Programm prüft das nicht.
+- Regeln: [`docs/regeln/buchungen.md`](docs/regeln/buchungen.md)
 
-### 7. Dashboard (`/`)
-- Finanz-Statistiken auf Basis von Bank- und Entry-Buchungen (inkl. Kasse)
-- Monatlicher Verlauf für Einnahmen, Betriebsausgaben und Privatentnahmen
-- Jahresübersicht mit Saldo, kontobasiert filterbar
-- Überträge zwischen eigenen Konten (Bank ↔ Bank, Bank ↔ Kasse) zählen weder als Einnahme noch als Ausgabe, sondern stehen als eigener Posten „Überträge“ da; ein Privatanteil an einer Zahlung zählt anteilig. Eine Bewegung ohne Buchungssatz gilt nur dann als Übertrag, wenn die kontierte Gegenseite sie deckt (dieselbe Rechnung wie im DATEV-Export), sonst als Einnahme bzw. Ausgabe
-- EÜR-Ansicht mit drei Blöcken:
-  - Betriebseinnahmen
-  - Betriebsausgaben (offizielle EÜR)
-  - Sonstige Ausgaben (separat ausgewiesen)
-  - Der Link „zur Auswertung“ öffnet dieselben Zahlen als eigene Seite mit PDF (`/euer`, siehe 7a; dort ohne Kontofilter)
-- Steueranteile in der EÜR:
-  - Virtuelles 3806 nur aus USt-Anteilen der Einnahmen
-  - Virtuelle Vorsteuerkonten 1401/1406 für Ausgaben
-- **Kasse-Buchungen**: Buchungen über die Buchungsmaske mit Konto = Kasse zählen in EÜR und Dashboard wie Bankbewegungen. Eigenständige Sätze auf der Kasse – auch direkte Entry-Buchungen ohne COA-Spiegel (`CounterCOA=NULL`) – fließen ebenfalls ein. Die EÜR liest zusätzlich eigenständige Sätze über das Verrechnungskonto 1460 (WISO: „Aufwand an Verrechnung“ gilt mit dem Datum des Satzes als abgeflossen), solange kein Kontofilter gesetzt ist; das Dashboard folgt den Kontobewegungen
-- **Abschreibungen (AfA)** erscheinen in der EÜR (Betriebsausgabe auf dem Aufwandskonto), nicht in den Zahlungskarten des Dashboards – sie sind kein Geldfluss
+### Daten (`/miscellaneous`)
+- **Import:** WISO-Datenübernahme (siehe oben).
+- **DATEV-Export:** Buchungsstapel als DATEV-CSV je Kalenderjahr. Der Stapel bildet nach, was WISO Mein Büro schreibt; ob das Steuerbüro ihn annimmt, klärt es selbst.
+  Berater- und Mandantennummer stehen im Kontaktformular der eigenen Firma. Bankbewegungen ohne Buchungssatz und unstimmige Splits meldet der Export,
+  bevor er schreibt. Regeln: [`docs/regeln/auswertungen.md`](docs/regeln/auswertungen.md)
+- **Datensicherung und Wiederherstellung:** Archiv nach `<Datenordner>/backup/` (7-Zip, sonst `.zip`; nur Datenbank oder alle Daten); vorhandene Sicherungen
+  lassen sich herunterladen und löschen (nicht im Demo-Modus). Regeln: [`docs/regeln/sicherung.md`](docs/regeln/sicherung.md)
 
-### 7a. Auswertungen (`/bwa`, `/euer`, `/susa`, `/liquiditaet`)
-Unter dem Menüpunkt „Auswertungen“ stehen vier Seiten (Untermenü), jede auch als PDF. Die ersten beiden rechnen nach Zahlungsdatum wie die EÜR im Dashboard, die Summen- und Saldenliste nach dem Datum der Buchungssätze, die Liquiditätsrechnung geht vom Ergebnis der betriebswirtschaftlichen Auswertung aus.
-Alle vier nehmen den Zeitraum, den auch die anderen Seiten benutzen, und wählen ihn in der dritten Menüzeile (Von/Bis, die letzten fünf Jahre, die Monate). Die Monatsauswertungen (BWA, Summen- und Saldenliste, Liquidität) zeigen darin einen Monat: bei einem einzelnen Monat diesen, sonst den Monat des Bis-Datums – bei einem ganzen Jahr also den Dezember, im laufenden Jahr den laufenden Monat.
-- **Betriebswirtschaftliche Auswertung** (`/bwa`): Ein Monat und – aufgelaufen – die Zeit seit dem 1. Januar, im Vergleich mit dem Vorjahr (Standard) oder
-  mit Anteilen an Erlösen, Kosten und Betriebseinnahmen; unter jeder Zeile lassen sich die Konten aufklappen; als PDF (A4 quer, auf Wunsch mit
-  Kontennachweis) und als CSV (UTF-8, Semikolon, Dezimalkomma – eine Tabellenkalkulation mit deutscher Einstellung öffnet sie direkt). Übernimmt die Zahlen der EÜR unverändert und ordnet die Konten nach ihren SKR04-Nummern in Gruppen; ein Konto ohne Gruppe steht
-  unter „Nicht zugeordnet“
-- **Einnahmenüberschussrechnung** (`/euer`): ein frei gewählter Zeitraum (von – bis, auch über mehrere Monate); dieselben Zahlen wie der Kasten im
-  Dashboard – Betriebseinnahmen, Betriebsausgaben, Ergebnis und „Sonstige Ausgaben“, die angezeigt werden, aber nicht im Ergebnis zählen –, aber ohne
-  Kontofilter; als PDF (A4 hoch, mehrseitig). Kein amtliches Formular
-- **Summen- und Saldenliste** (`/susa`): je Konto Anfangssaldo, Soll und Haben im Monat und aufgelaufen seit dem 1. Januar und Endsaldo (Salden mit S oder H),
-  nach Kontenklassen gruppiert; als PDF (A4 quer, mehrseitig) und als CSV (jeder Wert als Zahl, Salden mit eigener Spalte für S oder H). Gerechnet aus denselben Buchungssätzen und mit derselben Lesart (Form, Soll und Haben) wie
-  der Export für das Steuerbüro; die Steuer steht auf den Steuerkonten 1401/1406 und 3801/3806. Bestandskonten tragen ihren Saldo ins Jahr vor, Erfolgskonten
-  beginnen bei null (ihre Summe aus den Vorjahren steht als „Ergebnis der Vorjahre (rechnerisch)“ beim Eigenkapital); „Nicht kontiert“ nimmt die Gegenseite
-  von Bankbewegungen ohne Buchungssatz und von Sätzen ohne Konto auf, so geht die Liste auf. Die Seite gleicht jedes Bankkonto mit seinen Bankbewegungen ab und
-  nennt, was sich nicht buchen oder lesen ließ. Grenzen: Eine Eröffnungsbilanz gibt es nicht – ein Konto ohne Buchungen vor dem ersten Kontoauszug beginnt bei
-  null –, ebenso keinen Jahresabschluss und keine Verrechnung von Umsatzsteuer und Vorsteuer; Privat- und Steuerkonten tragen ihre Summe vor. Kein amtliches Formular
-- **Liquiditätsrechnung** (`/liquiditaet`): Ein Monat und – aufgelaufen – die Zeit seit dem 1. Januar, im Vergleich mit dem Vorjahr (Standard) oder nur Monat und Jahr;
-  vom Ergebnis der betriebswirtschaftlichen Auswertung zur Veränderung der flüssigen Mittel: Abschreibungen und Anlagenabgänge zum Restbuchwert zurück, Darlehen
-  und Verbindlichkeiten, Anlagenzugänge, Privatentnahmen und Privateinlagen dazu. Daneben steht die Veränderung laut den Kontobewegungen von Bank und Kasse (ohne
-  Überträge zwischen eigenen Konten), dazu die Bankbewegungen ohne Buchungssatz und – als offener Rest – „Nicht zugeordnet“: Eine Zahlung steht in der Einnahmenüberschussrechnung
-  in einem anderen Monat oder mit einem anderen Betrag als auf dem Konto. Unter den Zeilen lassen sich die Konten aufklappen;
-  als PDF (A4 quer, auf Wunsch mit Kontennachweis). Rechnet mit den Zahlen der EÜR, der betriebswirtschaftlichen Auswertung und des Dashboards – ohne eigene Lesart der Buchungen
-- Keine Steuerberatung, ersetzt nicht die Auswertung eines Steuerbüros
+### Arbeitszeiten (`/worktime`)
+- Zeiterfassung je Person (Arbeit, Urlaub, Krank, Feiertag) mit Pausen, Einsatzort und Kundenzuordnung; Überlappungsprüfung; Schichten über Mitternacht.
+- PDF-Stundenzettel, je Kunde filterbar. Regeln: [`docs/regeln/zeiten-fahrten.md`](docs/regeln/zeiten-fahrten.md)
 
-### 8. Mahnwesen (`/invoice/reminders`)
-- Übersicht überfälliger Rechnungen mit drei Mahnstufen nach Verzugstagen (bis 30, bis 60, über 60 Tage)
-- Fälligkeitsvorschau (7 Tage)
-- Farbcodierung nach Dringlichkeit
+### Fahrtenbuch (`/trips`)
+- Fahrten je Fahrer mit Start, Ziel, km-Ständen und Belegverknüpfung; locker nutzbar (einzelne Fahrten, ohne Tachostand, in beliebiger Reihenfolge).
+- Lückenprüfung auf Wunsch je Fahrzeug und Jahr – ein Hilfsmittel, keine Steuerberatung.
 
-### 9. Kategorien
-- Hierarchische Kategorien (Parent-Child) für private Belege (Immobilien, Versicherungen, ...)
-- Derzeit nur im Datenmodell (Tabelle `Categories`), noch ohne eigene Verwaltungsseite
+### Benutzer (`/users`)
+- Jeder Benutzer hat ein eigenes Datenverzeichnis `data/users/<Name>/`. Die Ersteinrichtung legt den ersten Administrator an, **ohne Anmeldung**
+  (für eine Person im eigenen Netz) oder **mit Passwort** (weitere Benutzer in der Benutzerverwaltung).
+- Administratoren legen Benutzer an, löschen sie und setzen Passwörter zurück. Betrieb im LAN und mit HTTPS: [DEPLOYMENT.md](DEPLOYMENT.md).
 
-### 10. Artikelverzeichnis (`/masterdata/articles`)
-- Artikelstamm: Bezeichnung, Einheit, Nettopreis, Steuersatz
-- Active-Flag, direkte Integration in Rechnungen; ein Artikel, der in Rechnungen oder Angeboten steht, lässt sich nicht
-  löschen, aber auf inaktiv setzen
-
-### 11. Nummernkreise (`/masterdata/numberranges`)
-- Format: YY[Buchstabe][Präfix]### (z.B. 26R001)
-- Typen: Ausgangsrechnungen, Belegnummern
-- Jahreswechsel-Support
-
-### 12. Anlagenverzeichnis (`/assets`)
-Anlagenverwaltung mit AfA-Plan:
-- **BMF-Kategorien**: 30 vordefinierte Kategorien aus `seed_data/`; eine Kategorie, die Anlagen verwenden, lässt sich nicht löschen
-- **AfA-Methoden**: Linear (anteilig), Degressiv (25%), GWG (≤ 800 €)
-- **AfA-Plan mit Fortschreibung**: Gebuchte Jahre bleiben, wie sie gebucht sind (maßgeblich ist der Betrag der Buchung). Weicht ein gebuchtes Jahr vom Plan ab (Import, nachträglich geänderter Anschaffungswert oder Betrag einer Buchung), verteilt sich der Restbuchwert linear auf die Restnutzungsdauer (keine degressive Fortschreibung, keine GWG-Regel), und gebucht wird Jahr für Jahr der Reihe nach – die App rechnet so; ob das steuerlich passt, klärt das Steuerbüro
-- **Live-Vorschau**: JavaScript-basierte Echtzeit-AfA-Berechnung
-- **Inventarnummern**: Auto-generiert `INV-YY-###`
-- **Buchungsintegration**: AfA-Buchung als Umbuchung „Aufwand an Anlagekonto“ (direkte Abschreibung, je Anlage und Jahr nur einmal, ohne Bankkonto; Aufwandskonto = Erfolgskonto, Anlagekonto = Anlagekonto, nach dem Abgang der Anlage keine AfA mehr); Löschen der Buchung gibt das Jahr wieder frei, eine Anlage mit gebuchter AfA lässt sich nicht löschen – eine Erweiterung auch dann nicht, sobald die Hauptanlage seit ihrem Jahr AfA gebucht hat (die Erweiterung steckt in diesen Buchungen). Wer ein GWG schon beim Kauf auf das Aufwandskonto 6260 (Sofortabschreibung) gebucht hat, darf die AfA nicht zusätzlich buchen – sie zählte doppelt, das Programm prüft das nicht
-- **Erweiterungen**: Sub-Anlagen über Parent_ID. Nachträgliche Anschaffungskosten erhöhen den Anschaffungswert der Hauptanlage und werden mit ihr über die Restnutzungsdauer abgeschrieben: Im Jahr, in dem die Kosten entstehen (Datum der Erweiterung, nicht der Zahlung), zählen sie wie zu Jahresbeginn aufgewendet, im Anschaffungsjahr der Hauptanlage ab deren Kaufmonat – die App rechnet so; ob das steuerlich passt, klärt das Steuerbüro. Eine Erweiterung hat keinen eigenen Plan, keinen eigenen Abgang und wird nicht einzeln gebucht; Nutzungsdauer, Methode und Anlagekonto der Hauptanlage gelten. Eine Unter-Anlage mit eigener AfA-Zeile (Bestand) oder unter einer Hauptanlage ohne Plan (Preis, Kaufdatum oder Nutzungsdauer fehlen) bleibt eine eigene Anlage. Der AfA-Plan einer verkauften Anlage endet mit dem Abgangsjahr
-
-### 13. Daten (`/miscellaneous`)
-Import, Export, Sicherung und Wiederherstellung. Datenbank-Übersicht, SQL-Konsole und DB-Export stehen auf der Seite *About*.
-- **WISO Import**: Automatische Format-Erkennung (Original + Tabellen-Export)
-  - BU-Schlüssel → Steuersatz (zuerst die Regeln des Exports, sonst TaxKeys-Tabelle) und am Buchungssatz gespeichert (`Bookings.DatevKey`)
-  - Automatische TaxAmount-Berechnung (Brutto → MwSt-Anteil)
-  - 4405→4400 wird auch ohne BU-Schlüssel mit 19% USt angereichert
-  - Tabellen-Export: optionale `Konto-Nr. / IBAN`-Spalte (6- und 7-spaltig)
-  - Tabellen-Export Matching: bank+entry-Paare ohne Belegnummer (Privatentnahmen, Gebühren) werden als Einheit erkannt und aktualisiert
-  - Nach Import: automatische Bank↔Entry-Verknüpfung (`link_bank_to_entries()`)
-- **DATEV-Export** (`export/datev.py`): Buchungsstapel als DATEV-CSV (nur Entry-Buchungen); das Soll/Haben-Kennzeichen richtet sich danach, ob das Zweck- oder das Geldkonto im Feld „Konto“ steht
-  - Der Stapel **bildet den nach, den WISO Mein Büro schreibt** (gemessen an einem Datenbestand) – nicht mehr und nicht weniger: Ob das Steuerbüro ihn so annimmt, klärt es selbst; eine Zusicherung gibt es nicht
-  - BU-Schlüssel: der an der Buchung gespeicherte (Import), sonst abgeleitet nach der Art des Zweckkontos und dem Steuersatz – Vorsteuer 401/402 (19/7 %), Umsatzsteuer 101/102, im zweiten Halbjahr 2020 mit den vertauschten Sätzen 16/5 %; die Rechnungskette (Forderung, Wartekonto→Erlöskonto) trägt keinen Schlüssel, aber den Steuersatz in Spalte 40
-  - Berater- und Mandantennummer stehen im Kontaktformular der eigenen Firma (sonst Platzhalter im Vorlauf; die Seite *Daten* weist darauf hin)
-  - Exportiert wird je Kalenderjahr (der Stapel kennt nur Tag und Monat); ein Zeitraum über den Jahreswechsel wird abgelehnt
-  - Bankbewegungen ohne Buchungssatz stehen nicht im Stapel: Gibt es im Zeitraum welche (die kein Übertrag zwischen eigenen Konten deckt), nennt der Export Anzahl und Beträge und exportiert erst nach ausdrücklicher Bestätigung
-  - Ein Übertrag zwischen zwei eigenen Konten, der auf beiden Bankbewegungen kontiert ist, steht nur einmal im Stapel (die Zeile der Ausgangsseite). Wo das nicht sicher zu erkennen ist, bleibt jede Zeile stehen und der Export weist auf die mögliche Doppelung hin; läuft ein Übertrag über die Grenze des Zeitraums, sagt er auch das. Die Erkennung zählt gleich hohe Bewegungen zwischen denselben Konten im Umkreis weniger Tage; sie setzt vollständig eingelesene Kontoauszüge voraus
-  - Prüft vorab die Splits des Zeitraums: Ergeben die *bankwirksamen*
-    Buchungssätze nicht den Betrag der Bankbewegung, wird der Export mit Datum,
-    Betrag und Rest abgelehnt. Umbuchungen (Wartekonto→Erlöskonto,
-    Privatanteil) zählen dabei nicht mit, Bankbewegungen ohne Buchungssatz
-    blockieren nicht
-- **Datensicherung**: Backup nach `<UserDir>/backup/JJJJMMTT_Backup.7zip`
-  (7-Zip, ohne 7-Zip als `.zip`; wahlweise nur DB oder alle Daten; DB als
-  konsistenter Snapshot) + **Wiederherstellung** (überschreiben oder vorher löschen; während sie läuft,
-  beantwortet der Server andere Anfragen dieses Benutzers mit einem Hinweis, bis sie fertig ist);
-  der Zwischenordner für Uploads (`upload_tmp/`) gehört nicht zur Sicherung. Vorhandene Sicherungen
-  (auch die Kopien der Datenbank vor einer Programm-Umstellung) listet die Seite mit Datum und Größe und
-  bietet sie zum **Herunterladen** und zum **Löschen** an (Löschen nach Rückfrage, nicht im Demo-Modus) – große Dateien gehen in Stücken hinaus, nicht über den Speicher
-- **SQL-Audit-Logs**: `sql_operations.log/.sql` werden ab 5 MB automatisch
-  rotiert und komprimiert archiviert (`JJJJMMTT-HHMMSS_sql_operations.*`)
-
-### 14. Angebote (`/quote`)
-- Angebote als `Invoices`-Zeilen mit `DocumentType='quote'` (gleiche Positionen/PDF-Logik)
-- Umwandlung Angebot → Rechnung (`SourceQuoteId` verweist auf die Quelle)
-- Status-Workflow und Gültigkeitsdatum (`ValidUntil`)
-
-### 15. Arbeitszeiten (`/worktime`)
-- Zeiterfassung je Person (Arbeit/Urlaub/Krank/Feiertag) mit Pausen und Einsatzort
-- Überlappungsprüfung, Kundenzuordnung
-- Liegt das Ende vor dem Beginn, endet der Eintrag am Folgetag (Schicht über Mitternacht); er zählt
-  ganz zu seinem Starttag und trägt in Liste und Stundenzettel ein „(+1)“ hinter der Endzeit
-- Summen werden aus Minuten gerechnet (3 × 20 Minuten sind 1,00 Stunden); „Arbeitstage“ zählt Kalendertage
-- **PDF-Stundenzettel** (`export/pdf_worktime.py`), bei vielen Einträgen mehrseitig mit „Seite n von m“;
-  Summe und Unterschriften stehen zusammen auf der letzten Seite; je Kunde filterbar (ein Zettel je Kunde,
-  Urlaub und Krank ohne Kunden stehen auf jedem), auf Wunsch ohne die Tage ohne Eintrag
-
-### 16. Fahrtenbuch (`/trips`)
-- Fahrten je Fahrer mit Start/Ziel, km-Ständen und Belegverknüpfung
-- km-Vorbelegung aus der letzten Fahrt
-- **Locker nutzbar:** einzelne Fahrten, ohne Tachostand, in beliebiger Reihenfolge nachgetragen – etwa bei pauschaler
-  Versteuerung, für die Abrechnung nach Kilometerpauschale oder als Gedächtnisstütze. Beim Speichern wird nur abgelehnt,
-  was unmöglich ist (Tacho Ende unter Tacho Start, Kilometer, die keine ganze Zahl ab 0 sind, Ende vor dem Start); ein
-  fehlender Anschluss an die Vorfahrt wird dabei nie geprüft
-- **Lückenprüfung auf Wunsch:** Unter der Liste lässt sich je Fahrzeug und Jahr prüfen, wo die Tachostände nicht
-  aneinander anschließen (fehlende Kilometer, Überschneidungen, Fahrten ohne Tachostand). Lückenlos muss ein
-  Fahrtenbuch nur für die Fahrtenbuchmethode sein – dann für das ganze Jahr. Die Prüfung ist ein Hilfsmittel, keine
-  Steuerberatung
-
-### 17. Mehrbenutzer & Benutzerverwaltung (`/users`)
-- Jeder Benutzer hat ein isoliertes Datenverzeichnis `data/users/<user>/`. Die
-  Ersteinrichtung legt den ersten Administrator an – **ohne Anmeldung**
-  (automatische Anmeldung, für eine Person im eigenen Netz) oder **mit Passwort**
-  (Login, weitere Benutzer in der Benutzerverwaltung); gespeichert in `data/config.json`
-- Sessions (HttpOnly, SameSite=Strict, Secure bei HTTPS – auch hinter einem TLS-Proxy), scrypt-Passwort-Hashes;
-  nach fünf Fehlversuchen ist ein Benutzername vorübergehend gesperrt (30 Sekunden bis 15 Minuten)
-- CSRF-Schutz für alle schreibenden Requests (Token an die Session gebunden)
-- Admin-Funktionen: Nutzer anlegen/löschen, Passwort zurücksetzen, Admin-Flag
-- Details zu LAN/HTTPS-Betrieb: siehe [DEPLOYMENT.md](DEPLOYMENT.md)
-
-### 18. About (`/about`)
-Informationen über die Anwendung (Version aus `version.py`), „Projekt in Zahlen“ und die Datenbank-Übersicht (Tabellen mit der Zahl ihrer Einträge).
-Ganz unten, nur für Administratoren sichtbar:
-- **SQL-Konsole**: Direkte SQL-Ausführung (Entwickler-Tool), auf die eigene Datenbank
-  beschränkt und nur für Administratoren. Ohne den Haken „Schreiben erlauben“ läuft sie
-  nur lesend. Mit Haken (und nach einer Rückfrage) laufen alle Befehle einer Anfrage in
-  einer Transaktion mit eingeschalteten Fremdschlüsseln: Scheitert einer, wird nichts
-  geändert; was geändert wurde, steht danach im SQL-Protokoll. Inkl. **Zeitbereich löschen**
-  (generiert ein FK-sicheres Lösch-Skript für Belege/Buchungen/Rechnungen/Angebote
-  eines Zeitraums ins SQL-Feld; Buchungssätze außerhalb des Zeitraums, die unter einer
-  Bankbewegung des Zeitraums hängen, bleiben erhalten und werden abgehängt)
-- **DB-Export**: INSERT-Statements nach `db-export.sql` im Datenverzeichnis des Benutzers (`data/users/<Name>/`)
+### About (`/about`)
+- Version, „Projekt in Zahlen“ und Datenbank-Übersicht. Ganz unten, nur für Administratoren: **SQL-Konsole** (auf die eigene Datenbank beschränkt, ohne den
+  Haken „Schreiben erlauben“ nur lesend; Hilfen wie „Zeitbereich löschen“) und **DB-Export** (`db-export.sql` im Datenordner des Benutzers).
 
 ---
 
 ## Installation und Start
 
-### Mit Docker (Server/NAS)
+Docker (Server, NAS, Unraid, Proxmox) und die Einrichtung für Netz und HTTPS stehen im [Schnellstart](#schnellstart) und in
+[DEPLOYMENT.md](DEPLOYMENT.md) (Umgebungsvariablen, Reverse-Proxy, Unraid-Template, Compose, Dauerbetrieb).
 
-Für Server, die Docker anbieten (Unraid, Proxmox & Co.), gibt es ein fertiges
-Image aus der GitHub Container Registry – Details, Unraid-Template und
-Compose-Beispiel in [DEPLOYMENT.md](DEPLOYMENT.md):
-
-```bash
-docker run -d --name ubuchhaltung --restart unless-stopped \
-  -p 2824:2824 -v /pfad/zu/daten:/app/data \
-  ghcr.io/nobsevomberg/ubuchhaltung:latest
-```
-
-Danach unter `http://<host>:2824` erreichbar (Standardport 2824 = „BUCH" auf
-der Telefontastatur). Alle Nutzdaten – Datenbanken, Belege, Datensicherungen –
-liegen im gemounteten Datenverzeichnis. Zum Selbstbauen liegt eine
-`compose.yaml` im Repo (`docker compose up -d --build`).
-
-### Voraussetzungen (ohne Docker)
-- Python 3.13 oder neuer (mit 3.13 wird bei jeder Änderung getestet, das Docker-Image nutzt
-  dieselbe Version; neuere Versionen laufen einmal in der Woche durch die Tests)
-- Der Kern (Webserver, Datenbank) läuft mit der Standardbibliothek. Zusätzlich nötig
-  sind `fonttools` (PDF-Erzeugung von Rechnungen und Angeboten) und `pdfplumber`
-  (Lesen von PDF-Kontoauszügen). Beide installiert:
+**Ohne Docker:** Python 3.13 oder neuer; der Kern läuft mit der Standardbibliothek, dazu `fonttools` (PDF-Erzeugung) und `pdfplumber`
+(Lesen von PDF-Kontoauszügen):
 
 ```bash
 pip install -r requirements.txt
-```
-
-Für Tests zusätzlich `pip install -r requirements-dev.txt` (pytest, pytest-xdist).
-
-### Server starten
-
-```bash
 python main.py
 ```
 
-Erreichbar unter `http://localhost:8080`. Die Datenbank wird automatisch erstellt inkl. aller Seed-Daten (SKR04-Konten, AfA-Kategorien, DATEV-Steuerschlüssel).
+Erreichbar unter `http://localhost:8080`; die Datenbank wird beim ersten Start mit den Seed-Daten (SKR04, AfA-Kategorien, DATEV-Steuerschlüssel)
+angelegt. Port und Adresse ändern `UBUCHHALTUNG_PORT` und `UBUCHHALTUNG_HOST`. Im Container ist der Standardport 2824.
 
-### E-Mail konfigurieren (optional)
+**E-Mail-Versand (optional):** `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD` als Umgebungsvariablen – Einzelheiten in
+[DEPLOYMENT.md](DEPLOYMENT.md).
 
-```powershell
-$env:SMTP_HOST = "smtp.gmail.com"
-$env:SMTP_PORT = "587"
-$env:SMTP_USER = "ihre-email@gmail.com"
-$env:SMTP_PASSWORD = "ihr-app-passwort"
-```
+### Ersteinrichtung und Alltag
+1. Starten, im Browser den Administrator anlegen (ohne Anmeldung oder mit Passwort).
+2. Bankkonten (`/masterdata/bankaccounts`, mit SKR-Zuordnung) und Kontakte (`/masterdata/contacts`) anlegen; optional Daten aus WISO Mein Büro übernehmen.
+3. Kontoauszüge unter `/transactions` hochladen, Vorschau prüfen, bestätigen; Buchungen kontieren (🪄 Vorschlag aus der Historie).
+4. Rechnungen erstellen, PDF und E-Rechnung erzeugen, versenden; Zahlungen zuordnen.
+5. Regelmäßig sichern: *Daten* → Datensicherung.
 
-Im Container als Umgebungsvariablen setzen (`-e SMTP_HOST=… -e SMTP_USER=… -e SMTP_PASSWORD=…`);
-Standard für Host und Port: `smtp.gmail.com`, 587.
-
-### Kontoauszug-Import
-
-CAMT.053 und die CSV-Umsatzliste der DKB kommen ohne zusätzliche Pakete aus. Die PDF-Parser werden durch
-`pip install -r requirements.txt` (pdfplumber) automatisch aktiviert. Eine Texterkennung (OCR) für gescannte PDFs gibt es nicht.
-
----
-
-## Workflow
-
-### Ersteinrichtung
-1. Starten (Docker oder `python main.py`) → Ersteinrichtung im Browser: Administrator anlegen (ohne Anmeldung oder mit Passwort), DB mit Seed-Daten wird erstellt
-2. Bankkonten unter `/masterdata/bankaccounts` anlegen (mit SKR-Zuordnung, z.B. SKR 1810)
-3. Kontakte unter `/masterdata/contacts` erfassen
-4. Ggf. eigene SKR-Konten unter `/masterdata/skr` ergänzen
-5. Optional: Daten aus WISO Mein Büro übernehmen (`/miscellaneous`)
-
-### Tägliche Nutzung
-1. Kontoauszüge hochladen unter `/transactions` – CAMT.053-Datei der Bank (XML/ZIP),
-   PDF (DKB, Volksbank Rottweil) oder CSV (Umsatzliste der DKB); Vorschau prüfen (bei einem gemischt genutzten Konto
-   die gewünschten Umsätze auswählen), dann bestätigen
-2. Buchungen prüfen und kontieren unter `/transactions` (🪄 Vorschlag aus der Historie)
-3. Rechnungen erstellen, PDF und E-Rechnung erzeugen, versenden
-4. Regelmäßig sichern: `/miscellaneous` → Datensicherung (die Archive lassen sich dort auch herunterladen)
-
-Im Parallelbetrieb mit WISO Mein Büro lassen sich dessen Exporte wiederholt
-importieren (`/miscellaneous`); Bank↔Entry wird dabei automatisch verknüpft.
-
-### Seed-Daten anpassen
-- Standard-Daten in `seed_data/*.json` (wirken nur bei leerer Tabelle; fehlende Standardkonten eines bestehenden Bestands
-  ergänzt die Seite des Kontenrahmens auf Knopfdruck)
-- Eigene SKR-Ergänzungen in `seed_data/private/` (in `.gitignore`, nicht im Repo)
-- Testdaten in `seed_data/test/` (nur für den Demo-Modus und die Tests; die Oberfläche lädt sie nicht)
+Standard-Daten liegen in `seed_data/*.json` (wirken nur bei leerer Tabelle); eigene Konten-Ergänzungen in `seed_data/private/` (nicht im Repo).
 
 ---
 
 ## Für Entwickler
 
-### Projektstruktur
+Python-Standardbibliothek (`http.server`, kein Framework), SQLite, serverseitig erzeugtes HTML mit etwas JavaScript, Stylesheet `buch.css`.
 
-```
-uBuchhaltung/
-├── main.py                    # Entry Point – Webserver starten
-├── demo.py · demo_seed.py     # Demo-Modus (UBUCHHALTUNG_DEMO=1) und seine Beispieldaten
-├── demo_history.py            #   Erzeuger der mehrjährigen Demodaten (Tabellen: seed_data/test/demo_history.json)
-├── version.py                 # Single Source of Truth für die Versionsnummer
-├── money.py                   # Geld als Festkomma-Integer (Minor Units, SCALE=4)
-├── richtext.py                # Bereinigung des Angebots-Fließtexts (Positivliste)
-├── auth.py                    # Benutzer/Sessions/CSRF
-├── userctx.py                 # Request-Kontext: Benutzer, Datenpfade, config.json
-├── layout.py                  # Umzug einer Version-1-Ablage nach data/users/<Name>/ (beim Start)
-├── db/                        # Datenbank-Package (CRUD, Import, Linking, Seeding)
-│   ├── __init__.py            #   Database-Klasse (Komposition aller Mixins)
-│   ├── core.py                #   Verbindung, Init-Guard, Geld-Grenze, coa_id, SQL-Log
-│   ├── schema.py              #   alle CREATE TABLE / Schema-Setup
-│   ├── bookings.py · matching.py · invoices.py · contacts.py · …
-│   └── (weitere Domänen-Mixins: assets, accounts, wiso_import, reporting,
-│        worktimes, seed, numbering, articles, receipts, document_readings,
-│        receipt_matching, payment_matching …)
-├── document_parser.py         # Belegablage, SQL-Audit-Log/-Rotation, DKB-PDF-Parser
-├── importers/                 # Datenimport: Abstraktionsschicht + Bankmodule
-│   ├── base.py                #   Gemeinsames Datenmodell (BankStatement, Transaktion)
-│   ├── pdftext.py             #   Extraktions-Helfer (Text, IBAN, Belegdatum)
-│   ├── plausibility.py        #   Inhaltsprüfung (Kopf-/Fußzeilen, Beträge, Daten)
-│   ├── camt.py                #   CAMT.053 (XML/ZIP, alle Banken)
-│   ├── safe_xml.py            #   XML aus Uploads sicher lesen (ohne DTD/Entities; CAMT und E-Rechnung)
-│   ├── vbr.py                 #   Volksbank Rottweil (PDF)
-│   ├── dkb.py                 #   DKB (PDF)
-│   ├── dkb_csv.py             #   DKB (CSV, Umsatzliste – neues und altes Format)
-│   └── wiso_fdb/              #   Lesen der WISO-Datenbankdateien (Firebird, reines Python)
-├── export/                    # Ausgabe-/Export-Generatoren (Package)
-│   ├── pdf_core.py            #   Gemeinsame PDF-Primitive (Builder, Logo, Escaping)
-│   ├── pdf_document.py        #   Gemeinsame Bausteine für Rechnungs- und Angebots-PDF
-│   ├── pdf_invoice.py         #   PDF-Rechnungsgenerierung
-│   ├── pdf_quote.py           #   PDF-Angebotsgenerierung
-│   ├── pdf_worktime.py        #   PDF-Stundenzettel (Arbeitszeiten)
-│   ├── pdf_bwa.py             #   PDF der betriebswirtschaftlichen Auswertung (A4 quer)
-│   ├── pdf_euer.py            #   PDF der Einnahmenüberschussrechnung (A4 hoch)
-│   ├── pdf_susa.py            #   PDF der Summen- und Saldenliste (A4 quer)
-│   ├── pdf_liquidity.py       #   PDF der Liquiditätsrechnung (A4 quer)
-│   ├── pdf_table.py           #   gemeinsame Bausteine der Tabellen-PDFs (Zelle, Linie, Kürzen, Umbruch, Seitenverteilung)
-│   ├── csv_table.py           #   gemeinsame Bausteine der CSV-Downloads (BOM, Semikolon, Dezimalkomma, Schutz vor Formeln)
-│   ├── csv_bwa.py             #   CSV der betriebswirtschaftlichen Auswertung
-│   ├── csv_susa.py            #   CSV der Summen- und Saldenliste
-│   ├── invoice_files.py       #   Ablage und Dateinamen der Rechnungs- und Angebotsdokumente
-│   ├── einvoice_model.py      #   neutrales E-Rechnungsmodell (EN 16931)
-│   ├── xrechnung_invoice.py   #   XRechnung XML (UBL)
-│   ├── cii_invoice.py         #   CII-XML für ZUGFeRD/Factur-X
-│   ├── pdfa.py                #   PDF/A-3b: Schriften, XMP, OutputIntent, Anhang
-│   ├── datev.py               #   DATEV-Buchungsstapel-Export (CSV)
-│   ├── fonts/                 #   Liberation Sans (OFL), als Untermenge eingebettet
-│   └── icc/                   #   sRGB-Profil für den PDF/A-OutputIntent
-├── receipt_reading/           # Belegerkennung: E-Rechnung (XML) und PDF-Text lesen – rein, läuft im Kindprozess (worker.py)
-├── email_sender.py            # E-Mail-Versand (SMTP)
-├── buch.css                   # Stylesheet (inkl. Dark Mode; versioniert via ?v=)
-├── project_stats.json         # Zahlen für „Projekt in Zahlen“ auf der About-Seite (erzeugt von tools/project_stats.py)
-├── README.md                  # Diese Datei
-├── DB_MODEL.md                # Detailliertes Datenbankmodell
-├── PARSER_README.md           # Dokumentation Parser & CSV-Import
-├── DEPLOYMENT.md              # LAN-/HTTPS-/Mehrbenutzer-Betrieb
-├── AGENTS.md                  # Hinweise zur Codebasis für Entwicklungswerkzeuge
-├── requirements.txt           # Laufzeit-Abhängigkeiten (fonttools, pdfplumber)
-├── requirements-dev.txt       # zusätzlich Test-Dependencies (pytest, pytest-xdist)
-├── run_https.ps1              # HTTPS-Schnellstart (selbstsigniertes Zertifikat)
-├── Dockerfile · compose.yaml  # Container-Betrieb (Standardport 2824)
-├── docker-entrypoint.sh       # Container-Start: Volume-Rechte übernehmen, dann unprivilegiert
-├── unraid-template.xml        # Fertiges Docker-Template für Unraid
-├── ca_profile.xml             # Profil für Unraid Community Applications
-├── .github/workflows/         # CI: Tests bei jedem Push (wöchentlich mit neueren Python-Versionen);
-│                              #   neue Version auf main → Release + :latest, sonst :edge;
-│                              #   Prüfung der CLA-Zustimmung an Pull Requests
-├── .github/FUNDING.yml        # Verweis auf GitHub Sponsors
-├── LICENSE                    # AGPL-3.0 (kommerzielle Lizenz auf Anfrage, siehe unten)
-├── CLA.md · CONTRIBUTING.md   # Beitragsregeln + Contributor License Agreement
-├── seed_data/                 # Initialisierungsdaten (JSON)
-│   ├── tax_keys.json          # 53 DATEV-Steuerschlüssel (BU-Codes)
-│   ├── asset_categories.json  # 30 BMF-AfA-Kategorien
-│   ├── chart_of_accounts_skr04.json  # Standard-SKR04-Kontenrahmen
-│   ├── private/               # Benutzerspezifisch (in .gitignore)
-│   └── test/                  # Testdaten (nur anonymisierte/erfundene Werte)
-├── server/                    # Modularer Webserver
-│   ├── app.py                 # HTTP-Server: Routing, Auth-Gate, CSRF, Statics
-│   ├── pages.py               # Gemeinsame HTML (Header, Footer, Nav, CSRF-JS)
-│   ├── pages_dashboard.py     # Dashboard + EÜR
-│   ├── pages_bwa.py           # Betriebswirtschaftliche Auswertung (Seite, Adresse streng gelesen)
-│   ├── pages_euer.py          # Einnahmenüberschussrechnung (Seite, Adresse streng gelesen)
-│   ├── pages_susa.py          # Summen- und Saldenliste (Seite, Adresse streng gelesen)
-│   ├── pages_liquidity.py     # Liquiditätsrechnung (Seite; die Adresse liest dieselbe strenge Regel wie die BWA)
-│   ├── pages_invoice.py       # Rechnungen · pages_quote.py – Angebote
-│   ├── pages_transactions.py  # Buchungen (Bank+Entry merged Display)
-│   ├── pages_contacts.py      # Kontaktverwaltung (6-Tabellen-Schema)
-│   ├── pages_masterdata.py    # Stammdaten (Artikel, SKR, Bankkonten, Nummernkreise)
-│   ├── pages_assets.py        # Anlagenverzeichnis
-│   ├── pages_worktime.py      # Arbeitszeiten · pages_trips.py – Fahrtenbuch
-│   ├── pages_setup.py         # Ersteinrichtung · pages_login.py – Login
-│   ├── pages_users.py         # Benutzerverwaltung (Admin)
-│   ├── pages_receipts.py      # Belege (Upload, Bearbeiten, gelesene Werte, Vorschläge)
-│   ├── receipt_reader.py      # Belege lesen: Kindprozess starten, Lesung speichern und anzeigen
-│   ├── pages_miscellaneous.py # Seite „Daten“: WISO-Import, DATEV-Export, Backup
-│   ├── handlers.py            # POST-Handler (Formulare, PDF, Import)
-│   ├── upload_handler.py      # File-Upload mit PDF-Parsing
-│   ├── wiso_upload.py         # Zwischenablage für den Upload der WISO-Datenbank
-│   ├── import_preview.py      # Kontoauszug-Import-Vorschau (Duplikat-Zähler)
-│   ├── multipart.py           # Multipart-Parser (E-Mail-Parser-basiert)
-│   ├── period.py              # Zeitraum-Auswahl (Cookie-basiert), dritte Menüzeile (Von/Bis, Jahre, Monate)
-│   ├── project_stats.py       # liest project_stats.json streng (Zahlen der About-Seite)
-│   ├── richtext.py            # Richtext-Filter der Seiten (Modul im Projektstamm)
-│   ├── backup.py              # Datensicherung/Wiederherstellung, Download der Sicherungen
-│   └── dirlock.py             # Sperre je Datenverzeichnis: Das Wiederherstellen läuft allein
-├── tests/                     # pytest-Suite (nur anonymisierte Daten,
-│                              #   Guard: tests/check_anonymized.py)
-├── tools/                     # mcp_ubuchhaltung.py (Diagnose, nur lesend), make_einvoice_samples.py
-│                              #   (Beispiel-E-Rechnungen für die CI), make_srgb_icc.py (sRGB-Profil),
-│                              #   screenshots.mjs (erzeugt docs/screenshots/ im Demo-Modus, Playwright),
-│                              #   cla_check.py (prüft die Zustimmung zum CLA an Pull Requests),
-│                              #   project_stats.py (zählt das Projekt für die About-Seite, schreibt project_stats.json)
-├── docs/                      # Screenshots fürs README, Icon, offene Aufgaben (aufgaben.md)
-└── data/                      # Laufzeitdaten (in .gitignore)
-    ├── config.json            # eingerichtet (mode), automatische Anmeldung (auto_login)
-    ├── auth.db                # Benutzer und Sitzungen
-    └── users/<user>/          # je Nutzer: buch.db, invoices/, Belege/, logos/, backup/, Logs …
-                               #   (upload_tmp/ nur während eines Uploads der WISO-Datenbank)
-```
+| Ort | Inhalt |
+|---|---|
+| `main.py`, `server/` | Einstieg, Routen (`app.py`), POST-Handler (`handlers.py`), Seiten (`pages_*.py`) |
+| `db/` | Datenbank-Package aus Domänen-Mixins, Schema in `db/schema.py` |
+| `export/` | PDF, E-Rechnung (XRechnung, ZUGFeRD), DATEV, CSV |
+| `importers/`, `receipt_reading/` | Kontoauszug- und WISO-Import; Belegerkennung |
+| `seed_data/`, `tests/`, `tools/`, `docs/` | Initialdaten, pytest-Suite, Hilfswerkzeuge, Screenshots und offene Aufgaben |
+| `data/` | Laufzeitdaten (nicht im Repo): `auth.db`, `config.json`, `users/<Name>/` |
 
-> Datenbankschema: siehe [DB_MODEL.md](DB_MODEL.md)
+Weiterlesen:
+- [`CLAUDE.md`](CLAUDE.md) und [`AGENTS.md`](AGENTS.md): Grundregeln und Hinweise zur Codebasis
+- [`docs/regeln/`](docs/regeln/): die Regeln je Bereich (Sicherheit, Buchungen, Rechnungen, Import, Auswertungen, CI, Versionierung)
+- [DB_MODEL.md](DB_MODEL.md): Datenbankmodell und Datenfluss
+- [PARSER_README.md](PARSER_README.md): Parser und CSV-Import
+- [DEPLOYMENT.md](DEPLOYMENT.md): Betrieb, HTTPS, Docker, Demo-Modus, Diagnose-Schnittstelle
 
-### Architektur
-
-- **Webserver**: Python `http.server.BaseHTTPRequestHandler`
-- **Datenbank**: SQLite mit `PRAGMA foreign_keys = ON`
-- **Seeding**: JSON-Dateien aus `seed_data/` bei DB-Erstellung
-- **PDF**: `export/pdf_core.py` (Builder) + `export/pdf_invoice.py` / `export/pdf_worktime.py` (A4, Logo)
-- **Frontend**: Server-seitig generiertes HTML + JavaScript
-- **Styling**: `buch.css` mit Dark Mode
-
-### Server-Module
-
-| Modul | Aufgabe |
-|-------|---------|
-| `server/app.py` | Routing, Auth-Gate, CSRF, statische Dateien |
-| `server/pages.py` | Gemeinsame HTML (Header, Nav, Footer, CSRF-JS) |
-| `server/pages_dashboard.py` | Dashboard + EÜR |
-| `server/pages_bwa.py` | Betriebswirtschaftliche Auswertung (Seite; Gruppen und Berechnung in `db/bwa.py`, PDF in `export/pdf_bwa.py`, CSV in `export/csv_bwa.py`) |
-| `server/pages_euer.py` | Einnahmenüberschussrechnung (Seite; Aufbereitung in `db/euer.py`, auch für den Kasten im Dashboard; PDF in `export/pdf_euer.py`) |
-| `server/pages_susa.py` | Summen- und Saldenliste (Seite; Regeln in `db/susa.py`, Berechnung in `Database.get_susa`; PDF in `export/pdf_susa.py`, CSV in `export/csv_susa.py`) |
-| `server/pages_liquidity.py` | Liquiditätsrechnung (Seite; Aufbau in `db/liquidity.py`, Berechnung in `Database.get_liquidity`; PDF in `export/pdf_liquidity.py`) |
-| `server/pages_invoice.py` / `pages_quote.py` | Rechnungen / Angebote |
-| `server/pages_transactions.py` | Buchungen (Bank+Entry merged) |
-| `server/pages_contacts.py` | Kontakte |
-| `server/pages_masterdata.py` | Stammdaten (Artikel, SKR, Bankkonten, Nummernkreise) |
-| `server/pages_assets.py` | Anlagen |
-| `server/pages_worktime.py` / `pages_trips.py` | Arbeitszeiten / Fahrtenbuch |
-| `server/pages_setup.py` / `pages_login.py` | Ersteinrichtung / Login |
-| `server/pages_users.py` | Benutzerverwaltung (Admin) |
-| `server/pages_receipts.py` | Belege (Upload, Bearbeiten, gelesene Werte, Vorschläge) |
-| `server/receipt_reader.py` | Belege lesen: Kindprozess starten, Lesung speichern und anzeigen |
-| `server/pages_miscellaneous.py` | Seite „Daten“: WISO-Import, DATEV-Export, Backup |
-| `server/handlers.py` | POST-Handler |
-| `server/upload_handler.py` | File-Upload |
-| `server/wiso_upload.py` | Zwischenablage für den Upload der WISO-Datenbank |
-| `server/import_preview.py` | Kontoauszug-Import-Vorschau |
-| `server/backup.py` | Datensicherung/Wiederherstellung, Download der Sicherungen |
-| `server/dirlock.py` | Sperre je Datenverzeichnis: Das Wiederherstellen läuft allein |
-
-### Tests
+Tests:
 
 ```bash
 pip install -r requirements-dev.txt
 python -m pytest -q          # ein Prozess
-python -m pytest -q -n 4     # parallel auf vier Prozessen (pytest-xdist)
+python -m pytest -q -n 4     # parallel (pytest-xdist)
 ```
 
-Die Suite läuft bei jedem Push automatisch (GitHub Actions, auf vier Prozessen).
-Testdaten sind ausschließlich erfunden bzw. anonymisiert.
+Die Suite läuft bei jedem Push (GitHub Actions); Testdaten sind ausschließlich erfunden.
 
 ---
 
 ## Sicherheitshinweise
 
-- **Mit Anmeldung**: Login mit scrypt-Passwort-Hashes, Sessions
-  (HttpOnly, SameSite=Strict), CSRF-Token für alle schreibenden Requests,
-  je Nutzer isolierte Daten; optional HTTPS (siehe [DEPLOYMENT.md](DEPLOYMENT.md))
-- **Ohne Anmeldung** (automatische Anmeldung für einen Benutzer) gibt es keine
-  Passwortabfrage – nur auf `localhost` bzw. im eigenen, vertrauenswürdigen Netz betreiben
-- **Wichtig:** Konzipiert für lokalen bzw. LAN-Einsatz – **nicht für das offene Internet**
-  (kein Rate-Limiting, einfacher HTTP-Server, SQL-Konsole, die Administratoren direkten
-  Schreibzugriff auf die eigene Datenbank gibt)
+- **Mit Anmeldung**: Login mit scrypt-Passwort-Hashes, Sessions (HttpOnly, SameSite=Strict), CSRF-Schutz für schreibende Anfragen, je Nutzer
+  isolierte Daten; optional HTTPS (siehe [DEPLOYMENT.md](DEPLOYMENT.md)).
+- **Ohne Anmeldung** (automatische Anmeldung für einen Benutzer) gibt es keine Passwortabfrage – nur auf `localhost` bzw. im eigenen,
+  vertrauenswürdigen Netz betreiben.
+- **Wichtig:** Konzipiert für lokalen bzw. LAN-Einsatz – **nicht für das offene Internet** (einfacher HTTP-Server, SQL-Konsole mit direktem
+  Schreibzugriff auf die eigene Datenbank für Administratoren). Regeln: [`docs/regeln/sicherheit.md`](docs/regeln/sicherheit.md).
 
 ---
 

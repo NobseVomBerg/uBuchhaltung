@@ -15,8 +15,8 @@ So sind sie entstanden (die `.sql`-Dateien sind die Dokumentation, ohne Firebird
 Der Inhalt ist erfunden (Texte wie „eins unveraendert“, Zufallszeichen in `WIDE`); es stehen keine echten Daten darin.
 
 `expected.json` nennt je Datei den Inhalt von `T` in zwei Lesarten: `committed` ist der abgeschlossene Stand – was der Leser
-liefern muss –, `as_stored_today` das, was ein Leser liefert, der einfach die oberste Version jedes Satzes nimmt (der Stand
-vor 2.3.10). `WIDE` steht dort als Länge und SHA-256. In beiden Dateien ist die offene Transaktion die Nummer 9; die 4k-Datei
+liefern muss –, `as_stored_today` das, was ein Leser liefert, der einfach die oberste Version jedes Satzes nimmt.
+`WIDE` steht dort als Länge und SHA-256. In beiden Dateien ist die offene Transaktion die Nummer 9; die 4k-Datei
 enthält 8 Sätze aus nicht abgeschlossenen Vorgängen, die 8k-Datei 3.
 
 Die Tests (`tests/test_wiso_fdb_committed_versions.py`) entpacken die Dateien nach `tmp_path`.

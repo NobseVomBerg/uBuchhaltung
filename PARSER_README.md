@@ -1,783 +1,281 @@
-# Kontoauszug-Import & WISO-CSV-Import
+# Leser: Kontoauszüge, WISO-Importe und Belegerkennung
 
 > WISO, WISO Mein Büro, DATEV und die genannten Banken sind Marken ihrer jeweiligen Inhaber.
 > uBuchhaltung ist ein unabhängiges Projekt und steht in keiner Verbindung zu den
 > Markeninhabern oder den Herstellern. Die Namen dienen allein der Bezeichnung der
 > unterstützten Import- und Exportformate.
 
-## 1. Kontoauszüge (PDF, CAMT.053 und CSV)
+Diese Datei beschreibt den Aufbau der Leser und die Formate, die sie lesen. Die Regeln dahinter stehen in
+`docs/regeln/import.md` (Kontoauszug-Import, WISO-Übernahme) und `docs/regeln/belege.md` (Belegerkennung); die
+Schutzregeln und Grenzen dort gelten, sie werden hier nicht wiederholt. Offene Punkte: `docs/aufgaben.md`.
 
-### Installation
+Abhängigkeiten (`pip install -r requirements.txt`): `pdfplumber` liest PDF-Kontoauszüge und den Text der Belege,
+`fonttools` erzeugt PDF. Eine Texterkennung (OCR) für gescannte PDFs gibt es nicht.
 
-```bash
-pip install -r requirements.txt
-```
+## 1. Kontoauszüge (PDF, CAMT.053, CSV)
 
-Das installiert `pdfplumber` (Lesen von PDF-Kontoauszügen und des Texts gelesener Belege) und `fonttools` (PDF-Erzeugung);
-Pillow (Logos in PDF-Rechnungen) kommt mit `pdfplumber` mit.
+### Aufbau
 
-Eine Texterkennung (OCR) für gescannte PDFs gibt es nicht.
-
-### Aufbau: Abstraktionsschicht + Bankmodule
-
-Der Import ist zweigeteilt. Die Anwendung kennt nur die Abstraktionsschicht,
-die Bankeigenheiten stecken je in einem eigenen Modul unter `importers/`:
+Die Anwendung kennt nur die Abstraktionsschicht; die Eigenheiten einer Bank stecken in je einem Modul unter `importers/`.
 
 | Datei | Aufgabe |
 |---|---|
-| `importers/base.py` | Gemeinsames Datenmodell: `BankStatement` mit `StatementTransaction`-Zeilen |
-| `importers/pdftext.py` | Extraktions-Helfer für alle Module: Text, IBAN, Belegdatum |
-| `importers/plausibility.py` | Zentrale Inhaltsprüfung (siehe unten) |
-| `importers/vbr.py` | Volksbank Rottweil (PDF) |
-| `importers/dkb.py` | DKB (PDF) |
-| `importers/dkb_csv.py` | DKB (CSV, Umsatzliste – neues und altes Format; nur im Speicher gelesen, nicht über `IMPORTERS`) |
-| `importers/safe_xml.py` | XML aus hochgeladenen Dateien sicher lesen (keine DTD, keine Entity-Deklaration); gemeinsam für CAMT und die Belegerkennung |
-| `importers/__init__.py` | Registry `IMPORTERS`, `find_importer()`, `parse_statement()` |
+| `base.py` | Datenmodell: `BankStatement` mit `StatementTransaction`-Zeilen, Basisklasse `StatementImporter` |
+| `pdftext.py` | Helfer für alle Module: Text, IBAN, Belegdatum, `find_balances()` |
+| `plausibility.py` | Zentrale Inhaltsprüfung: `check_statement()`, `check_transaction()`, `check_balance()` |
+| `vbr.py`, `dkb.py` | Volksbank Rottweil und DKB als PDF (Registry `IMPORTERS`) |
+| `camt.py` | CAMT.053 (XML oder ZIP), nur im Speicher: `parse_upload()`, `parse_xml()` |
+| `dkb_csv.py` | DKB-Umsatzliste als CSV, nur im Speicher: `parse_csv()` |
+| `safe_xml.py` | XML aus Uploads sicher lesen (`parse_untrusted_xml`); gemeinsam mit der Belegerkennung |
+| `__init__.py` | `IMPORTERS` (Erkennungsreihenfolge, das erste passende Modul gewinnt), `find_importer()`, `parse_statement()` |
 
-Die Spalten einer importierten Bewegung (`CANONICAL_FIELDS`) sind bewusst
-knapp: `date`, `amount`, `recipient`, `reference`, `foreign_iban`. Mehr braucht
-eine Bankbewegung nicht, und mehr muss ein Bankmodul nicht liefern.
+Eine importierte Bewegung hat nur `CANONICAL_FIELDS`: `date`, `amount`, `recipient`, `reference`, `foreign_iban`. Weiter
+reicht das Modell nicht (Valuta, EndToEndId, Mandats- und Gläubiger-ID fehlen).
 
-**Neue Bank anbinden:** ein Modul mit einer `StatementImporter`-Klasse
-schreiben (`detect()` erkennt den Beleg, `parse()` liefert den
-`BankStatement`) und die Klasse in `IMPORTERS` eintragen. Am übrigen Code
-ändert sich nichts.
+**Neue Bank (PDF) anbinden:** ein Modul mit einer `StatementImporter`-Klasse schreiben (`detect(filename, text)` erkennt
+den Beleg, `parse(filepath, text=None)` liefert den `BankStatement`) und die Klasse in `IMPORTERS` eintragen. Am übrigen
+Code ändert sich nichts; `parse_statement()` prüft das Ergebnis danach mit `check_statement()`. Ein Dateiformat, das
+nicht über den Text läuft (CAMT, CSV), liest der Upload-Handler selbst (`server/upload_handler.py`) und prüft es mit
+`check_statement()`.
+
+### Ablauf
+
+1. Upload auf der Seite *Buchungen* (`POST /upload_receipts`): PDF, CAMT.053 (`.xml`, `.zip`) oder CSV (DKB-Umsatzliste).
+2. Das zuständige Modul erkennt den Beleg selbst und liefert IBAN (Kontozuordnung) und Umsätze; die Plausibilitätsprüfung
+   vermerkt Auffälligkeiten.
+3. PDF-Auszüge legt `document_parser.py` unter `<Datenordner>/Belege/<Jahr>/Konten/<Bank>/` ab; CAMT und CSV werden nur im
+   Speicher gelesen.
+4. Die Vorschau (`server/import_preview.py`) zeigt neu, Duplikat und unvollständig; `POST /confirm_transactions` legt
+   `BookingType='bank'` an. Duplikate, Auswahl einzelner Umsätze und die Grenzen: `docs/regeln/import.md`.
 
 ### Plausibilitätsprüfung
 
-PDF-Textextraktion ist ungenau: Kopf- und Fußzeilen rutschen in Empfänger oder
-Verwendungszweck, Beträge verschwinden, Jahreszahlen verrutschen. Nach dem
-Parsen läuft deshalb `plausibility.check_statement()` über jeden Beleg und
-vermerkt Befunde an den Bewegungen – ohne den Import zu blockieren; die
-Vorschau zeigt sie, entschieden wird vom Nutzer.
+PDF-Text ist ungenau (Kopf- und Fußzeilen rutschen in Felder, Beträge fehlen, Jahre verrutschen). Die Befunde blockieren
+den Import nie; die Vorschau zeigt sie, der Nutzer entscheidet. Die `boiler`-Muster greifen nur auf das **ganze** Feld
+(„Blatt 3“ ja, „Blattwerk Gartenbau“ nein).
 
-| Befund | Bedeutung |
+| Befund an einer Bewegung | Bedeutung |
 |---|---|
-| `amount` | Betrag fehlt (ein Betrag von 0,00 € ist ein gewöhnlicher Umsatz) |
+| `amount` | Betrag fehlt (0,00 € ist ein gewöhnlicher Umsatz) |
 | `date` | Datum fehlt oder ist unlesbar |
-| `daterange` | Datum liegt weit neben dem Belegdatum (Jahresdreher): mehr als 400 Tage davor oder mehr als 31 Tage danach |
+| `daterange` | Datum mehr als 400 Tage vor oder mehr als 31 Tage nach dem Belegdatum (Jahresdreher) |
 | `empty` | weder Empfänger noch Verwendungszweck |
-| `boiler` | Inhalt ist vollständig Kopf-/Fußzeilentext ("Seite 2 von 5", "Übertrag auf Blatt 2", "Neuer Kontostand", Formularnummern) |
-| `huge` | Betrag über 1.000.000 – fast immer ein verrutschtes Trennzeichen |
+| `boiler` | Inhalt ist ganz Kopf-/Fußzeilentext („Seite 2 von 5“, „Neuer Kontostand“, Formularnummern) |
+| `huge` | Betrag über 1.000.000 (meist ein verrutschtes Trennzeichen) |
 
-Beträge liest jeder Parser streng (`money.parse_amount`): nur ASCII-Ziffern, deutsch `1.234,56` (Tausenderpunkte nur in
-Dreiergruppen). Die PDF-Parser verlangen das Komma – „1.142“ ohne Komma wird nicht geraten. Ein Buchungskopf, dessen
-Betrag so nicht lesbar ist, ergibt `unparsed`; die übrigen Umsätze des Auszugs werden gelesen.
+Am Beleg: `no_transactions`, `no_iban`, `parse_error`, `balance` (Anfangssaldo + Umsätze ≠ Schlusssaldo), `no_balance`
+(Saldo nicht gefunden, Vollständigkeit nicht geprüft), `unparsed` (Buchungskopf ohne lesbaren Betrag), `no_year` (Jahr
+des Auszugs nicht erkannt), `foreign_currency` (CAMT nicht in Euro), `skipped_status`, `split_mismatch` (CAMT) und
+`bad_entry` (CAMT). Beträge liest jeder Parser über `money.parse_amount` (deutsch `1.234,56`; die PDF-Parser verlangen das
+Komma), die DKB-CSV über `money.parse_grouped_amount`.
 
-Am Beleg selbst: `no_transactions`, `no_iban`, `parse_error`, dazu `balance` (Anfangssaldo + Umsätze ≠ Schlusssaldo),
-`no_balance` (Saldo nicht gefunden – die Vollständigkeit ist nicht geprüft), `unparsed` (eine Zeile sah wie ein
-Buchungskopf aus, hatte aber keinen lesbaren Betrag), `no_year` (Jahr des Auszugs nicht erkannt) und `foreign_currency`
-(CAMT-Auszug nicht in Euro).
+Saldoprüfung der PDF-Auszüge: `pdftext.find_balances()` sucht die Zeilen „alter Kontostand …“ und „neuer Kontostand …“
+(Betrag in derselben Zeile, dahinter `S`/`H`, `+`/`-` oder `EUR`), `plausibility.check_balance()` rechnet in ganzen Cent.
+Bestätigt ist das an Volksbank-Auszügen eines Kontos; findet die Suche die Zeilen nicht, steht `no_balance`.
 
-**Saldoprüfung für PDF-Auszüge:** `pdftext.find_balances()` sucht im Text die Zeilen „alter Kontostand …“ und
-„neuer Kontostand …“ (Betrag in derselben Zeile, dahinter `S`/`H`, `+`/`-` oder `EUR`); `plausibility.check_balance()`
-rechnet in ganzen Cent nach. Bestätigt ist die Suche an echten Volksbank-Auszügen eines Kontos (2022–2026); für andere
-Banken und Sonderfälle (Soll-Saldo, einseitiger Auszug) nicht – findet sie die Zeilen nicht, steht `no_balance` am Beleg,
-nichts wird geraten. Reine Strichzeilen (Rahmenzeichen), mit denen neuere Volksbank-Auszüge „neuer Kontostand“ einrahmen,
-gehören zu keiner Buchung.
+### CAMT.053 (`camt.py`)
 
-Die `boiler`-Muster greifen nur auf das **ganze** Feld: "Kontoauszug-Gebühr
-Januar" oder "Blattwerk Gartenbau" bleiben unauffällig, "Blatt 3" nicht. Und
-eine Zeile mit brauchbarem Verwendungszweck wird nicht wegen eines kruden
-Empfängers markiert.
+Unterstützt camt.053.001.02/.04/.08; gelesen wird über den lokalen Elementnamen, der Namespace spielt keine Rolle.
 
-### Funktionsweise
+* Je `<Stmt>` ein Beleg; Kontozuordnung über `Stmt/Acct/Id/IBAN`.
+* Nur gebuchte Umsätze (`Sts` = `BOOK`); Vorzeichen aus `CdtDbtInd`; ein Storno (`RvslInd`) bekommt „Storno: “ vor den
+  Verwendungszweck.
+* Sammelbuchung: mehrere `TxDtls` mit eigenem Betrag (`TxDtls/Amt`) werden Einzelumsätze, wenn die Summe stimmt (sonst ein
+  Umsatz mit Hinweis `split_mismatch`).
+* Gegenpartei: `Dbtr` bei Gutschrift, `Cdtr` bei Lastschrift; Zweck = alle `Ustrd` (Fallback `AddtlTxInf`,
+  `AddtlNtryInf`).
+* Saldoprüfung: Anfangssaldo (OPBD/PRCD) + Umsätze = Schlusssaldo (CLBD).
+* Grenzen: je XML 20 MB (entpackt), höchstens 50 XML-Einträge je ZIP, 100 MB entpackt insgesamt, Kompressionsverhältnis
+  höchstens 200, Beträge unter 10¹².
 
-1. **Upload**: PDF, CAMT.053 (XML/ZIP) oder CSV (Umsatzliste der DKB) über die Web-Oberfläche hochladen (Drag & Drop oder Dateiauswahl)
-2. **Automatische Analyse**: das zuständige Importmodul erkennt den Beleg selbst
-   - IBAN zur Kontoidentifikation
-   - Einzelne Transaktionen (Datum, Empfänger, Betrag, fremde IBAN)
-   - Plausibilitätsprüfung markiert Auffälligkeiten
-3. **Organisation**: Dateien werden nach `<Datenordner des Benutzers>/Belege/YYYY/Konten/<BANK>/`
-   (`data/users/<Name>/…`) einsortiert
-4. **Bestätigung**: Erkannte Transaktionen auf `/confirm_transactions` prüfen
-5. **Import**: Nach Bestätigung als `BookingType='bank'` in Bookings-Tabelle
+### DKB-Umsatzliste als CSV (`dkb_csv.py`)
 
-**Duplikat-Erkennung (zählbasiert):** Konto + Buchungsdatum + Betrag, ohne Text –
-CAMT und PDF schreiben denselben Umsatz verschieden, und der WISO-Tabellen-Export
-überschreibt ihn nachträglich. Gezählt wird **je Datei**: Der Bestand je Schlüssel
-enthält auch, was frühere Dateien desselben Laufs angelegt haben; über mehrere
-Dateien gilt das **Maximum**, nicht die Summe. „Alle importieren“ verhält sich damit
-wie die Einzelimporte nacheinander: derselbe Auszug zweimal im Upload, CAMT und PDF
-desselben Auszugs oder ein Tages- und ein Monatsauszug verdoppeln nichts, gleiche
-Umsätze innerhalb *einer* Datei bleiben erhalten. Die Vorschau zeigt, was schon in
-einer anderen Datei desselben Uploads steckt („in anderer Datei dieses Uploads“), die
-Meldung nach dem Import nennt die so übersprungenen Umsätze. Passt der Verwendungszweck
-eines solchen Umsatzes zu keinem Umsatz der früheren Dateien (gleich, Anfang des anderen
-oder leer – Leerraum, Groß-/Kleinschreibung und ein führendes „Storno:“ zählen nicht), kommt in der Vorschau
-„Text weicht ab, bitte prüfen“ dazu, etwa bei zwei verschiedenen Abos mit demselben
-Betrag am selben Tag; das ist nur ein Hinweis, der Import bleibt beim Maximum.
-
-Ein Umsatz **ohne Datum oder Betrag** legt der Import nie an: Die Vorschau zählt ihn
-weder als neu noch als Duplikat („ohne Datum/Betrag – wird nicht importiert“), die
-Meldung nach dem Import nennt die so übersprungenen Umsätze.
-
-**Einzelne Umsätze auswählen (seit 2.5.0, alle Formate):** Bei einem Konto, das nicht als „Reines Geschäftskonto“
-gekennzeichnet ist (Stammdaten → Bankkonten; `Accounts.BusinessOnly` genau 0, nie bei einer Kasse), zeigt die Vorschau je Zeile ein
-Kästchen – angehakt ist jede importierbare Zeile, Duplikate und unvollständige Zeilen sind deaktiviert –, dazu ein Suchfeld
-(Datum, Empfänger, Zweck, Betrag, ohne Rücksicht auf Groß-/Kleinschreibung), „Alle“ und „Keine“ (sie wirken auf die sichtbaren Zeilen)
-und den Zähler „n von m ausgewählt“; der Knopf heißt „Importieren (n ausgewählt)“. Die Liste steht dort beim Anzeigen aufgeklappt (Knopf „Umsätze auswählen“). Auf einem reinen Geschäftskonto (der
-Standard, auch für jeden Bestand und jeden unlesbaren Wert) wird der Auszug vollständig importiert. `/confirm_transactions`
-nimmt das Formularfeld `selection` (JSON-Objekt `{"<file_index>": [<index>, …]}`, `index` = Position des Umsatzes in der Liste
-des Belegs, wie die Vorschau sie nennt): Für einen Beleg mit Eintrag werden nur diese Umsätze angelegt, ein Beleg ohne Eintrag wird
-ganz importiert. Die Auswahl wird vor dem ersten Schreiben streng geprüft (ungültig: 400 „Ungültige Auswahl“; Konto nicht
-gefunden oder ohne Auswahl: 400 „Für ein reines Geschäftskonto wird der Auszug vollständig importiert. Bitte die Vorschau
-verwerfen und die Datei erneut hochladen.“; nichts ist dann
-importiert). Die Duplikat-Zählung ändert sich nicht: Jede Zeile wird wie sonst eingeordnet – Duplikat → übersprungen,
-ohne Datum/Betrag → `skipped_invalid`, nicht gewählt → `skipped_unselected`, sonst angelegt. Der Beleg gilt danach als
-importiert; die nicht gewählten Umsätze sind verworfen.
-
-Grenzen (ohne Bankreferenz im Datenmodell nicht lösbar, siehe `docs/aufgaben.md`):
-- Eine CAMT-Sammelbuchung wird in Einzelumsätze zerlegt, die PDF zeigt eine
-  Summenzeile: Die Beträge passen nicht zusammen, beides wird angelegt.
-- Zwei *verschiedene* Auszüge desselben Tags mit je einem echten, gleichen Umsatz:
-  das Maximum behält nur einen davon. Die Vorschau markiert abweichende Texte, nachtragen
-  geht nur von Hand – eine Option „trotzdem importieren“ fehlt (`docs/aufgaben.md`).
-- Das VBR-PDF nennt das Jahr nur im Kopf des Auszugs. Läge eine Buchung damit nach dem
-  Erstellungsdatum des Auszugs („erstellt am“), gilt für sie das Vorjahr (Dezember-Buchungen auf dem
-  ersten Auszug eines Jahres). Ohne Erstellungsdatum bleibt es beim Jahr des Kopfes. Wer einen solchen
-  Auszug schon mit dem falschen Jahr importiert hat, bekommt die Zeilen beim erneuten Import nicht als
-  Duplikat erkannt (das Datum hat sich geändert).
-- Der DKB-Parser kennt diese Korrektur und die Hinweise `unparsed`/`no_year` noch nicht.
-- Die Vorschau wird beim Hochladen berechnet und nach einem Einzelimport nicht neu
-  geladen: Wer zuerst die *spätere* Datei einzeln importiert, sieht für die frühere
-  Karte eine zu hohe „neu“-Zahl. Das Ergebnis des Imports stimmt trotzdem.
-
-### CAMT.053 (ISO 20022, XML)
-
-`importers/camt.py` liest Kontoauszüge im Bankformat CAMT.053 – für alle Banken,
-die es anbieten (camt.053.001.02/.04/.08, Namespace-unabhängig über lokale
-Elementnamen). Upload von `.xml` oder `.zip` (mehrere XML-Dateien) läuft über
-denselben Weg wie PDF: `BankStatement` → Vorschau → Bestätigung.
-
-* Je `<Stmt>` ein Beleg; Konto-Zuordnung über `Stmt/Acct/Id/IBAN`, ohne Treffer
-  „Konto nicht gefunden“ wie bei PDF.
-* Nur gebuchte Umsätze (`Sts` = `BOOK`); Vorzeichen aus `CdtDbtInd`. Storno
-  (`RvslInd`) wird mit Präfix „Storno: “ im Verwendungszweck übernommen.
-* Sammelbuchung: mehrere `TxDtls` mit eigenem Betrag (`TxDtls/Amt`, in Euro) werden Einzelumsätze, sofern
-  die Summe stimmt (sonst ein Umsatz + Hinweis `split_mismatch`). Beträge unter `AmtDtls` teilen nicht auf,
-  ein Einzelbetrag in anderer Währung auch nicht: Dann bleibt es ein Umsatz mit dem Gesamtbetrag.
-* Währung: Nennt der Auszug irgendwo (Konto, Umsatz, Saldo) eine andere Währung als Euro, werden seine
-  Umsätze nicht übernommen (Hinweis `foreign_currency`) – sie wären sonst als Euro gebucht worden.
-* Gegenpartei: Dbtr bei Gutschrift, Cdtr bei Lastschrift; Zweck = alle `Ustrd`
-  (Fallback `AddtlTxInf`, `AddtlNtryInf`). Valuta, EndToEndId, Mandats- und
-  Gläubiger-ID hat das gemeinsame Datenmodell nicht.
-* Plausibilität: Anfangssaldo (OPBD/PRCD) + Umsätze = Schlusssaldo (CLBD), sonst
-  Hinweis `balance` in der Vorschau; fehlt ein Saldo, `no_balance`.
-* Sicherheit: DTD/Entities werden abgelehnt (der Wächter liegt in `importers/safe_xml.py`, `parse_untrusted_xml`, und gilt ebenso für die
-  Belegerkennung), ZIP nur im Speicher mit Grenzen für Anzahl/Größe/Kompressionsverhältnis. Beträge nur als `Decimal`.
-
-### DKB-Umsatzliste (CSV)
-
-`importers/dkb_csv.py` liest die Umsatzliste der DKB als CSV – im neuen und im alten Format, erkannt an der Datei selbst, nie
-konfiguriert. Upload von `.csv` läuft wie bei CAMT nur im Speicher (nichts landet im Ablageordner); eine Datei, die keine
-DKB-Umsatzliste ist, wird nicht als Beleg abgelegt, sondern als Warnung gemeldet.
+Zwei Formate, erkannt an der Datei, nie konfiguriert:
 
 * **Neu:** Vorspann `"Girokonto";"DE…"`, `"Zeitraum:"`, `"Kontostand vom …"`; Kopf `Buchungsdatum;Wertstellung;Status;
-  Zahlungspflichtige*r;Zahlungsempfänger*in;Verwendungszweck;Umsatztyp;IBAN;Betrag (€);…`; Datum `TT.MM.JJ`; UTF-8 mit BOM. Die
-  Gegenseite steht in zwei Spalten (bei einer Belastung der Zahlungsempfänger, sonst der Zahlungspflichtige).
-* **Alt:** Vorspann `"Kontonummer:";"DE…"`, `"Von:"`, `"Bis:"`, `"Kontostand vom …"`; Kopf `Buchungstag;Wertstellung;Buchungstext;
-  Auftraggeber / Begünstigter;Verwendungszweck;Kontonummer;BLZ;Betrag (EUR);…`; Datum `TT.MM.JJJJ`; oft Windows-1252; eine Variante mit
-  Komma statt Semikolon, eine mit schon beim Schreiben verlorenem Umlaut in „Begünstigter“. Die Gegenseite steht in einer Spalte.
-* **Erkennung nach Bedeutung:** Die Kopfzeile ist die erste Zeile, deren erste Zelle `Buchungsdatum` oder `Buchungstag` heißt;
-  ihr Trennzeichen wird an ihr abgelesen. Die Spalten werden an ihrer Bedeutung gefunden (Pflicht: Betrag, Verwendungszweck und
-  Gegenseite – beide Seiten oder eine einzelne Spalte, nie nur eine der beiden Seiten; IBAN der Gegenseite und Status, wo
-  vorhanden), nie am genauen Namen oder an einem Umlaut – eine umbenannte Spalte ergänzt in `MEANS` ein Wort. Fehlt eine
-  Pflichtspalte, nennt die Meldung ihre Bedeutung, und nichts wird importiert. Kodierung: BOM → striktes UTF-8 → Windows-1252.
-  Erkannt wird allein an der Kopfzeile: Die Liste einer anderen Bank mit derselben Kopfzeile wird genauso gelesen. Nennt der
-  Name der Betragsspalte eine andere Währung als Euro („Betrag (USD)“), wird nichts importiert.
-* **Beträge:** `money.parse_grouped_amount` – der Punkt ist **immer** ein Tausendertrenner (`-15.000` ist −15000: die DKB lässt bei
-  runden Beträgen die Nachkommastellen weg). Das ist bewusst anders als `money.parse_amount` (WISO-Textexport, PDF-Auszüge), das einen
-  Punkt ohne Komma als Dezimalpunkt liest (`1.500` ist dort 1,5). Leerraum gilt nur am Rand und vor einem angehängten `€`/`EUR`
-  (`12 34` ist kein Betrag). Nie `float()` auf Dateitext.
-* **Zeilen:** Datum zu ISO; ein Jahr vor 1990 oder ein Datum mehr als 31 Tage nach heute gilt als nicht lesbar. Still übergangen
-  wird nur eine Fußzeile (kein Datum und nichts in der Betragsspalte); fehlt einer Zeile das Datum oder der lesbare Betrag, wird
-  sie nicht importiert und ergibt `unparsed`. **Verrutschte Zeilen** – mehr Zellen als die Kopfzeile (ein Trennzeichen ohne
-  Anführung im Text, ein Betrag ohne Anführung in einer Komma-Datei) oder zu wenige für Betrag, Zweck und Gegenseite – ergeben
-  ebenfalls `unparsed`: In ihrer Betragsspalte steht etwas anderes (etwa eine Bankleitzahl), und das wird nie als Betrag
-  gelesen. Status „Vorgemerkt …“ (nur neues Format) wird übergangen
-  (`skipped_status`). Die IBAN des Kontos steht im Vorspann (fehlt sie: `no_iban`, die Vorschau zeigt „Konto nicht gefunden“);
-  die Datei nennt keinen Anfangssaldo – `no_balance` steht immer am Beleg.
-* **`document_date`** bleibt leer: Die Prüfung `daterange` misst ein Buchungsdatum am Belegdatum, eine Umsatzliste hat aber keines –
-  sie umfasst einen beliebigen Zeitraum und wird später exportiert –, und ein Jahresdreher kann bei einem Datum mit Jahr nicht
-  entstehen. Ohne Belegdatum entfällt die Prüfung, statt bei jedem Jahresexport Zeilen zu Unrecht zu melden.
-* **Grenzen** (die Datei kommt aus einem Upload): höchstens 20 MB, höchstens 100 000 Zeilen hinter der Kopfzeile, die Kopfzeile in den
-  ersten 100 Zeilen, höchstens 100 Spalten und höchstens 2000 Trennzeichen in einer Zeile der Datei; die Meldungen sind feste Sätze und nennen keinen Feldwert der Datei (Spaltennamen
-  der Kopfzeile stehen höchstens auf 40 Zeichen gekürzt darin).
-* Geprüft nur an erfundenen Beispielen beider Formate, nicht an einer echten Datei (`docs/aufgaben.md`). Weitere Banken als CSV
-  gibt es nicht.
+  Zahlungspflichtige*r;Zahlungsempfänger*in;Verwendungszweck;Umsatztyp;IBAN;Betrag (€);…`; Datum `TT.MM.JJ`; UTF-8 mit BOM;
+  die Gegenseite steht in zwei Spalten (bei einer Belastung der Zahlungsempfänger, sonst der Zahlungspflichtige).
+* **Alt:** Vorspann `"Kontonummer:";"DE…"`, `"Von:"`, `"Bis:"`, `"Kontostand vom …"`; Kopf `Buchungstag;Wertstellung;
+  Buchungstext;Auftraggeber / Begünstigter;Verwendungszweck;Kontonummer;BLZ;Betrag (EUR);…`; Datum `TT.MM.JJJJ`; oft
+  Windows-1252; Varianten mit Komma statt Semikolon und mit verlorenem Umlaut in „Begünstigter“; die Gegenseite steht in
+  einer Spalte.
 
-### Erweiterung für weitere Banken
+Kopfzeile = erste Zeile, deren erste Zelle `Buchungsdatum` oder `Buchungstag` heißt; Spalten werden nach Bedeutung gefunden
+(`MEANS`, ein umbenannter Spaltenname ergänzt dort ein Wort). Kodierung: BOM → striktes UTF-8 → Windows-1252. Die IBAN des
+Kontos steht im Vorspann; die Datei nennt keinen Anfangssaldo (`no_balance` steht immer am Beleg), `document_date` bleibt
+leer. Status „Vorgemerkt …“ wird übergangen (`skipped_status`). Grenzen: 20 MB, 100 000 Zeilen, Kopfzeile in den ersten
+100 Zeilen, 100 Spalten, 2000 Trennzeichen je Zeile. Zeilenregeln und Schutzregeln: `docs/regeln/import.md`.
 
-Neue Banken: siehe „Neue Bank anbinden“ oben (Modul in `importers/` mit
-`StatementImporter`-Klasse, Eintrag in `IMPORTERS`).
+## 2. WISO-Textexporte (CSV)
 
----
+Zwei Exportformate, erkannt an der Kopfzeile (`Database.import_wiso_csv(csv_bytes)`):
 
-## 2. WISO Mein Büro CSV-Import
+| Format | Erkennung | `BookingType` |
+|---|---|---|
+| Original-Export (9 Spalten) | `KONTO` und `GEGENKONTO` | `entry` |
+| Tabellen-Export (7 Spalten, ältere 6) | `Empf./Auft.` und `Verwendungszweck` | `bank` |
 
-### Übersicht
+Ein DATEV-Buchungsstapel (erstes Feld `EXTF`/`DTVF`) wird erkannt und mit Klartext abgelehnt. Kodierung: BOM → strenges
+UTF-8 → CP1252 (so schreibt WISO) → Latin-1; eine Datei mit BOM, die kein gültiges UTF-8 ist, wird abgelehnt. Das
+Ergebnis ist ein dict `{imported, updated, skipped, errors, format, …}` (`format`: `original`, `table`, `datev`,
+`unknown`; der Original-Export nennt zusätzlich Zähler wie `negative_gross`, `legacy_mirrors`, `unknown_tax_keys`).
 
-Zwei Export-Formate mit **automatischer Format-Erkennung**:
+### Original-Export
 
-1. **Original-Export** (9 Spalten) → `BookingType='entry'`
-2. **Tabellen-Export** (7 Spalten, ältere Exporte 6) → `BookingType='bank'`
-
-Ein DATEV-Buchungsstapel (erstes Feld `EXTF`/`DTVF`) wird erkannt und mit Klartext abgelehnt; die
-Meldungen der Formaterkennung nennen keinen Feldwert der Datei (der Vorlauf trägt Berater- und
-Mandantennummer).
-
-Nach dem Import wird automatisch `link_bank_to_entries()` aufgerufen, das Bank- und Entry-Buchungen über `ParentBooking_ID` verknüpft.
-
----
-
-### Format 1: Original-Export
-
-**CSV-Format:**
 ```
 ID;DATUM;KONTO;GEGENKONTO;TEXT;REFERENZNUMMER;BRUTTOBETRAG;SCHLUESSEL;USTIDENTNUMMER
 ```
 
-**Automatisches Mapping:**
-- **KONTO** → `ChartOfAccounts.AccountNumber` → `COA_ID` (Sollkonto)
-- **GEGENKONTO** → `ChartOfAccounts.AccountNumber` → `CounterCOA_ID` (Habenkonto)
-- **SCHLUESSEL** → Steuersatz: zuerst die Regeln des Exports (`db/datev_keys.py`, `key_rate`), sonst die `TaxKeys`-Tabelle (53 BU-Schlüssel);
-  eine ganze Zahl von 1 bis 9999 steht außerdem als `Bookings.DatevKey` am Satz und geht unverändert in den DATEV-Stapel
-  - z.B. 401/101/121 → Regelsatz (19 %), 402/102/122 → ermäßigt (7 %), 7/6/5/4 → die anderen Sätze (16 %/5 %), 490 und 100 → kein Satz;
-    vom 2020-07-01 bis 2020-12-31 gelten für 401/402/7/6/101/102/5/4/121/122 die vertauschten Sätze (16/5/19/7 %)
-- **TaxAmount**: Automatisch berechnet als `|Brutto| - |Brutto| / (1 + TaxRate)`
-- **Spezialfall 4405→4400**: Wenn kein BU-Schlüssel vorhanden ist (`SCHLUESSEL` leer oder 0),
-    wird automatisch 19% gesetzt und TaxAmount berechnet; eine Zeile mit einem Schlüssel – auch einem ohne Satz wie 490 – behält, was er sagt
+| Spalte | Wird zu |
+|---|---|
+| `DATUM` (`TT.MM.JJJJ`) | Buchungsdatum |
+| `KONTO` / `GEGENKONTO` | `COA_ID` (Soll) / `CounterCOA_ID` (Haben), über `ChartOfAccounts.AccountNumber` |
+| `REFERENZNUMMER` | Beleg-Nr. (`DocumentNumber`); gleiche Nummer + Datum gruppiert Split-Positionen |
+| `BRUTTOBETRAG` | Betrag (`money.parse_amount`, Minor Units) |
+| `SCHLUESSEL` | Steuersatz (BU-Schlüssel, siehe unten); ein Wert von 1 bis 9999 steht als `Bookings.DatevKey` am Satz |
 
-**Liquiditäts-Erkennung (`_is_liquid()`):**
-- Bankkonten und die Kasse der App: Über `Accounts.SKRAccount` JOIN mit ChartOfAccounts
-  (die Standard-Kasse trägt SKR04 1600; hat die Kasse keine SKR-Nummer, ist 1600 nicht liquide)
-- Verrechnungskonto: 1460 (Geldtransit)
-- Der SKR03-Kassenbereich 1000–1099 zählt seit 2.1.0 nicht mehr (in SKR04 sind es Vorräte): Der
-  Import meldet Zeilen darauf (`stock_range_accounts`: Konto, Bezeichnung, Anzahl) mit dem Hinweis,
-  dass ältere Versionen sie als Kasse gelesen haben und dass Buchungen gegen diese Konten als
-  Umbuchung gelesen werden und nicht in der EÜR erscheinen
-- Dieselbe Menge (`importers.wiso_fdb.DEFAULT_LIQUID_ACCOUNTS` plus die eigenen Konten) nutzen der
-  Datenbank-Import, die Buchungsmaske und alles, was eine Zeile ohne Form liest
-- Bestimmt Vorzeichen der Buchung **und die Form** des Satzes (`Bookings.EntryForm`):
-  Konto liquide → `liquid_first` (Betrag positiv), Gegenkonto liquide → `purpose_first` (Betrag
-  negativ), beide → `mirror_coa` (der Rohbetrag der Datei bleibt, positiv = Konto im Soll), keine →
-  `transfer` mit dem Rohbetrag (WISO meint „Konto im Soll“, auch bei leerem oder unbekanntem Gegenkonto;
-  die EÜR liest so einen Satz als Umbuchung, ohne Vorsteuerausweis). Bei genau einer liquiden Seite
-  wird der Betrag zum Betrag der Geldbewegung; diese Regel ist nach einer Messung an echten
-  Daten festgeschrieben: WISO schreibt den Bruttobetrag nicht negativ (Konto = Soll, Umkehrungen wie
-  Storno oder Erstattung stehen mit vertauschten Konten). Ein **negativer Bruttobetrag** fällt aus
-  diesem Muster; der Import zählt jede solche Zeile (`negative_gross`) als Wächter. Ohne liquide Seite oder
-  mit zwei bleibt der Rohbetrag, und die Zeile zählt nicht
+* **Steuerschlüssel:** Zuerst gilt die Regel des Exports (`db/datev_keys.py`, `key_rate`): 401/101/121 Regelsatz, 402/102/122
+  ermäßigt, 7/6/5/4 die Sätze 16 % bzw. 5 % (Vorsteuer 7/6, Umsatzsteuer 5/4); vom 2020-07-01 bis 2020-12-31 gelten für diese
+  Schlüssel die vertauschten Sätze. Sonst nennt `TaxKeys` (53 Zeilen) den Satz; 490 und 100 haben keinen. Ein unbekannter
+  Schlüssel wird nicht geraten (Zeile ohne Satz, `unknown_tax_keys`). Der Steuerbetrag wird aus dem Brutto gerechnet
+  (`_included_tax`, eine Rundung auf den Cent). Ohne Schlüssel (leer oder 0) setzt „4405 an 4400“ 19 %.
+* **Vorzeichen und Form (`EntryForm`):** Bestimmt wird beides daran, welche Seite ein Zahlungskonto ist (`_is_liquid`:
+  eigene Bank- und Kassenkonten über `Accounts.SKRAccount`, die Kasse trägt SKR04 1600, dazu das Verrechnungskonto 1460
+  aus `importers.wiso_fdb.DEFAULT_LIQUID_ACCOUNTS`). Der SKR03-Kassenbereich 1000–1099 zählt nicht; Zeilen darauf meldet
+  der Import (`stock_range_accounts`). Die Regeln stehen in `docs/regeln/import.md` (*Vorzeichen und Form*).
 
-**Form beim Re-Import:** Kein Import ändert die Form einer vorhandenen Zeile. Findet der Textexport zu
-einer Zeile keinen Treffer mit gleichem Betrag, aber einen Spiegel des Bestands (`mirror_legacy`) mit
-gleichem Beleg, Datum, Konto, Gegenkonto und dem Betrag −gross, den die Datei nicht selbst beansprucht
-(eine eigene Zeile mit diesem Betrag), ist die Zeile ein Duplikat: Kein zweiter Satz, der vorhandene
-bleibt, wie er ist. Der Import zählt solche Spiegel – mit gleichem wie mit umgekehrtem Vorzeichen –
-als `legacy_mirrors`; die Seite *Daten* nennt die Zahl („noch nach der alten Lesart
-gespeichert“).
+### Tabellen-Export
 
-**Zeilen auf Konten 1000–1099 aus einer älteren Version:** Bis 2.0.x galten diese Konten als Kasse, die
-Zeile stand mit dem Betrag dieser Regel im Bestand („6815 an 1050“ −10, „1050 an 1800“ +30); heute gibt
-derselbe Import ihr einen anderen Betrag und fände sie nicht wieder. Berührt eine Zeile ein Konto in
-1000–1099 und unterscheiden sich die Beträge der alten und der heutigen Regel, sucht die Duplikatsuche
-zusätzlich mit dem Betrag der alten Regel: Gleiche Beleg-Nr. (auch leer), gleiches Datum, Konto und
-Gegenkonto (ein im Kontenrahmen fehlendes Konto gilt auf beiden Seiten als gleich) – dann ist die Zeile
-ein Duplikat. Jede vorhandene Zeile zählt höchstens einmal, und nicht die, die eine andere Zeile der
-Datei mit ihrem eigenen Betrag beansprucht. Die Altzeile bleibt, wie sie ist (Form und Betrag); der
-Import zählt sie als `legacy_stock_rows`, und die Seite *Daten* nennt die Zahl.
-
-**Duplikat-Erkennung (zählbasiert):** REFERENZNUMMER + Datum + COA_ID + Betrag;
-ohne Referenznummer: Datum + COA_ID + Betrag (nur Entry-Buchungen, ohne Text —
-der Tabellen-Export überschreibt ihn nachträglich). Übersprungen werden je
-Schlüssel nur so viele Zeilen, wie die DB bereits enthält — gleichartige
-Split-Positionen (gleicher Betrag/Konto/Tag) werden dadurch korrekt importiert.
-
-**Zusammenspiel mit dem Datenbank-Import (`db/wiso_fdb_import.py`):** Der Schlüssel
-fragt nicht, woher eine Buchung stammt – was der Datenbank-Import schon angelegt hat,
-überspringt der CSV-Import. Umgekehrt übernimmt der Datenbank-Import Buchungen des
-CSV-Imports, statt eine zweite anzulegen – aber eng gefasst, lieber eine sichtbare zweite
-Buchung als eine still falsch übernommene:
-- Kandidat ist eine `entry` ohne `SourceGroup`, ohne `AutoMirror` (Spiegelbuchung der
-  Buchungsmaske) und ohne `Account_ID` mit gleichem Datum, Betrag, Konto und gleicher
-  Beleg-Nr. (Leerraum zusammengefasst: „RE  12“ = „RE 12“; auch ohne Beleg-Nr.).
-- Der **Text** muss immer gleich sein (Leerraum und Groß-/Kleinschreibung egal; die Datenbank
-  liefert ihn als latin-1, die CSV als cp1252 – für den Vergleich wird er umgesetzt, gespeichert
-  bleibt der Text der CSV-Zeile) und darf nicht leer sein – zwei leere Texte beweisen nichts,
-  solche Sätze werden neu angelegt.
-- Das **Gegenkonto** muss gleich sein (beide bekannt) oder der CSV-Zeile fehlen; ein anderes
-  passt nie. Unter mehreren gewinnt das gleiche Gegenkonto, dann die kleinste ID. Jede Zeile wird
-  höchstens einmal übernommen: zwei gleich hohe Teilbuchungen übernehmen zwei CSV-Zeilen, gleich
-  hohe Zahlungen verschiedener Kunden mit verschiedenem Text bekommen jeweils ihr Gegenkonto.
-- **Mehrdeutig** ist ein Schlüssel, wenn Sätze des Imports mit gleichem Datum, Betrag, Konto,
-  Beleg-Nr. und Text verschiedene Gegenkonten tragen: Dann nehmen sie keine Zeile ohne
-  Gegenkonto (welcher Satz zu welcher Zeile gehört, ließe sich nur raten); Zeilen mit gleichem
-  Gegenkonto bleiben erlaubt.
-- Fehlte der CSV-Zeile das Konto (im Kontenrahmen unbekannt), sucht der Datenbank-Import
-  ersatzweise ohne Konto – nur wenn es zum Schlüssel keine Zeile mit Konto gab, und nur mit
-  gleichem Gegenkonto und gleichem, nicht leerem Text.
-- Ein Spiegel des Bestands (`mirror_legacy`) mit **umgekehrtem Vorzeichen** (Betrag −gross: Richtung
-  auf dem Gegenkonto) wird übernommen, wenn Konto, Gegenkonto (beide bekannt), Beleg-Nr. und Text
-  gleich sind – und die Datenbank nicht selbst eine Zeile mit seinem Betrag enthält. Form und Betrag
-  bleiben (`legacy_mirrors` zählt ihn).
-- Ein Satz, der ein Konto 1000–1099 berührt, wird zusätzlich mit dem Betrag der alten Regel gesucht
-  (eine ältere Version hat die CSV-Zeile so gespeichert, siehe oben): dieselben Schutzregeln, und die
-  Datenbank darf keinen Satz mit diesem Betrag selbst beanspruchen. Übernommen wird nur mit der
-  Quellgruppe – Betrag, Form, Konten und Steuer der Altzeile bleiben (`legacy_stock_rows`). Eine Altzeile,
-  deren Konto im Kontenrahmen fehlte (`COA_ID` leer), findet diese Suche nicht: Dann entsteht eine zweite
-  Buchung (Grenze, `docs/aufgaben.md`).
-- Übernommen wird mit einem UPDATE (im Replay-Log): `SourceGroup` (WISO-`ACCOUNTINGID`)
-  setzen, leere Konten (`COA_ID`, `CounterCOA_ID`) und einen leeren Empfänger füllen,
-  Steuersatz und -betrag ergänzen, wenn beide fehlen. Die Form: Ein `mirror_legacy`-Spiegel bleibt einer;
-  füllt die Übernahme ein fehlendes Konto, ändern sich die Konten des Satzes, und für ihn gilt die Form
-  des Imports. Text, Verknüpfungen zur Bank und
-  Änderungen des Nutzers bleiben unberührt. Die Seite meldet die Zahl („aus dem CSV-Import
-  wiedererkannt“) und listet die ersten 500 übernommenen Buchungen auf.
-- **Möglicherweise doppelt:** Hat der Import zu Datum, Betrag und Konto einen Satz neu angelegt,
-  meldet er die dazu vorhandenen, nicht übernommenen Buchungen (Zähler und die ersten 500 auf der
-  Seite *Daten*, ohne Rücksicht auf Text und Beleg-Nr.). Stimmt es, ist von beiden eine
-  zu löschen.
-
-**Re-Import der Datenbank:** Eine schon bekannte `SourceGroup` wird nicht mehr nur übersprungen: Der
-Satz wird mit der Zeile der Gruppe verglichen (Datum, Konto, Gegenkonto, |Betrag|). Ein
-`mirror_legacy`-Spiegel wird gezählt (`legacy_mirrors`) und bleibt, wie er ist. Weicht eine andere
-gespeicherte Form von der des frischen Imports ab (z. B. weil ein Konto inzwischen ein Geldkonto ist),
-wird das nur gemeldet (`form_conflicts`, die ersten 500 auf der Seite *Daten*) – nichts wird
-umgedeutet.
-
-**Neu angelegte Sätze (Datenbank-Import, seit 2.3.2):** Legt WISO die Buchungen eines Zeitraums neu an (nach einem
-DATEV-Export oder einer Korrektur), stehen sie mit **neuer** `ACCOUNTINGID` und sonst gleichem Inhalt in der Datenbank; die alte
-Quellgruppe gibt es dort nicht mehr, und der Import – der einen Satz nur an seiner Quellgruppe wiedererkannte – legte
-alles ein zweites Mal an. Jetzt gilt: **Verwaist** ist eine `entry` mit Quellgruppe, die in keinem Satz der Datei vorkommt (auch nicht in
-einem künftigen AfA-Satz; die Datei ist immer die ganze WISO-Datenbank, einen Zeitraumfilter gibt es nicht). Jeder Satz mit **unbekannter**
-Quellgruppe bekommt – vor der Übernahme aus dem CSV-Import und vor dem Neuanlegen – eine verwaiste Zeile, wenn eine passt. Die Zuordnung
-steht fest, bevor die Buchungen geschrieben werden, und **hängt nicht von der Reihenfolge der Sätze in der Datei ab**: Die Durchgänge gehen
-über alle diese Sätze in fester Ordnung nach ihrem Inhalt (Datum, Konten, Betrag, Beleg-Nr., Text, Steuersatz, BU-Schlüssel, Gruppe), die
-Zeilen nach ID; jede Zeile dient höchstens einem Satz, jeder Satz bekommt höchstens eine Zeile (drei alte Zeilen gegen zwei neue Sätze:
-zwei werden umgehängt, eine bleibt verwaist).
-- **Immer nötig:** gleiches Datum, gleiches Konto, gleiches Gegenkonto (leer = leer) und **gleicher Steuersatz** (Prozentzahl, kein Satz
-  gilt wie 0 %). Ein anderer Steuersatz ist nie ein Treffer: Der Satz wird neu angelegt (mit seinem Satz und Steuerbetrag), die alte Zeile
-  bleibt verwaist.
-- **Durchgänge**, in dieser Reihenfolge: (1) gleicher Betrag (mit Vorzeichen) und gleiche, **nicht leere** Beleg-Nr. (Leerraum zählt nicht) –
-  der Text darf abweichen (`regrouped_text_differs`), die Zeile mit gleichem Text geht vor (Groß-/Kleinschreibung und Leerraum egal);
-  (2) gleicher Betrag, **beide ohne** Beleg-Nr., gleicher, nicht leerer Text; (3) gleicher Betrag, die Zeile ohne Beleg-Nr., der Satz mit
-  einer in WISO nachgetragenen, gleicher, nicht leerer Text (die Beleg-Nr. der Zeile bleibt leer); (4) nur für den Altbestand: Die Zeile
-  trägt die Form `mirror_legacy` und den **umgekehrten** Betrag, sonst wie (1) bis (3) – und nur, wenn die Datei auf demselben Schlüssel
-  (Datum, Konten, Beleg-Nr.) nicht selbst einen Satz mit dem Betrag der Zeile hat (dieselbe Sperre wie bei der Übernahme aus dem
-  CSV-Import). Einen Rückfall auf den Absolutbetrag gibt es für jede andere Form nicht; eine Zeile mit Beleg-Nr. passt nie zu einem Satz ohne,
-  und zwei verschiedene Nummern passen nie.
-- Ein Treffer ist **kein neuer Satz**: Ein UPDATE (im Replay-Log, „neu angelegten Satz wiedererkannt“) setzt nur `SourceGroup`. Betrag,
-  Form, Text, Beleg-Nr., Steuer, Empfänger und die Verknüpfung zur Bankbewegung (`ParentBooking_ID`) bleiben; der Text der App bleibt auch
-  dann, wenn er in WISO anders lautet. Die Zeile gilt für den Rest des Laufs wie eine in ihrer bekannten Gruppe
-  wiedererkannte: Sie zählt in `skipped`, ein AfA-Satz setzt sein Planjahr auf gebucht (Betrag der Bücher, kein zweiter AfA-Satz, kein
-  Konflikt), ein Spiegel des Bestands wird in `legacy_mirrors` gezählt, eine abweichende Form nur in `form_conflicts` gemeldet, und der
-  BU-Schlüssel kommt nur an die Zeile, wo er leer ist (`datev_keys_filled`; der Steuersatz gleicht hier immer). Gezählt wird
-  `regrouped_rows`; die Zusammenfassung nach dem Import nennt sie und die verwaisten Zeilen.
-- Was nicht passt, wird neu angelegt wie bisher; die Zeile bleibt **verwaist**. Der Import meldet sie (`orphaned_rows_count`, die ersten
-  50 in `orphaned_rows` mit ID, Datum, Betrag in Euro, Konto- und Gegenkontonummer und Text), die Seite *Daten* nennt sie mit
-  einem Link auf die Buchung: „… Buchungen aus einem früheren Import stehen nicht mehr in der WISO-Datenbank (dort gelöscht oder mit
-  anderem Inhalt neu angelegt). Sie zählen in den Auswertungen weiter mit – bitte prüfen und löschen, was doppelt ist.“ **Gelöscht wird
-  nichts.** Die Liste nennt Buchungen, deren Quelle (Quellgruppe) in der WISO-Datenbank nicht mehr steht. **Eine Änderung innerhalb einer
-  weiter bestehenden Buchungsgruppe (anderer Betrag, entfallene Teilbuchung) bemerkt der Import nicht: Die vorhandene Zeile bleibt, wie sie
-  ist.**
-- Grenzen: Ein Satz einer **bekannten** Quellgruppe sucht nie unter den verwaisten Zeilen, und ein Satz ohne `ACCOUNTINGID` hat keine neue
-  Gruppe zu setzen. Die Suche braucht dieselben Konten: Ein Bestand aus einem Import bis 2.2.4 auf dem Basiskonto eines Unterkontos findet
-  keinen Treffer (der Satz wird neu angelegt, die Altzeile gemeldet); ebenso eine Zeile aus 2.0.x auf den Konten 1000–1099, die ihren
-  Betrag nach der alten Kassenregel trägt. Der Import ist für **eine** WISO-Datenbank je Bestand gedacht: Zeilen
-  eines anderen Mandanten gelten als nicht mehr vorhanden und können bei gleichem Inhalt umgehängt werden – nicht unterstützt. Rechnet WISO den
-  AfA-Plan eines schon importierten Jahres mit anderem Betrag unter neuer Gruppe neu, steht die alte AfA-Buchung in der Liste der nicht mehr
-  vorhandenen Buchungen und die neue zusätzlich in den Büchern – bis zum Bereinigen zählt das Jahr doppelt.
-
-**Import in einen vorhandenen Bestand:** Der Import aus der WISO-Datenbank ist für einen **leeren Bestand** gedacht; ein weiterer Import ist
-möglich, verlangt aber eine Bestätigung. Ist `Bookings` nicht leer (`Database.wiso_import_stock()`: `bookings` = alle Zeilen, `wiso_rows` =
-`entry`-Zeilen mit Quellgruppe), steht über dem Absenden des Formulars ein Hinweis – bei Buchungen ohne Import der WISO-Datenbank, dass schon
-Erfasstes (von Hand, aus Kontoauszügen oder einem Textimport) danach doppelt vorhanden sein kann, bei Zeilen aus einem früheren Import, dass der
-Import sie wiedererkennt, Buchungen, die es in WISO nicht mehr gibt, aber in einer Liste stehen und von Hand zu bereinigen sind und in WISO
-nachträglich geänderte Beträge nicht übernommen werden – und ein Pflicht-Kästchen
-(`confirm_existing`, Wert genau `1`). Ohne Bestätigung importiert `handle_wiso_fdb_import` nichts und meldet „Der Bestand ist nicht leer –
-bitte den Import ausdrücklich bestätigen.“; die Prüfung steht vor dem Zugriff auf die Datei. `Database.import_wiso_fdb` selbst prüft
-nichts (Tests, Demodaten und Skripte rufen es direkt auf).
-
-**Satzversionen** (seit 2.3.10, `importers/wiso_fdb/ods.py`): Firebird überschreibt einen Satz nie, sondern hängt bei jeder
-Änderung eine neue Version davor. Der Leser nimmt je Satz die jüngste Version, deren Transaktion abgeschlossen ist (Zustand aus
-den TIP-Seiten, die `RDB$PAGES` nennt; ältere Versionen sind teils nur als Differenz gespeichert – `apply_diff`). So kommen aus
-einer Datei, die bei geöffnetem WISO kopiert wurde, keine halbfertigen Änderungen in die Bücher. Das Ergebnis nennt
-`uncommitted_records` (oberste Version nicht abgeschlossen: letzter abgeschlossener Stand übernommen), `unreadable_versions`
-(Kette beschädigt: der Satz fehlt) und `unknown_tx_state` (Zustand nicht lesbar: gelesen, wie in der Datei); die Seite
-*Daten* zeigt sie als Hinweise. Geprüft an zwei echten Firebird-3.0-Dateien (`tests/fixtures/firebird/`), nicht an einer
-großen WISO-Datei mit mehreren TIP-Seiten.
-
-**Die Dateien kommen als Upload** (seit 2.3.7, `server/wiso_upload.py`): `DB1.FDB` und optional `DB0.FDB` werden im Browser gewählt, je als
-eigene Anfrage hochgeladen (bis 2 GB je Datei) und liegen bis zum Import in einem Zwischenordner des Benutzers
-(`upload_tmp/wiso_fdb/<Kennung>/`, feste Dateinamen). `handle_wiso_fdb_import` bekommt nur die Kennung, löscht den Ordner in jedem Fall und
-nennt in Meldungen und in `wiso_fdb_result.json` keinen Serverpfad. Lässt sich die Datei nicht als WISO-Datenbank öffnen, meldet die Seite
-einen Fehler und importiert nichts.
-
-Grenze: Eine von Hand erfasste `entry` wird nur übernommen, wenn auch der Text stimmt. Eine
-CSV-Zeile, deren Text, Gegenkonto oder Betrag nachträglich geändert wurde, wird nicht
-wiedererkannt – es entsteht eine zweite Buchung, die unter „möglicherweise doppelt“ steht und
-sich in der Buchungsliste löschen lässt.
-
-**Unterkonten (Datenbank-Import):** `BAS_FINACC_PLAN` führt nur alte Kontenpläne; später angelegte
-Konten (Unterkonten je Fahrzeug oder Projekt) fehlen dort. Die SKR04-Nummer jedes Kontos speichert WISO
-in `FINT_EXTERNDEFS` (`EXTERNKIND` 82, Wert in `EXTERNVALUE`, je Konto `ACCOUNTNO` und Kontenplan
-`FINTABLEID`; die höhere Plan-Nummer ist der jüngere Plan). Der Leser (`importers/wiso_fdb`) bestimmt die
-SKR04-Nummer in dieser Reihenfolge: (1) `BAS_FINACC_PLAN` (Mandant vor Standardrahmen) – was dort eine
-Nummer nennt, wird nie überschrieben; (2) für Konten ohne Nummer die gespeicherte aus `FINT_EXTERNDEFS`
-(Mandant vor Standardrahmen, je Konto der jüngste Plan mit brauchbarem Wert); (3) nur für Konten ohne
-gespeicherte Nummer der Rückgriff auf das Basiskonto (`FINT_ACCOUNTS.BASEACCOUNTNO`, die Kette wird
-verfolgt – eine Näherung, eigene Unterkonten fallen dabei zusammen); (4) die geprüften Nachträge
-(`KNOWN_EQUIVALENTS`). Grenzen der gespeicherten Nummer: Sie gilt nur für Sachkonten (`ACCOUNTNO` unter
-10000, Wert eine ganze Zahl von 1 bis 9999, Text oder Zahl – alles andere wird übergangen), Personenkonten
-bekommen nie einen Eintrag daraus, und ein Konto aus `KNOWN_EQUIVALENTS` nimmt an Schritt 2 nicht teil: Es behält
-die Zuordnung von 2.2.4. Fehlt die Tabelle oder eine ihrer Spalten, entfällt Schritt 2 und der Leser
-verhält sich wie bis 2.2.4. Fehlt das SKR04-Konto im Kontenrahmen der App, legt der Import es mit der
-Bezeichnung des Unterkontos (sonst des Plans, sonst des Basiskontos) an (`created_coa`).
-**Re-Import über einen Bestand aus einer älteren Version:** Dort stehen die Sätze auf dem Basiskonto. Der
-Re-Import erkennt sie an der Quellgruppe (nicht am Konto), legt keinen zweiten Satz an und ändert Konto,
-Betrag und Form nicht. Der Leser liefert dazu je Satz die Nummern nach der alten Regel
-(`WisoBooking.legacy_account`/`legacy_counter_account`, nur wo sie abweichen); passt zu einem Satz einer
-bekannten Gruppe keine Zeile mit den heutigen Konten, wohl aber eine mit den alten (Datum, |Betrag| und
-Text gleich), zählt der Import sie (`subaccount_rows`, nur Fälle, in denen die alte Nummer die eines Basiskontos
-war), und die Seite *Daten* nennt die Zahl. Grenze: Ein Satz ohne `ACCOUNTINGID` (leere Quellgruppe)
-wird nur über die Übernahmesuche wiedererkannt, und die hängt am Konto – auf einem Unterkonto entstünde beim
-Re-Import über einen älteren Import ein zweiter Satz. Die Übernahme CSV → Datenbank bleibt in ihren Regeln
-unverändert: Die CSV trägt die eigenen Nummern, das Konto passt jetzt von selbst. Eine vorhandene Anlage
-behält beim Re-Import ihr Anlagekonto (`Assets.COA_ID`).
-**Unterkonten von Zahlungskonten:** Ist für einen Satz das Konto (oder Gegenkonto) nach der alten Regel ein
-Zahlungskonto (Bank, Kasse, Verrechnungskonto), nach der neuen aber nicht – ein Bank-Unterkonto, dessen
-gespeicherte Nummer in der App kein Zahlungskonto ist –, ändern sich Vorzeichen und Form: Der Satz würde als
-Umbuchung gelesen und fiele aus der EÜR. Das wird gemeldet, nicht geraten (`liquid_subaccounts`: je neuer
-Kontonummer `nummer`, `basis` – das Zahlungskonto, unter dem ein älterer Import sie las – und `anzahl`; höchstens 50;
-Vorzeichen und Form folgen der neuen Nummer). Abhilfe: das Konto vor dem Import als Bank- oder Kassenkonto
-anlegen und neu importieren.
-
-**Anschaffungswert einer Anlage (Datenbank-Import):** Der Leser (`WisoDatabase._purchase_price`) nimmt die Summe der
-**positiven** Zahlungen (`MOV_INVENTORY_BOOKINGS`; negative Zeilen sind der Abgang) **plus** den eingetragenen Wert
-(`BAS_INVENTORY.PURCHASEAMOUNTNET`), wenn dieser zählt – gerechnet in Minor Units, nie als float-Summe. Er zählt nicht, wenn
-er **bis 1,00 €** beträgt (`PRICE_HELPER_LIMIT`: ein Behelfsbetrag, den der Nutzer bei der Erstanlage einträgt), und nicht,
-wenn er **auf den Cent gleich der Summe der Zahlungen** ist (dieselbe Anschaffung zweimal erfasst, von Hand und über die
-Zahlungen: sie zählt einmal; die Warnung zum Restbuchwert bei einem Abgang, den WISO mit dem doppelten Wert bucht, bleibt).
-Sonst sind es zwei echte Beträge (ein Gerät von Hand eingetragen, die Montage als Zahlung), und der Anschaffungswert ist ihre
-Summe – dann steht in `asset_warnings`: „{Anlage}: Der Anschaffungswert ({Summe} €) setzt sich aus dem in WISO eingetragenen
-Wert ({eingetragen} €) und den Zahlungen ({Zahlungen} €) zusammen – bitte prüfen, ob beides zur Anschaffung gehört.“ (ein
-Wert, der der Zahlungssumme nur um einen Cent nicht gleicht, würde sonst still den Anschaffungswert fast verdoppeln). Ohne
-Zahlungen gilt wie bisher `PURCHASEAMOUNTNET`, wenn es über dem Platzhalter 0,01 € (`PRICE_PLACEHOLDER`) liegt. Der
-Buchwert eines Planjahrs (`_depreciations`) ist die Summe der bis zum Jahr geleisteten Zahlungen plus der zählende eingetragene
-Wert – dieser trägt kein Datum und gilt ab dem Kaufjahr – minus die kumulierte AfA.
-
-**Vorausgeplante AfA (Datenbank-Import):** WISO schreibt den ganzen AfA-Plan sofort als Buchungssätze in
-`MOV_FINACC_ACCRECORDS` (`INVENTORYID` gesetzt), auch für künftige Jahre und ohne Kennzeichen „geplant“. Ob ein
-Satz mit `INVENTORYID` ein **AfA-Satz** ist, entscheidet der Leser in dieser Reihenfolge (`_is_depreciation`):
-(1) `INVENTORYAMORTID` gesetzt – der Verweis auf die AfA-Zeile; (2) WISOs Buchungsart `ACCOUNTINGKIND` = 28, auch bei
-leerem `INVENTORYAMORTID` (an einer Datenbank einer WISO-Version gemessen: AfA-Sätze tragen Art 28 und `BOOKINGKIND` 41,
-Abgangsbuchungen Art 31 und `BOOKINGKIND` 44/45; die Spalte ist optional, ihr Fehlen ist kein Blocker der Prüfung);
-(3) der Satz hat die Spalte `INVENTORYAMORTID`, aber keinen Wert, und die Art ist nicht 28 – eine Abgangsbuchung am
-Anlagegut, auch am Tag einer AfA-Zeile: kein AfA-Satz; (4) nur wenn der Satz die Spalte `INVENTORYAMORTID` nicht kennt – die Tabelle hat
-sie nicht (andere WISO-Version), oder er steht in einem älteren Satzformat; `catalog.rows` liefert dafür keinen Schlüssel,
-bei einer vorhandenen Spalte mit leerem Wert dagegen `None` – und die Art nicht 28 ist, gilt ersatzweise die AfA-Tabelle
-(`MOV_INVENTORY_AMORTIZATIONS`): eine Zeile derselben Anlage mit demselben Datum (ISO) **und** demselben Betrag
-(|`AMOUNTGROSS`| = |`AMORT_AMOUNT`|, auf den Cent). Ein Satz ohne `INVENTORYID` ist nie einer. Das Planjahr eines Satzes
-(`WisoBooking.depreciation_year`) ist das Jahr der AfA-Zeile (über `INVENTORYAMORTID`), sonst das des Satzdatums.
-
-Stichtag ist der Tag des Imports (Ortsdatum; `import_wiso_fdb(..., today=...)` für Tests). **Ein AfA-Satz mit einem Datum
-nach dem Stichtag liefert der Leser gekennzeichnet** (`WisoBooking.future_depreciation`) und zählt für ihn nichts – keine
-unbekannten Konten, keine negativen Bruttobeträge, keine Unterkonten von Zahlungskonten, und er steht nicht unter den
-übersprungenen Sätzen (`tax_rows_skipped`, `memo_rows_skipped`); die Regel für den Erinnerungswert nach dem Abgangsjahr hat
-Vorrang. **Der Import legt ihn nie an**, übernimmt ihn nie aus einer CSV-Zeile, legt keine Konten nur für ihn an
-(`_create_missing_coa`), macht keinen Nachtrag und prüft keinen Konflikt mit der App (`future_depreciations_skipped`
-zählt ihn). Einzige Ausnahme ist ein Bestand aus einem Import bis 2.2.4, der den künftigen Satz schon in die Bücher
-geschrieben hat: Ist seine Quellgruppe bekannt und gleicht ihm eine Zeile der Gruppe (Datum, Konten, |Betrag|, wie bei jedem
-Re-Import; auch auf dem Basiskonto eines Unterkontos) – oder liegt, vom Nutzer geändert, eine freie Zeile der Gruppe in
-seinem Planjahr (siehe *Geänderter AfA-Satz*) –, bleibt die Zeile unverändert, sie zählt als gebucht
-(`future_depreciations_kept`, auch in `skipped`), und die Seite *Daten* nennt die Zahl.
-
-**Der Status eines Planjahrs in `AssetDepreciations` folgt der Buchung, nicht dem Datum:** `booked`, wenn der AfA-Satz der
-Anlage für das Jahr in den Büchern steht (neu angelegt, aus dem CSV-Import übernommen oder als Zeile seiner bekannten Gruppe
-wiedererkannt oder als geänderter Satz anerkannt – auch ein künftiger Satz aus einem Import bis 2.2.4), sonst `planned` (`depreciations_planned` zählt die
-Planjahre des Laufs, die danach geplant sind): Die App bucht sie im jeweiligen Jahr selbst, das geschieht nicht
-automatisch. Der Buchungsschritt führt den Status mit, in derselben Transaktion wie die Buchungen und auch bei
-`with_assets=False`; die Planzeilen schreibt danach `_insert_wiso_assets` mit der Menge der Jahre, deren Satz in den
-Büchern steht – ein Bestand ohne Plan (Import bis 2.2.4 ohne Anlagen) bekommt so alle Jahre als gebucht, auch wenn die
-Anlage der App inzwischen gelöscht wurde. Ein bisher geplantes Jahr wird nur dann `booked`, wenn sein Satz in den Büchern
-steht; ein anderer Status ändert sich nie (auch ein `booked` aus einem Import bis 2.2.4 bleibt).
-**Ein gebuchtes Jahr trägt den Betrag der Bücher:** Der Buchungsschritt liefert `{(INVENTORYID, Jahr): Betrag}` – die
-**Wirkung auf das Anlagekonto** (`db.matching.depreciation_effect`) der angelegten, aus dem CSV-Import übernommenen oder
-wiedererkannten Zeile, bei einer vom Nutzer geänderten Zeile die der gespeicherten Zeile, bei mehreren AfA-Sätzen eines Jahres die
-Summe: Eine Abschreibung („6222 an 520“) zählt +|Betrag|, eine Korrektur mit vertauschten Konten („520 an 6222“, Anlagekonto im
-Soll) −|Betrag|; die Soll-Seite folgt der gespeicherten Form (bei Form `transfer`: Betrag > 0 – Konto im Soll, Betrag < 0 –
-Gegenkonto im Soll); berührt keine Seite ein Anlagekonto (1–999) oder beide, zählt der Satz +|Betrag|. Die Summe eines Jahres ist
-nie unter 0: Übersteigen die Korrekturen die Abschreibung, steht 0, und das Jahr bleibt gebucht. Eine Planzeile, die der Lauf auf
-`booked` hebt (am Ende der Transaktion der Buchungen) oder neu als `booked` anlegt, bekommt den Betrag als `DepreciationAmount`,
-nicht den Planwert aus WISO. Betrag und Buchwert einer vorhandenen Planzeile aktualisiert der Re-Import nur, solange sie `planned`
-ist; eine Zeile `booked` bleibt – auch wenn WISO den Betrag inzwischen ändert oder den Satz nicht mehr liefert: Der Plan der App
-nimmt die gebuchten Beträge als Geschichte, und die Summe der AfA in den Büchern (Abschreibungen minus Korrekturen) soll der
-Anschaffungswert bleiben. Einzige Ausnahme: Steht der Satz in diesem Lauf in den Büchern und weicht der Betrag einer Zeile `booked`
-(nicht von der App gebucht) davon ab – Bestand aus einem Import bis 2.2.5, der den Planwert aus WISO trägt –, gleicht der
-Buchungsschritt sie an die Bücher an (nur bei Abweichung; im Replay-Log wie das Anheben, am Ende der Transaktion der Buchungen).
-Steht der Satz nicht in den Büchern dieses Laufs, bleibt die Zeile, wie sie ist.
-
-**Geänderter AfA-Satz:** Gleicht einem AfA-Satz einer bekannten Gruppe keine Zeile genau (Datum, Konten, |Betrag|), hat die
-Gruppe aber noch eine freie Zeile mit einem Datum im Planjahr (`depreciation_year`; gleich welcher Betrag, welcher Tag,
-welche Konten), hat der Nutzer den Satz geändert: Er steht in den Büchern, es wird nichts angelegt, und das Jahr gilt als
-gebucht (ein geplantes Jahr der App wird `booked`, eine neue Planzeile ebenso). Die Reihenfolge ist fest: Erst bekommt jeder
-Satz aller bekannten Gruppen seine genaue Zeile, jede Zeile gehört höchstens einem Satz; erst danach dienen die übrigen
-Zeilen als Nachweis, und auch dann jede höchstens einem AfA-Satz. Ein Satz, dessen Zeile der Nutzer gelöscht hat, nimmt so
-nie die Zeile eines anderen Satzes derselben Gruppe und desselben Jahres. Grenzen: Der Nachweis gehört keinem bestimmten
-Satz (bei zwei Sätzen eines Jahres und nur einer verbliebenen, geänderten Zeile nimmt sie der erste der Datei), die
-geänderte Zeile eines anderen, nicht erkannten Satzes derselben Gruppe im selben Jahr zählt ebenso (die Zeile trägt keinen
-Verweis auf die Anlage), und ein Satz, den der Nutzer in ein anderes Jahr verschoben hat, ist nicht zu erkennen – sein
-Planjahr zählt dann nicht als gebucht.
-
-**Nachtrag:** Hat die Gruppe für das Planjahr keine Zeile (der Erstlauf hat nur die vergangenen Jahre angelegt, die Gruppe
-trägt mehrere), wird der AfA-Satz nur dann angelegt, wenn die Anlage in der App eindeutig zugeordnet ist (über die
-Inventarnummer) **und** ihre Planzeile dieses Jahres existiert, `planned` ist und nicht von der App gebucht. In jedem anderen
-Fall – keine Anlage in der App, keine Planzeile, Planjahr `booked`, Anlage ohne eindeutige Inventarnummer, ein Lauf mit
-`with_assets=False` ohne Bestand – wird ein Satz einer bekannten Gruppe nie neu angelegt (der Nutzer kann ihn gelöscht
-haben). Hat die App ein Jahr schon selbst gebucht (`Booking_ID` zeigt auf eine
-Buchung, `book_depreciation`), bleibt die Planzeile unverändert, und der AfA-Satz der Datenbank für dieses Jahr wird
-nicht angelegt (`depreciation_conflicts`, die ersten 100 Fälle in `depreciation_conflict_rows`); löscht der Nutzer die
-Buchung der App, gibt das Löschen das Jahr frei, und der nächste Import legt den Satz an. Die Anlage der App wird über die
-Inventarnummer gefunden (`Assets.InventoryNumber` = `INVNO`), aber nur, wenn sie in der WISO-Datenbank eindeutig ist:
-Anlagen ohne Inventarnummer oder mit einer mehrfach vergebenen nehmen am Abgleich nicht teil (für ihre AfA-Sätze gilt
-der Stichtag und sonst die Gruppenlogik ohne Anlagenbezug) und stehen in `asset_warnings`. `book_depreciation` rechnet mit
-dem Plan der App (`Database.depreciation_plan`) und überschreibt den Betrag der Planzeile: Die gebuchten Jahre stehen mit
-ihrem gebuchten Betrag im Plan, der Restbuchwert (Anschaffungswert minus gebuchte Beträge) verteilt sich linear auf die
-Monate bis zum Planende (Kaufmonat plus Nutzungsdauer), je Jahr kaufmännisch auf den Cent gerundet, das letzte Jahr
-bekommt den Rest; nicht gebuchte Jahre zwischen gebuchten haben keine eigene Zeile, und ein Jahr, das auf 0 Cent rundet,
-entfällt (die Summe bleibt der Rest). Nur eine Anlage, deren gebuchte Jahre alle
-dem Plan der Formel (`calculate_depreciation_plan`: linear, degressiv, GWG) gleichen, behält diesen. Gebucht ist, was in den
-Büchern steht: bei einem von der App gebuchten Jahr die Wirkung der Buchung auf das Anlagekonto (ändert der Nutzer die Buchung im
-Editor, folgt der Plan; eine zur Rückbuchung umgedrehte Buchung zählt mit 0), bei einem importierten Jahr die Planzeile – ändert
-der Nutzer eine **importierte** AfA-Buchung nachträglich, folgt der Plan nicht (keine Verknüpfung zwischen Planjahr und
-importierter Buchung). Die Buchwerte der gebuchten Jahre rechnen fortlaufend vom
-heutigen Anschaffungswert, und in der Fortschreibung bucht `book_depreciation` nur das erste offene Jahr (sonst würden die Jahre
-davor zu Lücken). Nach dem Schreiben der Anlagen vergleicht der Import je Anlage mit geplanten Jahren die Pläne; weicht ein Jahr
-um **mehr als 1,00 €** ab oder plant die App dafür keine AfA, steht eine Warnung in `asset_warnings` und zählt in
-`depreciation_plan_mismatches` – beim Buchen gilt der Plan der App. Die Schwelle: WISOs Plan rechnet mit dem Behelfsbetrag
-bis 1 €, den der Anschaffungswert der App nicht enthält; kleinere Abweichungen sind damit erklärt.
-**Restbuchwert ohne WISO-Plan:** Hat eine **nicht abgegangene** Anlage nach dem Lauf kein geplantes Jahr mehr (alle Sätze aus
-WISO stehen in den Büchern), plant die App aber noch ein offenes Jahr mit mehr als 1,00 € – etwa weil der Anschaffungswert größer
-ist als die Basis von WISOs Plan –, steht in `asset_warnings`: „{Anlage}: Nach den gebuchten Jahren bleibt ein Restbuchwert von
-{R} €, für den WISO keine AfA mehr plant – bitte den Anschaffungswert prüfen, bevor die AfA in der App gebucht wird.“
-(`depreciation_rest_warnings` zählt sie). Eine abgegangene Anlage ist ausgenommen: Ihren Restbuchwert bucht der Abgang aus.
-
-**Reihenfolge und Sperre:** Der Buchungsschritt läuft in EINER schreibenden Transaktion (`BEGIN IMMEDIATE`), die als
-Erstes die Anlagen der App und ihre Planjahre liest (`_link_assets`) – zwischen Lesen und Schreiben kann keine andere
-Anfrage ein Jahr buchen (`book_depreciation` braucht dieselbe Sperre) –, dann die Buchungen schreibt (samt Status vorhandener
-Planjahre); danach folgen die Anlagen samt AfA-Plan in einer eigenen Transaktion. Scheitert der Schritt der Anlagen, stehen die
-Buchungen und der Status der vorhandenen Planjahre schon fest; es fehlen nur die neuen Planzeilen und die Änderungen an den
-Anlagen – ein neuer Lauf trägt sie nach. Bestand aus einem Import bis 2.2.4 (künftige AfA-Buchungen mit Quellgruppe, Jahre
-`booked`) bleibt unberührt – mit jedem Stichtag. Der Textexport kennt keine Anlagenzuordnung und prüft das nicht.
-
-**BookingType:** `'entry'` (Buchungssatz)
-
----
-
-### Format 2: Tabellen-Export
-
-**Zweck:** Bankbewegungen mit Empfänger und Verwendungszweck importieren
-
-**CSV-Format (7 Spalten, mit IBAN):**
 ```
-Buchungsdatum;Empf./Auft.;Konto-Nr. / IBAN;Verwendungszweck;Kategorie;Beleg Nr.;Betrag
+Buchungsdatum;Empf./Auft.;Konto-Nr. / IBAN;Verwendungszweck;Kategorie;opt. Beleg Nr.;Betrag
+Buchungsdatum;Empf./Auft.;Verwendungszweck;Kategorie;Beleg Nr.;Betrag            (ältere Exporte, ohne IBAN)
 ```
 
-**CSV-Format (6 Spalten, ältere Exporte ohne `Konto-Nr. / IBAN`):**
-```
-Buchungsdatum;Empf./Auft.;Verwendungszweck;Kategorie;Beleg Nr./opt. Beleg Nr.;Betrag
-```
+Die Beleg-Spalte heißt `opt. Beleg Nr.` oder `Beleg Nr.`. Vorbereitung in WISO: Tabellenansicht eines Bank- oder
+Verrechnungskontos als XLS exportieren, in einer Tabellenkalkulation die Statusspalte vorn und die Saldospalte hinten
+löschen, als CSV mit Semikolon speichern.
 
-Beide Varianten werden automatisch erkannt (Format-Erkennung über `Empf./Auft.` + `Verwendungszweck`).
+Der Export legt nichts an, sondern **ergänzt vorhandene Buchungen** (nur leere Felder): `Empf./Auft.` → `RecipientClient`,
+`Verwendungszweck` → `Text` (Zeilenumbrüche werden Leerzeichen), `Kategorie` → `COA_ID` (über den Kontonamen),
+`Konto-Nr. / IBAN` → `ForeignBankAccount`. Die Zeile wird in dieser Reihenfolge gesucht; was nichts findet, steht in
+`not_found`:
 
-**Vorbereitung:**
-1. Tabellen-Ansicht in WISO für ein Bank-/Verrechnungskonto öffnen
-2. Als XLS exportieren → in Calc öffnen
-3. Spalte 1 (Status) und letzte Spalte (Saldo) löschen
-4. Als CSV mit Semikolon speichern
+* Mit Beleg-Nr.: (1) Datum + Beleg-Nr. + |Betrag| genau ein Treffer; (2) Bankbuchung gleichen Datums und Betrags, deren
+  Kinder die Beleg-Nr. tragen; (3) Beleg-Split: alle Buchungen gleicher Beleg-Nr. mit passender Summe.
+* Ohne Beleg-Nr.: (A) Datum + |Betrag| trifft genau ein Bank-/Satz-Paar (Satz ist Kind der Bankbuchung, z. B. Entnahme,
+  Gebühr, Zinsen); (B) der normalisierte Verwendungszweck entscheidet bei mehreren gleichartigen Buchungen.
 
-**Automatisches Mapping:**
-- **Empf./Auft.** → `RecipientClient`
-- **Verwendungszweck** → `Text` (Zeilenumbrüche → Leerzeichen)
-- **Kategorie** → `COA_ID` (automatisches Matching über SKR-Beschreibung)
-- **Beleg Nr. / opt. Beleg Nr.** → `DocumentNumber`
-- **Konto-Nr. / IBAN** → `ForeignBankAccount` (optionale Spalte, falls vorhanden)
+### Verknüpfen (`link_bank_to_entries`)
 
-**Matching-Logik (mehrstufig):**
-
-Bei **Buchungen mit Belegnummer** (`Beleg Nr.` gesetzt):
-- Stufe 1 (direkt): Datum + Belegnummer + Betrag → genau ein Treffer
-- Stufe 2 (Bank-Parent): Bankbuchung mit gleichem Datum/Betrag suchen, Entry-Kinder per Belegnummer ergänzen
-- Stufe 3 (Beleg-Split): Summenabgleich über alle Buchungen gleicher Belegnummer
-
-Bei **Buchungen ohne Belegnummer** (`Beleg Nr.` leer):
-- Stufe A (bank+entry-Paar): Wenn Datum+Betrag genau eine bank- und eine entry-Buchung treffen und die entry-Buchung Child der bank-Buchung ist → beide gemeinsam aktualisieren (Realfall: Privatentnahmen, Bankgebühren, Zinsen)
-- Stufe B (Text-Disambiguierung): Verwendungszweck-Normalisierung als Tiebreaker
-
-Gefunden → UPDATE (RecipientClient, ForeignBankAccount, COA_ID ergänzen — nur leere Felder)  
-Nicht gefunden → in `not_found`-Liste
-
-**BookingType:** `'bank'` (Bankbewegung)
-
----
-
-### Format-Erkennung
-
-Automatisch anhand der Spaltenüberschriften:
-- **Original**: erkennt "KONTO" und "GEGENKONTO"
-- **Tabelle**: erkennt "Empf./Auft." und "Verwendungszweck"
-
-### Bank↔Entry-Verknüpfung (link_bank_to_entries)
-
-Nach jedem WISO-Import wird `link_bank_to_entries()` aufgerufen:
-- **Richtungsregel (seit 2.3.14, Stufen 1–6):** Verknüpft wird nur, wenn die Wirkung des Satzes auf das Konto der
-  Bankbewegung – mit Vorzeichen, gerechnet wie die Split-Summe (`matching.link_effect`) – dem Betrag der Bewegung
-  entspricht; bei einer Gruppe die Summe der Wirkungen. Eine Lastschrift wird nie mit einer Einnahme verknüpft, ein Satz
-  mit anderer Geldseite (Kasse, anderes eigenes Bankkonto, 1460) nie, ein Alt-Spiegel (`mirror_legacy`) nie automatisch;
-  Umbuchungen ohne Geldseite werden nie allein verknüpft. Der Text der Bankbewegung wird immer der Text des Satzes.
-  Bestehende Verknüpfungen fasst der Abgleich nie an
-- Mehrstufiges Matching (Reihenfolge im Lauf: 0 Quellklammer, 1, 2, 4, 3, 3b, 3c, 3d, 5, 6, 6b, 7):
-    - Stufe 1: Datum + normalisierter Empfänger + Betrag
-    - Stufe 2: Datum + Betrag (eindeutig nach Doppik-Filter)
-    - Stufe 3: Split-Gruppen mit Summenabgleich (nur gleicher Tag)
-    - Stufe 3b: Rechnungs-Split (SUM/Anzahl, Bank-COA als Marker)
-    - Stufe 3c: Privatanteil-Split (Summe minus Privatentnahme-Offset)
-    - Stufe 3d: Sammelzahlung (mehrere Rechnungsnummern im Bank-Text)
-    - Stufe 4: DocumentNumber-Tiebreaker bei Mehrdeutigkeit
-    - Stufe 5: Text-Token-Matching (lange Ziffernfolgen ≥ 8 Stellen)
-    - Stufe 6: Text-Similarity ohne Belegnummer (`SequenceMatcher`)
-    - Stufe 7: Debitoren-Auflösung (`Status='resolved'` für Debitoren-Entries, deren Zahlung bereits verknüpft ist)
-- Doppik-Filter: Entry-Buchungen auf SKR-Bankkonten (z.B. 1810) werden ignoriert
-- Forderungsbuchungen (Debitoren 10000 an Wartekonto, entstehen beim Versenden einer Rechnung) werden in keiner Stufe verknüpft – sie gehören zur Rechnung, nicht zur Bankbewegung (Ausnahme: die Quellklammer aus dem WISO-Datenbankimport). Die WISO-Zahlungssätze „Bank an 10000“ bleiben verknüpfbar
-- Ergebnis: `Entry.ParentBooking_ID → Bank.ID`
-
-### Encoding
-
-Automatische Erkennung in dieser Reihenfolge: UTF-8 mit BOM, strenges UTF-8, CP1252 (so schreibt WISO),
-Latin-1. CP1252 dekodiert fast jede Bytefolge und steht deshalb nie zuerst; eine Datei mit BOM, die
-danach kein gültiges UTF-8 ist, wird abgelehnt.
-
-### Steuerschlüssel
-
-`SCHLUESSEL` wird in einen Steuersatz übersetzt: zuerst über die Regeln des Exports (`db/datev_keys.py`: die Schlüssel 401, 402, 7, 6,
-101, 102, 5, 4, 121 und 122, im zweiten Halbjahr 2020 mit den vertauschten Sätzen), sonst über die Tabelle `TaxKeys`. Ein Schlüssel, den
-beide nicht kennen, wird nicht geraten: Die Zeile kommt ohne Steuersatz und zählt in `unknown_tax_keys` (Hinweis auf der Seite
-*Daten*). Ein Schlüssel von 1 bis 9999 wird am Satz gespeichert (`Bookings.DatevKey`); leer, 0 und alles andere bleibt ohne –
-der Export leitet ihn dann ab. Der Import legt nur neue Zeilen an: Ein Duplikat bleibt, wie es ist (auch ohne Schlüssel).
-
-Beim Import aus der WISO-Datenbank liest `importers/wiso_fdb` den Schlüssel aus `DATEVVATKEY` (optionale Spalte) und die Berater- und
-Mandantennummer aus `SYS_FINACCSYSTEMS` (Satz „Datev-Format“, nur `NAME`, `CONSULTANT_NO`, `CLIENT_NO`; Berater 1001–9999999, Mandant
-1–99999, nur Ziffern ohne führende Null; ein Lesefehler der Tabelle ergibt keine Nummern und einen Hinweis, keinen Abbruch). Ein erneuter
-Import trägt den Schlüssel an einer wiedererkannten Zeile nach – nur diese Spalte, nur wo sie leer ist, nur bei genauem Treffer **und nur, wenn
-die Zeile denselben Steuersatz trägt wie der WISO-Satz** (Prozentzahl, kein Satz = 0 %; sonst bleibt der Schlüssel leer, der Export leitet ihn aus
-dem Satz der App ab, und `datev_key_rate_mismatches` zählt den Fall; das gilt ebenso für die Übernahme einer CSV-Buchung, dort für den Satz nach
-der Übernahme). Die Nummern der eigenen Firma trägt der Import ein, nachdem die Buchungen geschrieben sind, und nur wenn beide Felder dort
-leer sind. Der Tabellen-Export, der ein leeres Konto aus der Kategorie füllt, lässt den Schlüssel der Zeile fallen.
-
-### Bekannte Unterschiede zum Stapel, den WISO schreibt
-
-Der DATEV-Export (`export/datev.py`) bildet den Stapel nach, den WISO Mein Büro schreibt, gemessen an einem Datenbestand; eine Zusicherung,
-dass die Kanzlei ihn so annimmt, gibt es nicht. Bekannte Unterschiede (Spaltennummern wie in `export/datev.py`, ab 0 gezählt):
-
-- Der Vorlauf trägt die Versionsnummer 700, WISO schreibt 510.
-- Spalte 100 „Erlöskonto (Anzahlungen)“ bleibt leer, Spalte 105 „Skontosperre“ trägt „0“; WISO belegt die beiden umgekehrt.
-- Der AfA-Satz des Erinnerungswerts nach dem Abgang einer Anlage wird nicht importiert (`memo_rows_skipped`) und fehlt deshalb im Stapel.
-- Für ältere Jahre leitet WISO den BU-Schlüssel beim Export aus der heutigen Bedeutung des Buchungsschlüssels neu ab; die App gibt den an der
-  Buchung gespeicherten aus und leitet ihn nur ab, wo keiner gespeichert ist (z. B. schreibt WISO dann 490, wo an der Buchung kein Schlüssel
-  gespeichert ist – die App leitet dort aus Konto und Steuersatz ab, ohne Steuersatz also keinen).
-- Das Soll/Haben-Kennzeichen folgt der Form des Satzes (`Bookings.EntryForm`): Es bezieht sich auf das Feld „Konto“ und hängt daran, auf welcher
-  Seite dieses Konto bei positivem Betrag steht.
-
----
-
-### Verwendung über Web-Interface
-
-1. Navigieren zu `/miscellaneous`
-2. "WISO Import" → CSV-Datei auswählen
-3. Ergebnis: Anzahl importiert / aktualisiert / übersprungen / verknüpft
+Nach jedem WISO-Import ruft der Handler `Database.link_bank_to_entries()` auf (Rückgabe ein dict mit `linked`, `skipped`,
+`repaired`, `resolved`, `errors`): Es setzt `ParentBooking_ID` der Sätze auf die Bankbewegung. Eine bestehende Verknüpfung
+fasst es nie an. Die Stufen laufen in der Reihenfolge 0 (Quellklammer `SourceGroup`), 1 (Datum + Empfänger + Wirkung),
+2 (Datum + Wirkung), 4 (Beleg-Nr. als Tiebreaker), 3/3b/3c/3d (Split-Gruppe, Rechnungs-Split, Privatanteil,
+Sammelzahlung), 5 (Text-Token ab 8 Ziffern), 6/6b/6c (Text-Ähnlichkeit, mehrere Quellgruppen), 7 (Debitoren-Auflösung).
+Entscheidend ist die Wirkung des Satzes auf das Konto der Bewegung mit Vorzeichen (`matching.link_effect`); Forderungsbuchungen
+und Spiegel im Altformat werden nicht automatisch verknüpft.
 
 ### Programmatische Verwendung
 
 ```python
 from db import Database
 
-db = Database()
+db = Database()          # ohne Benutzerkontext: ./data/buch.db
 
 with open('export_wiso.csv', 'rb') as f:
-    csv_bytes = f.read()
+    result = db.import_wiso_csv(f.read())
+print(result['format'], result['imported'], result['updated'], result['skipped'], result['errors'])
 
-result = db.import_wiso_csv(csv_bytes)
-print(f"Importiert: {result['imported']}")
-print(f"Aktualisiert: {result['updated']}")
-print(f"Übersprungen: {result['skipped']}")
-print(f"Fehler: {result['errors']}")
-
-# Danach: Bank↔Entry verknüpfen
-linked = db.link_bank_to_entries()
-print(f"Verknüpft: {linked}")
+link = db.link_bank_to_entries()      # die Web-Oberfläche tut das nach jedem Import selbst
+print(link['linked'])
 ```
 
-### Empfohlener Import-Workflow
+Empfohlene Reihenfolge: SKR-Konten prüfen (alle verwendeten müssen vorhanden sein), Original-Export importieren,
+Tabellen-Export importieren, das Ergebnis auf der Seite *Buchungen* prüfen. Die Oberfläche steht auf der Seite *Daten*
+(`/miscellaneous`).
 
-1. **SKR-Konten** prüfen (alle verwendeten müssen vorhanden sein)
-2. **WISO Original-Export** importieren → Entry-Buchungen mit TaxRate + TaxAmount
-3. **WISO Tabellen-Export** importieren → Bank-Buchungen mit Empfänger + Verwendungszweck
-4. Automatische Verknüpfung wird nach jedem Import durchgeführt
-5. Ergebnis unter `/transactions` prüfen (verknüpfte vs. offene Bankbuchungen)
+## 3. WISO-Datenbank (Firebird-Dateien)
 
----
+`db/wiso_fdb_import.py` (`Database.import_wiso_fdb(path, standard_chart_path=None, with_assets=True, with_invoices=True,
+today=None)`) importiert über den Leser `importers/wiso_fdb/` die Mandantendatenbank `DB1.FDB`, optional mit dem Standard-
+Kontenrahmen `DB0.FDB`. Gelesen wird ohne Firebird-Installation und nur lesend; die Dateien kommen als Upload
+(`server/wiso_upload.py`, Formular auf der Seite *Daten*). Wiedererkennung, Re-Import, AfA und Grenzen: `docs/regeln/import.md`.
 
-## 3. Belegerkennung (E-Rechnung und gewöhnliche PDFs)
+| Modul | Aufgabe |
+|---|---|
+| `importers/wiso_fdb/ods.py` | Datei- und Seitenformat; je Satz die jüngste abgeschlossene Version (TIP-Seiten, Differenzstrom `apply_diff`) |
+| `importers/wiso_fdb/catalog.py` | Tabellen- und Spaltenkatalog der Datei |
+| `importers/wiso_fdb/rtf.py` | RTF-Text der Rechnungspositionen |
+| `importers/wiso_fdb/__init__.py` | `WisoDatabase`: Konten, Buchungen, Anlagen, Rechnungen; `read_wiso_database()` |
 
-`receipt_reading/` liest die Felder einer hochgeladenen Belegdatei. Das Paket ist rein: Es bekommt Bytes, schreibt nichts und kennt weder `db/` noch
-`server/`. Die Seite *Belege* stößt das Lesen an (`POST /receipts/read`: nach einem Upload gleich, sonst auf Knopfdruck, je Beleg einmal); gelesen wird
-in einem kurzlebigen Kindprozess (`python -m receipt_reading.worker`) mit hartem Zeitlimit. Das Ergebnis ist eine **Lesung** (`Reading`): ein Vorschlag
-mit Herkunft, kein geprüfter Inhalt. Sie steht in `DocumentReadings` (siehe `DB_MODEL.md`); am Beleg selbst ändert sich nichts, und verknüpft wird
-nichts ohne Klick.
+Gelesene Tabellen und Felder:
+
+| Inhalt | Quelle |
+|---|---|
+| Kontenplan | `BAS_FINACC_PLAN` (SKR03/SKR04, Mandant vor Standard), `FINT_ACCOUNTS` (`BASEACCOUNTNO`), `FINT_EXTERNDEFS` (`EXTERNKIND` 82: gespeicherte SKR04-Nummer je Konto, nur Sachkonten unter 10000) |
+| Buchungen | `MOV_FINACC_ACCRECORDS`; `ACCOUNTINGID` → `Bookings.SourceGroup`, `DATEVVATKEY` (optional) → `DatevKey` |
+| AfA-Sätze | `INVENTORYID`, `INVENTORYAMORTID`, `ACCOUNTINGKIND` (28 = AfA), `BOOKINGKIND`, Plan in `MOV_INVENTORY_AMORTIZATIONS` |
+| Anlagen | `BAS_INVENTORY` (u. a. `INVNO`, `PURCHASEAMOUNTNET`), Zahlungen in `MOV_INVENTORY_BOOKINGS` (positiv = Zahlung, negativ = Abgang) |
+| DATEV-Nummern | `SYS_FINACCSYSTEMS` (Satz „Datev-Format“; nur `NAME`, `CONSULTANT_NO`, `CLIENT_NO`) |
+| Rechnungen | Positionstext als RTF-Blob (`ARTDESCR`) an der Auftragsposition, auf die `ORDPOSID` zeigt; Einheiten als UN/ECE-Code aus `SUP_ARTICLES_UNITS.OPENTRANSCODE` |
+
+Die SKR04-Nummer eines Kontos bestimmt der Leser in dieser Reihenfolge: (1) `BAS_FINACC_PLAN`, (2) die gespeicherte
+Nummer aus `FINT_EXTERNDEFS`, (3) das Basiskonto, (4) die geprüften Nachträge `KNOWN_EQUIVALENTS`. Konten ohne Zuordnung
+werden gemeldet, nicht geraten. Der Anschaffungswert einer Anlage (`WisoDatabase._purchase_price`) ist die Summe der
+positiven Zahlungen plus der eingetragene Wert, wenn dieser mehr als 1,00 € beträgt (`PRICE_HELPER_LIMIT`) und nicht auf den
+Cent der Zahlungssumme gleicht; Einzelheiten dort. Ein Fehler beim Lesen (`WisoDatabase.check`) bricht vor dem Schreiben ab.
+
+### Bekannte Unterschiede zum Stapel, den WISO schreibt
+
+Der DATEV-Export (`export/datev.py`) bildet den Stapel nach, den WISO Mein Büro schreibt, gemessen an einem Datenbestand;
+eine Zusicherung, dass die Kanzlei ihn so annimmt, gibt es nicht. Unterschiede (Spaltennummern wie in `export/datev.py`, ab 0):
+
+* Der Vorlauf trägt die Versionsnummer 700, WISO schreibt 510.
+* Spalte 100 „Erlöskonto (Anzahlungen)“ bleibt leer, Spalte 105 „Skontosperre“ trägt „0“; WISO belegt die beiden umgekehrt.
+* Der AfA-Satz des Erinnerungswerts nach dem Abgang einer Anlage wird nicht importiert (`memo_rows_skipped`) und fehlt im Stapel.
+* Für ältere Jahre leitet WISO den BU-Schlüssel aus der heutigen Bedeutung neu ab; die App gibt den an der Buchung
+  gespeicherten aus und leitet nur ab, wo keiner gespeichert ist.
+* Das Soll/Haben-Kennzeichen folgt der Form des Satzes (`Bookings.EntryForm`).
+
+## 4. Belegerkennung (`receipt_reading/`)
+
+Das Paket liest die Felder einer hochgeladenen Belegdatei. Es bekommt Bytes, schreibt nichts und kennt weder `db/` noch
+`server/`. Das Ergebnis ist eine **Lesung** (`Reading`): ein Vorschlag mit Herkunft, kein geprüfter Inhalt. Sie steht in
+`DocumentReadings` (`DB_MODEL.md`). Gelesen wird auf Anfrage der Seite *Belege* (`POST /receipts/read`) in einem
+Kindprozess mit hartem Zeitlimit; verknüpft wird nichts ohne Klick. Schutzregeln, Statuswerte und Ablauf:
+`docs/regeln/belege.md` (*Belegerkennung*).
 
 | Datei | Aufgabe |
 |---|---|
-| `receipt_reading/__init__.py` | `Reading`, `read_document()`, Grenzen und die Tabelle der Befund-Codes (im Kopf der Datei) |
-| `receipt_reading/detect.py` | Art der Datei: Endung UND Kennbytes müssen zusammenpassen (PDF, XML, Bild) |
-| `receipt_reading/einvoice.py` | E-Rechnung: UBL (`Invoice`, `CreditNote`) und CII, Felder nach EN 16931 |
-| `receipt_reading/pdf_embedded.py` | das eingebettete XML einer ZUGFeRD-/Factur-X-PDF finden, nur begrenzt entpackt |
-| `receipt_reading/pdf_text.py` | Text einer gewöhnlichen PDF (die ersten fünf und die letzten drei Seiten) |
-| `receipt_reading/text_rules.py` | Textregeln: Datum, Rechnungsnummer, Absender, USt-IdNr., Brutto, Netto, Steuer, Währung, Art |
-| `receipt_reading/isolated.py`, `worker.py` | Lesen im Kindprozess: Zeitlimit, Speichergrenze (POSIX), Ausgabe streng geprüft |
-| `importers/safe_xml.py` | XML aus Uploads sicher lesen: keine DTD, keine Entity-Deklaration (gemeinsam mit CAMT) |
+| `__init__.py` | `Reading`, `read_document()`, Grenzen, `READER_VERSION`, Tabelle der Befund-Codes (im Kopf der Datei) |
+| `detect.py` | Art der Datei: Endung UND Kennbytes müssen zusammenpassen (PDF, XML, Bild) |
+| `einvoice.py` | E-Rechnung: UBL (`Invoice`, `CreditNote`) und CII, Felder nach EN 16931 |
+| `pdf_embedded.py` | eingebettetes XML einer ZUGFeRD-/Factur-X-PDF finden, nur begrenzt entpackt |
+| `pdf_text.py` | Text einer gewöhnlichen PDF (die ersten fünf und letzten drei Seiten) |
+| `text_rules.py` | Textregeln: Datum, Rechnungsnummer, Absender, USt-IdNr., Brutto, Netto, Steuer, Währung, Art |
+| `isolated.py`, `worker.py` | Lesen im Kindprozess (`python -m receipt_reading.worker`) |
+| `importers/safe_xml.py` | XML sicher lesen (gemeinsam mit CAMT) |
 
-* **Reihenfolge:** Zuerst die E-Rechnung – ein hochgeladenes XML oder das eingebettete `factur-x.xml`, `zugferd-invoice.xml` bzw. `xrechnung.xml` einer
-  PDF –, danach die Textregeln einer gewöhnlichen PDF. Erkannt wird die Datei an Endung und Kennbytes zusammen. Ein Bild oder eine PDF ohne Textebene
-  ist `no_text`: Es gibt keine Texterkennung und kein Sprachmodell.
-* **E-Rechnung:** gelesen werden BT-1 Rechnungsnummer, BT-2 Datum, BT-5 Währung, BT-27 Verkäufer, BT-31 USt-IdNr., BT-109 Netto, BT-110 Steuer, BT-112
-  Brutto, der Steuersatz aus BG-23 (nur, wenn die Aufschlüsselung genau einen nennt) und die Art (Rechnung oder Gutschrift; eine Gutschrift trägt positive
-  Beträge). Was nicht streng passt – ein Betrag mit mehr als zwei Nachkommastellen, ein Datum, das es nicht gibt, eine Währung, die keine drei
-  Großbuchstaben hat –, bleibt leer und ergibt den Befund `bad_<Feld>`. Geraten wird nichts; die Steuer 0 gilt nur, wenn der Gesamtbetrag der Steuer
-  fehlt und die Aufschlüsselung ausschließlich Nullen nennt (Beleg ohne Steuerausweis).
-* **Textregeln:** lieber leer als geraten. Ein Betrag steht als `1.234,56` oder `119,00` (Komma, genau zwei Nachkommastellen) in derselben Zeile HINTER
-  seiner Bezeichnung (Rechnungsbetrag, Gesamtbetrag, Zahlbetrag, brutto, netto, Zwischensumme …; die Bezeichnungen haben eine Rangfolge, es zählt der beste
-  Rang mit einem Treffer); `19,00 %`, ein Betrag mit nicht eindeutigem Vorzeichen (`- € 119,00`, `(119,00)`, `119,00 -`, `119,00 CR`) oder mit Leerzeichen
-  als Tausendertrenner wird nicht gelesen. Die Steuer steht HINTER ihrem Steuerwort: Stehen dort mehrere Beträge (`USt 19% 100,00 19,00 119,00`), gilt der,
-  der als einziger zum Satz der Zeile passt (Basis × Satz oder im Brutto enthalten); ein Betrag hinter „auf“, „von“ oder „aus“ ist die Basis, nicht die
-  Steuer. Die Währung gilt am Betrag (`€`/`EUR` vor oder hinter ihm ist Euro, `$`, `£`, `USD`, `CHF`, `GBP` machen ihn fremd). Nennt ein
-  Beleg mehrere verschiedene Werte für ein Feld, bleibt es leer (`conflict_<Feld>`) – nur bei Brutto, Netto und Steuer entscheidet die Summenprobe,
-  wenn genau eine Kombination aufgeht (`by_checksum`). Jedes gelesene Feld nennt die Zeile und die Seite, aus der es stammt; die Proben (Netto + Steuer
-  = Brutto, Netto × Satz = Steuer) stehen in `Raw`. Die eigene Firma ist nie der Absender und ihre USt-IdNr. nie die des Belegs. Ein Kontoauszug (ein
-  Importmodul erkennt ihn und seine Salden stehen im Text) ist kein Beleg: Befund `statement`. Beträge in anderer Währung als Euro bleiben leer
-  (`foreign_currency`).
-* **Grenzen:** Dateien über 30 MB werden nicht gelesen; ein XML höchstens 20 MB (auch als entpackter Anhang); aus einer PDF höchstens 200 000 Zeichen
-  Text (gespeichert werden 20 000); das Zeitlimit des Kindprozesses beträgt 15 Sekunden. Erreicht das Lesen einer PDF die Zeit- oder Zeichengrenze,
-  steht der Befund `text_truncated` da (gelesen ist dann nur der Anfang); überschreitet es das Zeitlimit des Kindprozesses, ist der Status `too_large`
-  mit dem Befund `time`.
-* **Grenzen der Erkennung:** Die Regeln lesen nicht jede Rechnung – steht ein Betrag nicht in derselben Zeile wie seine Bezeichnung, ist er für die Regeln
-  nicht da, und ein ungewöhnlicher Aufbau lässt Felder leer. Gelesene Werte sind eine Lesung der Datei und zu prüfen.
-* **Anzeige:** die Spalte „Gelesen“ der Belegliste und der Kasten „Gelesen“ auf der Seite eines Belegs (Werte mit Herkunft, Proben, Befunde). Die
-  Befunde erscheinen nur als feste Sätze; ein neuer Befund-Code braucht dort einen Satz (`receipt_reader.NOTE_TEXTS`). Ändern sich die Leseregeln,
-  steigt `READER_VERSION`: Ältere Lesungen gelten als ungelesen und zeigen „(ältere Regeln)“.
-* **Vorschläge:** Zu einer gelesenen Datei (Status `ok`, Euro), die an keiner Buchung hängt, schlägt die Seite des Belegs Bankbewegungen und eigenständige
-  Buchungen vor, deren Betrag ohne Vorzeichen dem gelesenen Brutto entspricht und die zwischen sieben Tagen vor und 90 Tagen nach dem Belegdatum liegen;
-  Punkte gibt es für die Rechnungsnummer, gemeinsame Namenswörter und die Nähe zum Belegdatum (höchstens fünf Vorschläge, mit Begründung). Eine Rechnung
-  erwartet einen Zahlungsausgang, eine Gutschrift einen Eingang: Passt die Richtung nicht, steht der Vorschlag mit einem Hinweis hinter denen, die passen.
-  Hängt der Beleg schon an einer Buchung, gibt es keine Vorschläge; nach dem Lösen der letzten Verknüpfung kommen sie wieder. Zuordnen ist der bestehende
-  Weg „Belege verknüpfen“ – die Vorschläge verknüpfen nichts.
+* **Reihenfolge:** zuerst die E-Rechnung (hochgeladenes XML oder das eingebettete `factur-x.xml`, `zugferd-invoice.xml`,
+  `xrechnung.xml` einer PDF), danach die Textregeln. Ein Bild oder eine PDF ohne Textebene ist `no_text`.
+* **E-Rechnung:** BT-1 Rechnungsnummer, BT-2 Datum, BT-5 Währung, BT-27 Verkäufer, BT-31 USt-IdNr., BT-109 Netto, BT-110
+  Steuer, BT-112 Brutto, Steuersatz aus BG-23 (nur wenn die Aufschlüsselung genau einen nennt) und die Art (Rechnung oder
+  Gutschrift; eine Gutschrift trägt positive Beträge). Was nicht streng passt, bleibt leer mit Befund `bad_<Feld>`.
+* **Textregeln:** Ein Betrag steht als `1.234,56` oder `119,00` in derselben Zeile HINTER seiner Bezeichnung
+  (Rechnungsbetrag, Gesamtbetrag, Zahlbetrag, brutto, netto, Zwischensumme …, mit Rangfolge). Nicht gelesen werden `19,00 %`,
+  Beträge mit unklarem Vorzeichen (`- € 119,00`, `(119,00)`, `119,00 CR`) und Leerzeichen als Tausendertrenner. Die Steuer
+  steht HINTER dem Steuerwort; bei mehreren Beträgen gilt der, der als einziger zum Satz der Zeile passt. Die Währung gilt
+  am Betrag (`€`/`EUR` Euro; `$`, `£`, `USD`, `CHF`, `GBP` machen ihn fremd). Mehrere verschiedene Werte für ein Feld
+  bleiben leer (`conflict_<Feld>`); nur bei Brutto, Netto und Steuer entscheidet die Summenprobe (`by_checksum`). Jedes
+  gelesene Feld nennt Zeile und Seite; die Proben (Netto + Steuer = Brutto, Netto × Satz = Steuer) stehen in `Raw`. Ein
+  Kontoauszug ist kein Beleg (Befund `statement`).
+* **Grenzen:** Dateien über 30 MB werden nicht gelesen, ein XML höchstens 20 MB (auch entpackt), aus einer PDF höchstens
+  200 000 Zeichen Text (gespeichert werden 20 000), das Zeitlimit des Kindprozesses beträgt 15 Sekunden (Konstanten in
+  `receipt_reading/__init__.py`). Die Regeln lesen nicht jede Rechnung; Gelesenes ist zu prüfen.
+* **Anzeige:** Spalte „Gelesen“ der Belegliste und Kasten „Gelesen“ auf der Seite eines Belegs. Befunde erscheinen nur als
+  feste Sätze (`receipt_reader.NOTE_TEXTS`); ein neuer Befund-Code braucht dort einen Satz. Ändern sich die Leseregeln,
+  steigt `READER_VERSION`, ältere Lesungen gelten als ungelesen.
+* **Vorschläge:** Zu einer gelesenen Datei (Status `ok`, Euro), die an keiner Buchung hängt, schlägt die Seite des Belegs
+  bis zu fünf Bankbewegungen oder eigenständige Buchungen vor (Betrag gleich dem Brutto, Datum von 7 Tagen vor bis 90 Tage
+  nach dem Belegdatum), geordnet nach Rechnungsnummer, gemeinsamen Namenswörtern und Nähe zum Datum; eine Rechnung erwartet
+  einen Ausgang, eine Gutschrift einen Eingang (`db/receipt_matching.py`). Zugeordnet wird über „Belege verknüpfen“.
