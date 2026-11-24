@@ -104,6 +104,11 @@ READERS = {
                                                       'Wartekonto genau seines Satzes (Momentaufnahme ebenfalls verglichen)'),
     ('db/invoices.py', 'insert_invoice'): 'Beleg anlegen: schreibt den Satz im Kopf und das Kennzeichen „Steuersatz je Position“ (MixedTaxRates: nur NULL oder 1)',
     ('db/invoices.py', 'last_document_shows_tax'): '§ 19-Prüfung: Häkchen „Umsatzsteuer ausweisen“ eines neuen Belegs',
+    ('db/payment_suggestions.py', '<module>'): ('Zahlungsvorschläge: Die Abfrage der offenen Rechnungen liest den Kopfsatz (und das Kennzeichen MixedTaxRates, die Skonto-Bedingungen, ob eine Position die '
+                                                'Momentaufnahme der Stammdaten trägt) nur, um nach den Regeln des Zuordnens (invoice_payments.skonto_terms) zu fragen, ob die Rechnung ein Skonto '
+                                                'zulässt: nur 19 %, 7 %, 0 % und § 19; ein Beleg mit Steuersatz je Position oder mit Stammdaten nie – sein Kopfsatz wird nie als Satz eines Skontos gelesen'),
+    ('db/payment_suggestions.py', 'skonto_offer'): ('Rechnungsseite: Was die Rechnung an Skonto zulässt – dieselbe Frage (skonto_terms) mit dem Kopfsatz und dem Kennzeichen MixedTaxRates der einen '
+                                                    'Rechnung; ein Beleg mit Steuersatz je Position oder mit Stammdaten bekommt den festen Ablehnungssatz, nie ein Skonto'),
     ('db/schema.py', 'initialize_database'): 'Schema: legt die Spalte Invoices.TaxRate (und den Satz je Position) an, liest nichts',
     ('export/einvoice_model.py', 'build_einvoice'): 'E-Rechnung: Standardsatz der Positionen ohne eigenen Satz, § 19 (Kategorie E)',
     ('export/pdf_invoice.py', 'generate_invoice_pdf'): ('PDF der Rechnung: Summenblock mit EINEM Satz, § 19-Hinweis; mit Steuersatz je Position '

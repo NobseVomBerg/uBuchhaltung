@@ -41,7 +41,7 @@ from db.invoice_lock import (DocumentNotFound, EDITABLE_STATUSES, InvoiceLocked,
                              buyer_snapshot, status_group)
 from db.invoice_storno import NO_COUNTER_BOOKING_HINT
 from db.invoice_versions import CorrectionInvalid
-from db.invoice_payments import RECEIVABLE_STATUSES, BankChangeRefused, PaymentRemovalRefused, has_mixed_rates
+from db.invoice_payments import RECEIVABLE_STATUSES, SKONTO_REFUND, BankChangeRefused, PaymentRemovalRefused, has_mixed_rates
 from db.invoice_repair import REBUILD_WARNING
 from db.numbering import NumberRangeError, number_format_error
 from db.matching import FORM_LIQUID_FIRST, FORM_TRANSFER, is_bank_effective, is_mirror_row, purpose_in_counter, read_entry_form
@@ -836,11 +836,13 @@ def _save_split_rows(db, bank_id, post_data, account_coa_id, date, date_tax,
         db, bank_id, post_data, account_coa_id, date, date_tax, recipient, currency))
 
 
-def _new_payment_problem(db, invoice_id, account_id, amount, revenue_coa_id=None, on=None):
+def _new_payment_problem(db, invoice_id, account_id, amount, revenue_coa_id=None, on=None, skonto=False):
     """Klartext, warum sich eine NEUE Bankbewegung nicht als Zahlung zu dieser Rechnung anlegen
     lässt (kein Zahlungseingang, Rechnung nicht zahlbar, Bankkonto ohne SKR-Nummer, kein
     Erlöskonto, ein Datum, von dem das Erlöskonto abhängt und das keines ist …) – ``None``, wenn sie
-    sich zuordnen lässt. Geprüft wird vor dem Anlegen. ``on``: das Datum der neuen Bewegung (das Datumsfeld der Maske)."""
+    sich zuordnen lässt. Geprüft wird vor dem Anlegen. ``on``: das Datum der neuen Bewegung (das Datumsfeld der Maske).
+    ``skonto``: Die Zahlung soll die Rechnung mit Skonto schließen – dann gelten auch dessen Regeln (kein Skonto vorgesehen, ein Beleg mit mehreren Sätzen,
+    kein Rest, ein Rest über dem Skonto …), mit dem Betrag der neuen Bewegung; abgelehnt wird vor dem Anlegen, es entsteht keine Bewegung."""
     try:
         positive = to_minor(amount) > 0
     except (ValueError, TypeError):
@@ -848,7 +850,16 @@ def _new_payment_problem(db, invoice_id, account_id, amount, revenue_coa_id=None
     if not positive:
         return ('Der Betrag muss größer 0 sein – nur Zahlungseingänge lassen sich einer '
                 'Rechnung zuordnen.')
-    return db.payment_precheck(invoice_id, account_id, revenue_coa_id, on=on)
+    return db.payment_precheck(invoice_id, account_id, revenue_coa_id, on=on, amount=amount, skonto=skonto)
+
+
+def _skonto_from_form(post_data):
+    """Das Feld ``skonto`` der Buchungsmaske, streng: fehlt es, ist es „nein“ (``False``); sonst gilt genau EIN Wert und er ist ``1`` (``True``). Alles andere – leer, ``0``, ``true``,
+    ``on``, ``1`` zweimal – ist ungültig (``None``): Die Maske schickt das Feld nur mit dem Haken und mit genau diesem Wert, und ein anderer Wert wird nie als Zustimmung gelesen."""
+    values = post_data.get('skonto')
+    if values is None:
+        return False
+    return True if values == ['1'] else None
 
 
 # Schlägt die Zuordnung zu einer Rechnung NACH dem Speichern der Maske fehl, bleibt der Nutzer bei der (gespeicherten) Buchung: 303 auf
@@ -862,7 +873,12 @@ def handle_add_transaction(db: Database, post_data):
     Speichert die Maske einer Bankbewegung mit Editor, geschieht das in EINER Transaktion (``Database.save_bank_with_rows``): die
     Bankzeile und alle Sätze – angelegt, geändert, zugeordnet, entfernt – gelingen gemeinsam oder gar nicht, und ins Replay-Log
     kommt erst etwas, wenn sie festgeschrieben sind. Eine Bankbewegung, der eine Rechnungszahlung oder Erstattung zugeordnet ist,
-    behält Betrag, Bankkonto und Datum (``BankChangeRefused``): erst die Zuordnung an der Rechnung entfernen."""
+    behält Betrag, Bankkonto und Datum (``BankChangeRefused``): erst die Zuordnung an der Rechnung entfernen.
+
+    **Skonto (seit 2.9.0):** Das Feld ``skonto`` (der Haken „Rest als Skonto ausbuchen“, Wert ``1``) lässt die Zahlung die gewählte Rechnung mit Skonto schließen – streng gelesen
+    (``_skonto_from_form``: fehlt = nein, sonst genau ``1``, alles andere 400). Eine NEUE Bewegung wird vor dem Anlegen geprüft (``_new_payment_problem`` → ``payment_precheck`` mit dem
+    Betrag der Maske): abgelehnt, entsteht keine Bankbewegung. Eine vorhandene wird zuerst gespeichert; scheitert dann das Zuordnen, bleibt der Nutzer bei der Buchung
+    (``PAYMENT_NOT_ASSIGNED``). Ohne gewählte Rechnung hat das Feld keine Wirkung. Der Haken ist nie vorgewählt und wird nie durch einen Vorschlag gesetzt – gebucht wird nur mit ihm."""
     raw_transaction_id = (post_data.get("transaction_id", ["0"])[0] or '').strip()
     if raw_transaction_id in ('', '0'):
         transaction_id = 0                                   # eine neue Buchung
@@ -884,6 +900,9 @@ def handle_add_transaction(db: Database, post_data):
     tax_amount = post_data.get("tax_amount", [""])[0]
     document_nr = post_data.get("document_nr", [""])[0]
     invoice_id = post_data.get("invoice_id", [""])[0]
+    skonto = _skonto_from_form(post_data)
+    if skonto is None:
+        return 400, INVALID_REQUEST
     # Erlöskonto, das der Nutzer wählt, wenn für den Steuersatz der Rechnung keines hinterlegt
     # ist (sonst ohne Wirkung)
     raw_revenue_coa = post_data.get("revenue_coa_id", [""])[0].strip()
@@ -918,7 +937,7 @@ def handle_add_transaction(db: Database, post_data):
         # Die Kontierung ergibt sich aus der Rechnung (assign_invoice_payment); ein Erlöskonto
         # aus dem Formular zählt hier nicht.
         if invoice_id and transaction_id <= 0:
-            problem = _new_payment_problem(db, invoice_id, account_id, amount, revenue_coa_id, on=date)
+            problem = _new_payment_problem(db, invoice_id, account_id, amount, revenue_coa_id, on=date, skonto=skonto)
             if problem:
                 return 400, problem
             coa_id = None
@@ -1143,7 +1162,7 @@ def handle_add_transaction(db: Database, post_data):
         if invoice_id:
             try:
                 ok, message = link_booking_to_invoice_capped(
-                    db, invoice_id, transaction_id, revenue_coa_id=revenue_coa_id)
+                    db, invoice_id, transaction_id, revenue_coa_id=revenue_coa_id, skonto=skonto)
             except Exception as e:
                 print(f"Error linking booking {transaction_id} to invoice {invoice_id}: {e}")
                 ok, message = False, 'Die Zahlung konnte nicht zugeordnet werden.'
@@ -3145,6 +3164,11 @@ def handle_update_invoice_status(post_body: bytes):
     return 200, json.dumps(result)
 
 
+# Der Hinweis der Antwort, wenn das Stornieren das Skonto einer Zahlung zurückgenommen hat (``Database.cancel_invoice`` → ``_reverse_skonto_in``): Das Guthaben des Kunden ist das Geld,
+# das geflossen ist, nicht die Rechnungssumme. Ein fester Satz; er steht in ``hint`` (nach dem Satz zur fehlenden Gegenbuchung, wenn es auch den gibt)
+SKONTO_TAKEN_BACK_HINT = 'Das Skonto der Zahlung wurde mit dem Storno zurückgenommen – das Guthaben des Kunden ist das gezahlte Geld.'
+
+
 def handle_invoice_cancel(post_body: bytes):
     """Eine versendete Rechnung stornieren (``POST /invoice/cancel``, JSON ``{"invoiceId", "date"}``).
 
@@ -3152,7 +3176,8 @@ def handle_invoice_cancel(post_body: bytes):
     Status „versendet“) an, setzt die Rechnung auf „storniert“ und bucht – hat die App die Forderung gebucht – die
     Gegenbuchung dazu. Hier folgt danach nur das Dokument der Stornorechnung (PDF, bei E-Rechnungsdaten auch XML);
     scheitert es, bleibt die Stornierung gespeichert und die Antwort trägt eine ``warning`` – „PDF + E-Rechnung“
-    erzeugt die fehlende Datei. ``hint`` sagt, dass es keine Gegenbuchung gab.
+    erzeugt die fehlende Datei. ``hint`` sagt, dass es keine Gegenbuchung gab – und, hatte eine Zahlung der Rechnung ein Skonto ausgebucht (2.9.0), dass das Stornieren es zurückgenommen hat
+    (``SKONTO_TAKEN_BACK_HINT``; gelesen wird es VOR dem Stornieren, danach ist ``SkontoAmount`` leer – ein Skonto, dessen Buchung sich geändert hat, lehnt das Stornieren ab, dann gibt es keinen Hinweis).
 
     ``invoiceId`` liest die Route streng als Ganzzahl (wie ``/invoice/save``), das Datum prüft die Datenbankschicht.
 
@@ -3174,14 +3199,16 @@ def handle_invoice_cancel(post_body: bytes):
         raise InvalidRequest('reissue ist kein Wahrheitswert')
 
     db = Database()
+    had_skonto = bool(db.get_invoice_skonto(invoice_id))         # vor dem Stornieren: Danach trägt keine Zuordnung mehr ein Skonto
     storno = db.cancel_invoice(invoice_id, data.get('date'), userctx.get_user())
     if not storno.ok:
         return storno.code, json.dumps({'success': False, 'error': storno.message})
     print(f"Invoice {invoice_id} cancelled by credit note {storno.storno_number}")
 
     result = {'success': True, 'storno_id': storno.storno_id, 'storno_number': storno.storno_number}
-    if not storno.counter_booked:
-        result['hint'] = NO_COUNTER_BOOKING_HINT
+    hints = ([] if storno.counter_booked else [NO_COUNTER_BOOKING_HINT]) + ([SKONTO_TAKEN_BACK_HINT] if had_skonto else [])
+    if hints:
+        result['hint'] = ' '.join(hints)
     warning = _generate_storno_documents(db, storno.storno_id)
     if warning:
         result['warning'] = warning
@@ -3363,6 +3390,10 @@ def handle_link_invoice_payment(post_body: bytes):
     darunter), und „Öffnen und unverändert speichern“ änderte etwas. Erlöskonto, Steuer und Beleg-Nr. bekommt
     die Bankzeile einer Erstattung nicht – sie gehören zur Rechnung, nicht zur Bewegung.
 
+    **Skonto (seit 2.9.0):** ``skonto`` – ein JSON-Wahrheitswert, fehlt es, ist es ``false`` (wie ``reissue`` und ``execute``); alles andere (``null``, ``"true"``, ``1``) ist 400
+    „Ungültige Parameter“, nichts geschieht. Mit ``true`` schließt die Zahlung die Rechnung mit Skonto (``assign_invoice_payment(…, skonto=True)``: der Rest nach der Zahlung wird
+    ausgebucht, die Regeln und ihre festen Sätze stehen dort). An einer Stornorechnung gibt es kein Skonto: ``true`` ist dort 400 ``SKONTO_REFUND``, bevor etwas geschrieben wird.
+
     Returns tuple: (status_code, message_or_path)
     """
     data = _json_request(post_body)
@@ -3372,8 +3403,9 @@ def handle_link_invoice_payment(post_body: bytes):
     if amount_paid in (None, ''):
         amount_paid = None
     revenue_coa_id = _json_id(data, 'revenue_coa_id', missing=None)   # nur bei Wahl des Nutzers
+    skonto = data.get('skonto', False)
 
-    if not invoice_id or not transaction_id:
+    if not invoice_id or not transaction_id or not isinstance(skonto, bool):
         return 400, "Ungültige Parameter"
 
     db = Database()
@@ -3381,6 +3413,8 @@ def handle_link_invoice_payment(post_body: bytes):
     try:
         invoice = db.get_document(invoice_id, 'invoice')
         if is_storno_row(invoice):
+            if skonto:
+                return 400, SKONTO_REFUND                  # eine Erstattung kennt kein Skonto; vor dem ersten Schreiben
             refund = db.assign_storno_refund(invoice_id, transaction_id, amount_paid, revenue_coa_id)
             ok, err = refund.ok, refund.message
             if ok:
@@ -3391,7 +3425,7 @@ def handle_link_invoice_payment(post_body: bytes):
                     print(f"Error backfilling contact for booking {transaction_id}: {e}")
         else:
             ok, err = link_booking_to_invoice_capped(db, invoice_id, transaction_id,
-                                                     amount_paid, revenue_coa_id)
+                                                     amount_paid, revenue_coa_id, skonto)
         if not ok:
             return 400, err
         return 200, f"/invoice/view?id={invoice_id}"

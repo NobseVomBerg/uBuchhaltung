@@ -9,7 +9,8 @@ bestehenden Weg (``Database.assign_invoice_payment``) – hier wird nichts gesch
 
 Eingabe sind Wörterbücher. Eine Bewegung: ``id``, ``date``, ``amount_minor`` (der FREIE Rest der Bankbewegung in Minor Units, größer 0),
 ``recipient`` und ``text`` (Beleg-Nr. und Kontakt der Bankzeile zählen bewusst nicht, siehe ``_Movement``). Eine Rechnung: ``id``, ``number``, ``date``, ``open_minor`` (der
-offene Betrag in Minor Units, größer 0), und ``customer_name`` (die Firma, sonst der Name). Eine Zeile, deren ``id`` oder Betrag keine ganze Zahl (beim Betrag
+offene Betrag in Minor Units, größer 0), ``customer_name`` (die Firma, sonst der Name) und – wo die Rechnung ein Skonto zulässt – ``skonto_open_minor`` (der offene Betrag
+abzüglich des Skontos, Minor Units, größer 0 und kleiner als ``open_minor``; fehlt der Schlüssel oder ist der Wert etwas anderes, gibt es kein Skonto-Signal). Eine Zeile, deren ``id`` oder Betrag keine ganze Zahl (beim Betrag
 größer 0) ist, ist kein Kandidat; ein schiefer Text, ein fehlender Schlüssel und ein unlesbares Datum werfen nie – das Signal fällt weg.
 
 Signale je Paar (Bewegung, Rechnung), je eines mit festem Satz als Begründung und Punkten:
@@ -18,20 +19,24 @@ Signale je Paar (Bewegung, Rechnung), je eines mit festem Satz als Begründung u
   (``_number_pattern``: mit Zifferngrenzen, ein Trennzeichen zwischen zwei Ziffern nur, wo die Nummer selbst eines trägt). Brauchbar ist eine Nummer wie bei den Belegen (``receipt_matching.usable_number``: normalisiert mindestens 4
   Zeichen mit einer Ziffer, rein numerisch erst ab 5) und höchstens ``MAX_NUMBER_LENGTH`` Zeichen lang.
 * **BETRAG** (``REASON_AMOUNT``, ``POINTS_AMOUNT``): Der freie Rest der Bewegung ist der offene Betrag der Rechnung, auf den Minor-Wert.
+* **SKONTO** (``REASON_SKONTO``, ``POINTS_SKONTO``, seit 2.9.0): Der freie Rest der Bewegung ist der offene Betrag der Rechnung **abzüglich ihres Skontos** (``skonto_open_minor`` der Rechnung: der offene
+  Betrag minus das Skonto, das die Rechnung vorsieht – ``None``, wenn sie keines zulässt; die Regeln dafür stehen in ``db/invoice_payments.py``, hier wird nur verglichen). Das Signal gilt nur ohne BETRAG
+  (beide zugleich gibt es nicht: das Skonto ist größer 0) und zählt wie BETRAG: allein kein Vorschlag, mit KUNDE einer.
 * **KUNDE** (``REASON_CUSTOMER``, ``POINTS_CUSTOMER``): Empfänger und Kundenname haben mindestens ein Namenswort gemeinsam (``receipt_matching.name_words``: ohne ``STOP_WORDS``, mindestens 4 Zeichen).
 * **DATUM** zählt nur für die Reihenfolge (Abstand in Tagen zwischen Buchungs- und Rechnungsdatum; ein unlesbares Datum steht ganz hinten) und
   für eine Ausnahme: Liegt die Bewegung mehr als ``DAYS_BEFORE_INVOICE`` Tage VOR dem Rechnungsdatum, ist sie ohne NUMMER kein Vorschlag (mit
   NUMMER schon: eine Vorauszahlung).
 
-**Ein Paar ist ein Vorschlag, wenn NUMMER zutrifft oder BETRAG und KUNDE zutreffen** – ein gleicher Betrag allein beweist nichts. Die Begründungen
-stehen in fester Reihenfolge (Nummer, Betrag, Kunde); trifft NUMMER zu und BETRAG nicht, kommt ``REASON_PARTIAL`` dazu (eine Teil- oder Überzahlung
-ist dann möglich). ``rank_invoices`` und ``rank_movements`` bringen die Paare EINER Bewegung bzw. EINER Rechnung in eine Rangfolge (höchstens
+**Ein Paar ist ein Vorschlag, wenn NUMMER zutrifft oder (BETRAG oder SKONTO) und KUNDE zutreffen** – ein gleicher Betrag allein beweist nichts, ein Betrag nach Skonto auch nicht. Die Begründungen
+stehen in fester Reihenfolge (Nummer, Betrag bzw. Skonto, Kunde); trifft NUMMER zu und weder BETRAG noch SKONTO, kommt ``REASON_PARTIAL`` dazu (eine Teil- oder Überzahlung
+ist dann möglich). Trifft SKONTO zu, trägt der Vorschlag ``skonto`` – die Seiten bieten dann neben „Zuordnen“ „Mit Skonto zuordnen“ an; vorgeschlagen wird nur, zugeordnet (und das
+Skonto ausgebucht) wird allein auf Klick. ``rank_invoices`` und ``rank_movements`` bringen die Paare EINER Bewegung bzw. EINER Rechnung in eine Rangfolge (höchstens
 ``MAX_SUGGESTIONS``); ``pair_up`` macht daraus die Eins-zu-eins-Liste für die Übersicht – jede Bewegung und jede Rechnung höchstens einmal, die
 zeitlich nächste zuerst, deterministisch. Schon zugeordnete Paare (``linked``) sind nie ein Vorschlag.
 
 Laufzeit: je Paar mit brauchbarer Nummer ein billiger Test (die normalisierte Nummer steht in den normalisierten Feldern der Bewegung, ein ``in``);
 nur bei einem Treffer läuft der genaue reguläre Ausdruck, und der ist linear. Die Paare aus Betrag und Kunde entstehen über einen Index nach dem
-offenen Betrag, nicht über alle Paare."""
+offenen Betrag (und, wo die Rechnung ein Skonto zulässt, nach dem offenen Betrag abzüglich des Skontos), nicht über alle Paare."""
 import dataclasses
 import functools
 import heapq
@@ -47,10 +52,12 @@ DAYS_BEFORE_INVOICE = 7          # so viele Tage vor dem Rechnungsdatum darf ein
 
 POINTS_NUMBER = 100
 POINTS_AMOUNT = 50
+POINTS_SKONTO = 50               # wie BETRAG: Der Betrag nach Skonto ist derselbe Beweis wie der volle
 POINTS_CUSTOMER = 30
 
 REASON_NUMBER = 'Rechnungsnummer im Verwendungszweck'
 REASON_AMOUNT = 'Betrag stimmt'
+REASON_SKONTO = 'Betrag nach Skonto stimmt'
 REASON_CUSTOMER = 'Kunde passt'
 REASON_PARTIAL = 'Betrag weicht ab (Teil- oder Überzahlung)'
 AMBIGUOUS_TEXT = 'mehrere möglich – bitte prüfen'        # der Zusatz einer Zeile der Übersicht, die ``pair_up`` als mehrdeutig kennzeichnet
@@ -67,13 +74,15 @@ _NO_DISTANCE = 10 ** 9           # ein Paar ohne lesbares Datum steht in der Rei
 class PaymentSuggestion:
     """Ein Vorschlag: die Bewegung, die Rechnung, die Punkte, die Begründungen (feste Sätze: Nummer, Betrag, Kunde), der Abstand in Tagen
     (Buchungsdatum minus Rechnungsdatum, negativ = davor; ``None``, wenn eines der beiden Daten fehlt oder kein ISO-Datum ist) und – nur in
-    der Liste von ``pair_up`` – ob es für diese Bewegung ODER diese Rechnung ein weiteres Paar mit derselben Punktzahl gab (``ambiguous``)."""
+    der Liste von ``pair_up`` – ob es für diese Bewegung ODER diese Rechnung ein weiteres Paar mit derselben Punktzahl gab (``ambiguous``). ``skonto``: Der Betrag der Bewegung ist der
+    offene Betrag der Rechnung nach Abzug ihres Skontos (das Signal SKONTO) – die Seiten bieten dann „Mit Skonto zuordnen“ an."""
     movement_id: int
     invoice_id: int
     score: int
     reasons: tuple[str, ...]
     day_distance: int | None
     ambiguous: bool = False
+    skonto: bool = False
 
 
 def reason_text(suggestion: PaymentSuggestion) -> str:
@@ -157,13 +166,15 @@ class _Movement:
 
 
 class _Invoice:
-    """Eine Rechnung, einmal für alle Paare vorbereitet: die normalisierte Nummer (``''``, wenn sie nicht brauchbar ist) und die Namenswörter
-    des Kunden."""
-    __slots__ = ('id', 'number', 'joints', 'open', 'day', 'words')
+    """Eine Rechnung, einmal für alle Paare vorbereitet: die normalisierte Nummer (``''``, wenn sie nicht brauchbar ist), die Namenswörter
+    des Kunden und – wo die Rechnung ein Skonto zulässt – der offene Betrag nach Abzug des Skontos (``skonto_open``, sonst ``None``)."""
+    __slots__ = ('id', 'number', 'joints', 'open', 'skonto_open', 'day', 'words')
 
     def __init__(self, raw: dict):
         self.id = raw['id']
         self.open = raw['open_minor']
+        skonto = raw.get('skonto_open_minor')
+        self.skonto_open = skonto if is_int(skonto) and 0 < skonto < self.open else None     # kleiner als der offene Betrag: sonst stünde die Rechnung doppelt unter einem Schlüssel
         self.day = iso_day(raw.get('date'))
         number, joints = _number_parts(text_field(raw, 'number'))
         usable = usable_number(number) and len(number) <= MAX_NUMBER_LENGTH
@@ -191,10 +202,12 @@ def _number_found(movement: _Movement, invoice: _Invoice) -> bool:
 
 def _rate(movement: _Movement, invoice: _Invoice, by_number: bool) -> PaymentSuggestion | None:
     """Das Paar bewerten – ``None``, wenn es kein Vorschlag ist (weder NUMMER noch BETRAG und KUNDE, oder eine Bewegung mehr als
-    ``DAYS_BEFORE_INVOICE`` Tage vor dem Rechnungsdatum ohne NUMMER). ``by_number``: Die Nummer steht im Text (``_number_found``)."""
+    ``DAYS_BEFORE_INVOICE`` Tage vor dem Rechnungsdatum ohne NUMMER). ``by_number``: Die Nummer steht im Text (``_number_found``). SKONTO gilt nur ohne BETRAG; beide
+    Signale tragen den Vorschlag zusammen mit KUNDE, und beide schließen ``REASON_PARTIAL`` aus."""
     amount = movement.amount == invoice.open
+    skonto = not amount and invoice.skonto_open is not None and movement.amount == invoice.skonto_open
     customer = not movement.words.isdisjoint(invoice.words)
-    if not (by_number or (amount and customer)):
+    if not (by_number or ((amount or skonto) and customer)):
         return None
     distance = None
     if movement.day is not None and invoice.day is not None:
@@ -208,22 +221,28 @@ def _rate(movement: _Movement, invoice: _Invoice, by_number: bool) -> PaymentSug
     if amount:
         score += POINTS_AMOUNT
         reasons.append(REASON_AMOUNT)
+    elif skonto:
+        score += POINTS_SKONTO
+        reasons.append(REASON_SKONTO)
     if customer:
         score += POINTS_CUSTOMER
         reasons.append(REASON_CUSTOMER)
-    if by_number and not amount:
+    if by_number and not amount and not skonto:
         reasons.append(REASON_PARTIAL)
-    return PaymentSuggestion(movement.id, invoice.id, score, tuple(reasons), distance)
+    return PaymentSuggestion(movement.id, invoice.id, score, tuple(reasons), distance, skonto=skonto)
 
 
 def _pairs(movements: list[_Movement], invoices: list[_Invoice], linked) -> Iterator[PaymentSuggestion]:
     """Alle Vorschläge zwischen diesen Bewegungen und Rechnungen, ungeordnet. ``linked``: Paare ``(ID der Bewegung, ID der Rechnung)``, die schon
     zugeordnet sind – nie ein Vorschlag. Die Paare mit Nummer kommen aus dem billigen Test über alle Rechnungen mit brauchbarer Nummer, die mit
-    Betrag und Kunde aus einem Index nach dem offenen Betrag (nicht aus allen Paaren)."""
+    Betrag und Kunde aus einem Index nach dem offenen Betrag – bei einer Rechnung mit Skonto auch nach dem offenen Betrag abzüglich des Skontos (nicht aus allen Paaren;
+    eine Rechnung steht unter zwei Schlüsseln, einer Bewegung passt höchstens einer, denn das Skonto ist größer 0)."""
     numbered = [(invoice.number, invoice) for invoice in invoices if invoice.number]
     by_amount: dict[int, list[_Invoice]] = {}
     for invoice in invoices:
         by_amount.setdefault(invoice.open, []).append(invoice)
+        if invoice.skonto_open is not None:
+            by_amount.setdefault(invoice.skonto_open, []).append(invoice)
     for movement in movements:
         haystack, by_number = movement.haystack, set()
         for number, invoice in numbered:

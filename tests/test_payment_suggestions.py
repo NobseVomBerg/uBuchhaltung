@@ -21,7 +21,10 @@ Die Seite schlägt jetzt vor, was zusammengehört – **es wird nur vorgeschlage
 * die Maske einer Bankbewegung (Vorschläge zuerst in der Auswahl „Rechnung“, gewählt bleibt „-- Keine Rechnung --“, „Übernehmen“ setzt nur den Wert;
   neue Buchung und Vorbelegung ``from_invoice`` bleiben, wie sie waren; öffnen und unverändert speichern ändert nichts);
 * der Fehlerweg: Schlägt die Zuordnung nach dem Speichern fehl, bleibt der Nutzer bei der Buchung (``/transactions/edit?id=…&err=…``);
-* die Rechnungsseite („Vorhandene Buchung verknüpfen“: Vorschläge zuerst, Begründung klein unter dem Auftraggeber, der Haken bei gleichem Betrag bleibt).
+* die Rechnungsseite („Vorhandene Buchung verknüpfen“: Vorschläge zuerst, Begründung klein unter dem Auftraggeber, der Haken bei gleichem Betrag bleibt);
+* **Skonto (2.9.0, ganz unten):** Die Abfrage der offenen Rechnungen liest die Angaben, die über ein Skonto entscheiden (``skonto_open_minor``, ``skonto_limit_minor``); der Betrag nach Abzug
+  des Skontos ist mit dem Kunden ein Vorschlag (``suggestion.skonto``); eine Rechnung ohne Skonto, mit mehreren Sätzen, mit Stammdaten oder einem Satz ohne Skonto-Konto hat keines; kaputte Werte
+  sind kein Fehler; ``skonto_offer`` und ``skonto_limits`` lesen nur; die Abfrage wächst nicht schneller als die Zahl der Rechnungen. Die Oberfläche steht in ``tests/test_skonto_pages.py``.
 
 Alle Namen, Nummern und Beträge sind erfundene Testwerte; Daten stehen fest im Test (kein „heute“).
 """
@@ -32,13 +35,15 @@ import sqlite3
 import subprocess
 import urllib.parse
 from contextlib import closing
+from decimal import Decimal
 from html import unescape
 
 import pytest
 
 from db import Database
+from db.invoice_payments import PAYABLE_STATUSES, SKONTO_MIXED, SKONTO_NO_TERMS, SKONTO_RATE, SKONTO_TAX_ENTRY, STORNO_KIND
 from db.payment_matching import AMBIGUOUS_TEXT, MAX_SUGGESTIONS, REASON_AMOUNT, REASON_CUSTOMER, REASON_NUMBER
-from db.payment_suggestions import _UNBOOKED_MOVEMENTS, MAX_INVOICES, MAX_MOVEMENTS, PaymentOverview
+from db.payment_suggestions import _OPEN_INVOICES, _UNBOOKED_MOVEMENTS, MAX_INVOICES, MAX_MOVEMENTS, PaymentOverview
 from money import fmt_eur
 from server import handlers
 from server.handlers import PAYMENT_NOT_ASSIGNED, handle_add_transaction
@@ -1119,3 +1124,234 @@ def test_every_value_on_the_invoice_list_is_masked(tmp_db):
     page = PageInvoice(tmp_db, {}, invoice_id)
     assert '<img src=x' not in page and [tag for tag in Dom(page).all('img') if tag.get('src') == 'x'] == []        # (das Firmenlogo der Seite ist ein img)
     assert 'Käufer &lt;/script&gt;&lt;img src=x onerror=alert(1)&gt;<div class="hint">' in page
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Skonto (2.9.0): der offene Betrag nach Abzug des Skontos
+# ═════════════════════════════════════════════════════════════════════════════
+
+TERMS = {'skonto_days': 14, 'skonto_percent': 2.0}                  # 2 % in 14 Tagen: auf 119,00 € sind das 2,38 €
+AFTER = 1166200                                                       # 116,62 € in Minor Units: was der Kunde nach Abzug des Skontos zahlt
+LIMIT = 23800                                                         # das Skonto: 2,38 €
+
+
+def open_rows(db):
+    """Die offenen Rechnungen als Wörterbücher der Abfrage – nach Rechnungsnummer."""
+    with closing(db._get_connection()) as conn:
+        return {row['number']: row for row in db._open_invoices(conn)}
+
+
+def discount_world(db, **extra):
+    """Eine Rechnung R26001 (119,00 €, 19 %, Skonto 2 % in 14 Tagen) und ihr Kunde; ``extra`` ändert die Rechnung (``skonto_days=None``, ``tax_rate=0.16`` …). ``mixed_tax_rates=1`` setzt das
+    Kennzeichen „Steuersatz je Position“ erst nach dem Anlegen (die Forderung eines solchen Belegs bucht je Satz und bräuchte Positionen – hier geht es nur um das Kennzeichen)."""
+    mixed = extra.pop('mixed_tax_rates', None)
+    account, buyer = bank_account(db), customer(db)
+    invoice_id = add_invoice(db, 'R26001', 119.00, customer_id=buyer, **{**TERMS, **extra})
+    if mixed is not None:
+        run_sql(db, 'UPDATE Invoices SET MixedTaxRates = ? WHERE ID = ?', mixed, invoice_id)
+    return account, buyer, invoice_id
+
+
+def test_an_open_invoice_with_discount_terms_has_the_open_amount_after_the_discount(tmp_db):
+    account, _buyer, _invoice = discount_world(tmp_db)
+    row = open_rows(tmp_db)['R26001']
+    assert (row['open_minor'], row['skonto_open_minor'], row['skonto_limit_minor']) == (1190000, AFTER, LIMIT)
+
+
+def test_the_amount_after_the_discount_and_the_customer_are_a_suggestion_with_the_skonto_flag(tmp_db):
+    account, _buyer, invoice_id = discount_world(tmp_db)
+    payment = add_payment(tmp_db, account, 116.62, '2026-03-10', 'Käufer AG', 'Danke')
+    ((pair, row),) = tmp_db.suggest_invoices_for_booking(payment)
+    assert (pair.invoice_id, pair.skonto, pair.reasons) == (invoice_id, True, ('Betrag nach Skonto stimmt', 'Kunde passt'))
+    assert (row['open_minor'], row['skonto_open_minor'], row['skonto_limit_minor']) == (1190000, AFTER, LIMIT)
+    ((pair, _movement, _invoice),) = tmp_db.suggest_invoice_payments().items                          # die Übersicht der Seite Buchungen ebenso
+    assert (pair.movement_id, pair.invoice_id, pair.skonto) == (payment, invoice_id, True)
+    ((pair, _movement),) = tmp_db.suggest_bookings_for_invoice(invoice_id)                           # und die Rechnungsseite
+    assert (pair.movement_id, pair.skonto, pair.reasons) == (payment, True, ('Betrag nach Skonto stimmt', 'Kunde passt'))
+
+
+def test_the_amount_after_the_discount_alone_is_no_suggestion_and_the_full_amount_stays_the_full_amount(tmp_db):
+    account, _buyer, _invoice = discount_world(tmp_db)
+    alone = add_payment(tmp_db, account, 116.62, '2026-03-10', 'Fremde GmbH', 'Danke')               # der Betrag, aber ein anderer Kunde
+    assert tmp_db.suggest_invoices_for_booking(alone) == [] and tmp_db.suggest_invoice_payments().items == []
+    full = add_payment(tmp_db, account, 119.00, '2026-03-11', 'Käufer AG', 'Danke')
+    ((pair, _row),) = tmp_db.suggest_invoices_for_booking(full)
+    assert (pair.skonto, pair.reasons) == (False, ('Betrag stimmt', 'Kunde passt'))
+
+
+@pytest.mark.parametrize('extra', [
+    {'skonto_days': None, 'skonto_percent': None}, {'skonto_days': 14, 'skonto_percent': None}, {'skonto_days': 400},
+    {'mixed_tax_rates': 1}, {'tax_rate': 0.16}, {'tax_rate': 0.055},
+], ids=['ohne-Bedingungen', 'nur-Tage', 'Frist-zu-lang', 'Satz-je-Position', '16-Prozent', '5,5-Prozent'])
+def test_an_invoice_that_allows_no_discount_has_no_skonto_value_and_no_skonto_suggestion(tmp_db, extra):
+    account, _buyer, _invoice = discount_world(tmp_db, **extra)
+    row = open_rows(tmp_db)['R26001']
+    assert (row['skonto_open_minor'], row['skonto_limit_minor']) == (None, None)
+    payment = add_payment(tmp_db, account, 116.62, '2026-03-10', 'Käufer AG', 'Danke')
+    assert tmp_db.suggest_invoices_for_booking(payment) == []
+
+
+@pytest.mark.parametrize('column, value', [('TaxRateBp', 1900), ('RevenueCoaId', 404400)], ids=['Satz-aus-den-Stammdaten', 'Erlöskonto-aus-den-Stammdaten'])
+def test_an_invoice_with_a_position_from_the_master_data_has_no_skonto_value(tmp_db, column, value):
+    """Eine Position mit der Momentaufnahme eines Steuersatzes (``TaxRateBp``) oder einem Erlöskonto (``RevenueCoaId``) aus den Stammdaten: Das Zuordnen mit Skonto lehnt ab (``SKONTO_TAX_ENTRY``),
+    also schlägt die Seite es nicht vor."""
+    account, _buyer, invoice_id = discount_world(tmp_db)
+    tmp_db.insert_invoice_item({'invoice_id': invoice_id, 'position': 1, 'description': 'Anstrich', 'quantity': 1, 'unit': 'Stk.', 'price_per_unit': 100.0,
+                                'total_net': 100.0, 'tax_category': 'S', 'tax_rate': 0.19, 'tax_rate_bp': 1900 if column == 'TaxRateBp' else None,
+                                'revenue_coa_id': value if column == 'RevenueCoaId' else None})
+    row = open_rows(tmp_db)['R26001']
+    assert (row['skonto_open_minor'], row['skonto_limit_minor']) == (None, None)
+    assert tmp_db.suggest_invoices_for_booking(add_payment(tmp_db, account, 116.62, '2026-03-10', 'Käufer AG', 'Danke')) == []
+
+
+def test_a_plain_position_without_a_snapshot_does_not_stop_the_discount(tmp_db):
+    _account, _buyer, invoice_id = discount_world(tmp_db)
+    tmp_db.insert_invoice_item({'invoice_id': invoice_id, 'position': 1, 'description': 'Anstrich', 'quantity': 1, 'unit': 'Stk.', 'price_per_unit': 100.0,
+                                'total_net': 100.0, 'tax_category': 'S', 'tax_rate': 0.19})
+    assert open_rows(tmp_db)['R26001']['skonto_open_minor'] == AFTER
+
+
+def test_the_open_amount_after_a_part_payment_is_the_rest_less_the_discount(tmp_db):
+    """119,00 €, davon 50,00 € bezahlt: offen 69,00 €, das Skonto der Rechnung bleibt 2,38 € (es hängt am Brutto) – der Betrag nach Skonto ist 66,62 €."""
+    account, _buyer, invoice_id = discount_world(tmp_db)
+    assert tmp_db.assign_invoice_payment(invoice_id, add_payment(tmp_db, account, 50.00, '2026-03-06', 'Käufer AG', 'Anzahlung')).ok
+    row = open_rows(tmp_db)['R26001']
+    assert (row['open_minor'], row['skonto_open_minor'], row['skonto_limit_minor']) == (690000, 690000 - LIMIT, LIMIT)
+    payment = add_payment(tmp_db, account, 66.62, '2026-03-10', 'Käufer AG', 'Rest')
+    ((pair, _row),) = tmp_db.suggest_invoices_for_booking(payment)
+    assert pair.skonto is True
+
+
+def test_a_rest_that_is_not_above_the_discount_has_the_limit_but_no_discounted_amount(tmp_db):
+    """117,00 € bezahlt, offen 2,00 €: Das Skonto (2,38 €) ist nicht kleiner als der offene Betrag – kein Betrag nach Skonto (er wäre 0 oder negativ), aber ein Rest unter dem Skonto lässt sich ausbuchen."""
+    account, _buyer, invoice_id = discount_world(tmp_db)
+    assert tmp_db.assign_invoice_payment(invoice_id, add_payment(tmp_db, account, 117.00, '2026-03-06', 'Käufer AG', 'fast alles')).ok
+    row = open_rows(tmp_db)['R26001']
+    assert (row['open_minor'], row['skonto_open_minor'], row['skonto_limit_minor']) == (20000, None, LIMIT)
+
+
+@pytest.mark.parametrize('column, value', [
+    ('SkontoPercent', 'zwei'), ('SkontoDays', 'vierzehn'), ('SkontoPercent', 2.005), ('TaxRate', 'neunzehn'), ('SumGross', 'viel'),
+], ids=['Prozent-Text', 'Tage-Text', 'drei-Stellen', 'Satz-Text', 'Brutto-Text'])
+def test_a_value_that_cannot_be_read_gives_no_skonto_and_no_error(tmp_db, column, value):
+    """Die Spalten lassen sich per SQL-Konsole mit allem beschreiben: Die Seiten hängen nie an einer solchen Rechnung."""
+    account, _buyer, invoice_id = discount_world(tmp_db)
+    run_sql(tmp_db, f'UPDATE Invoices SET {column} = ? WHERE ID = ?', value, invoice_id)
+    row = open_rows(tmp_db)['R26001']
+    assert row['skonto_open_minor'] is None and row['skonto_limit_minor'] is None
+    assert tmp_db.suggest_invoices_for_booking(add_payment(tmp_db, account, 116.62, '2026-03-10', 'Käufer AG', 'Danke')) == []
+    assert tmp_db.skonto_limits() == {} and not tmp_db.skonto_offer(invoice_id).limit          # ein Skonto von 0 (Brutto unlesbar) ist keines: ``limit`` 0 oder fehlend
+    assert tmp_db.suggest_invoice_payments().items == []
+
+
+def test_the_flag_for_a_rate_per_position_is_read_strictly_only_the_whole_number_one_counts(tmp_db):
+    """Wie überall (``has_mixed_rates``): Text und 0 heißen „ein Satz für den ganzen Beleg“ – das Skonto bleibt möglich; die ganze Zahl 1 sperrt es."""
+    _account, _buyer, invoice_id = discount_world(tmp_db)
+    for value, allowed in (('ja', True), (0, True), (1, False)):
+        run_sql(tmp_db, 'UPDATE Invoices SET MixedTaxRates = ? WHERE ID = ?', value, invoice_id)
+        assert (open_rows(tmp_db)['R26001']['skonto_open_minor'] is not None) is allowed, value
+
+
+def test_a_gross_that_is_not_a_whole_number_never_gives_a_limit_of_zero_a_value(tmp_db):
+    """Ein Brutto von 0 (oder keines) ergäbe ein Skonto von 0: Es gibt dann keine Grenze und keinen Betrag nach Skonto."""
+    _account, _buyer, invoice_id = discount_world(tmp_db)
+    run_sql(tmp_db, 'UPDATE Invoices SET SumGross = 0 WHERE ID = ?', invoice_id)
+    row = open_rows(tmp_db)['R26001']
+    assert (row['skonto_open_minor'], row['skonto_limit_minor']) == (None, None)
+
+
+# ── skonto_offer und skonto_limits ───────────────────────────────────────────
+
+def test_the_offer_of_an_invoice_names_the_limit_the_days_and_the_percent(tmp_db):
+    _account, _buyer, invoice_id = discount_world(tmp_db)
+    offer = tmp_db.skonto_offer(invoice_id)
+    assert (offer.error, offer.limit, offer.days, offer.percent) == (None, LIMIT, 14, Decimal('2.00'))
+
+
+@pytest.mark.parametrize('extra, sentence', [
+    ({'skonto_days': None, 'skonto_percent': None}, SKONTO_NO_TERMS), ({'mixed_tax_rates': 1}, SKONTO_MIXED), ({'tax_rate': 0.16}, SKONTO_RATE),
+], ids=['ohne-Bedingungen', 'Satz-je-Position', '16-Prozent'])
+def test_the_offer_of_an_invoice_that_allows_no_discount_names_the_fixed_sentence(tmp_db, extra, sentence):
+    _account, _buyer, invoice_id = discount_world(tmp_db, **extra)
+    offer = tmp_db.skonto_offer(invoice_id)
+    assert (offer.error, offer.limit, offer.days, offer.percent) == (sentence, None, None, None)
+
+
+def test_the_offer_of_an_invoice_with_a_position_from_the_master_data_is_the_master_data_sentence(tmp_db):
+    _account, _buyer, invoice_id = discount_world(tmp_db)
+    tmp_db.insert_invoice_item({'invoice_id': invoice_id, 'position': 1, 'description': 'Anstrich', 'quantity': 1, 'unit': 'Stk.', 'price_per_unit': 100.0,
+                                'total_net': 100.0, 'tax_category': 'S', 'tax_rate': 0.19, 'tax_rate_bp': 1900})
+    assert tmp_db.skonto_offer(invoice_id).error == SKONTO_TAX_ENTRY
+
+
+def test_the_offer_knows_no_deadline_and_no_status(tmp_db):
+    """Die Frist wird nie geprüft; und auch ein Entwurf (nicht zahlbar) bekommt sein Angebot – die Seite zeigt es nur, wo sich zahlen lässt."""
+    _account, _buyer, invoice_id = discount_world(tmp_db)
+    run_sql(tmp_db, "UPDATE Invoices SET InvoiceDate = '2000-01-01', Status = 'draft' WHERE ID = ?", invoice_id)
+    assert tmp_db.skonto_offer(invoice_id).limit == LIMIT
+
+
+def test_the_offer_of_an_unknown_invoice_is_no_terms(tmp_db):
+    assert tmp_db.skonto_offer(99999) == (SKONTO_NO_TERMS, None, None, None)
+
+
+def test_the_limits_are_the_discounts_of_the_open_invoices_that_allow_one(tmp_db):
+    account, buyer, with_discount = discount_world(tmp_db)
+    add_invoice(tmp_db, 'R26002', 238.00, customer_id=buyer)                                           # ohne Skonto-Bedingungen
+    add_invoice(tmp_db, 'R26003', 119.00, customer_id=buyer, status='draft', **TERMS)                  # kein zahlbarer Status
+    add_invoice(tmp_db, 'R26004', 107.00, customer_id=buyer, tax_rate=0.07, **TERMS)                   # 7 %: 2 % von 107,00 € sind 2,14 €
+    ids = {row['number']: row['id'] for row in open_rows(tmp_db).values()}
+    assert tmp_db.skonto_limits() == {with_discount: LIMIT, ids['R26004']: 21400} and 'R26003' not in ids
+
+
+def test_the_reads_for_the_discount_change_nothing(tmp_db):
+    account, _buyer, invoice_id = discount_world(tmp_db)
+    payment = add_payment(tmp_db, account, 116.62, '2026-03-10', 'Käufer AG', 'Danke')
+    before = state(tmp_db, 'Bookings', 'Invoices', 'InvoicePayments', 'ChartOfAccounts')
+    tmp_db.skonto_offer(invoice_id), tmp_db.skonto_limits(), tmp_db.suggest_invoices_for_booking(payment), tmp_db.suggest_invoice_payments()
+    assert state(tmp_db, 'Bookings', 'Invoices', 'InvoicePayments', 'ChartOfAccounts') == before
+
+
+# ── Laufzeit der Abfrage ─────────────────────────────────────────────────────
+
+# Die Abfrage der offenen Rechnungen, wie sie vor 2.9.0 war (nur die sieben Spalten der Vorschläge, ohne die Angaben zum Skonto) – der Maßstab für „nicht teurer als“
+_OPEN_INVOICES_BEFORE = _OPEN_INVOICES.replace(
+    _OPEN_INVOICES[_OPEN_INVOICES.index('SELECT i.ID'):_OPEN_INVOICES.index('FROM Invoices i')],
+    "SELECT i.ID, i.InvoiceNumber, i.InvoiceDate, COALESCE(i.AmountDue, i.SumGross, 0), i.CustomerId, i.BuyerCompany, i.BuyerName\n    ")
+
+
+def _steps_of_the_open_invoices(db, count):
+    """So viele Schritte brauchen die Abfrage der offenen Rechnungen von heute und die von vor 2.9.0 (``_OPEN_INVOICES_BEFORE``) bei ``count`` Rechnungen mit je drei Positionen (eine mit der
+    Momentaufnahme eines Stammdaten-Satzes): ``(heute, vorher)``. Gezählt werden die Schritte der Datenbank (``set_progress_handler``), nicht die Zeit."""
+    with closing(sqlite3.connect(db.db_name)) as conn:
+        conn.executemany(
+            'INSERT INTO Invoices (InvoiceNumber, InvoiceDate, SellerName, SellerCompany, BuyerName, BuyerCompany, TaxRate, SumNet, TaxAmount, SumGross, AmountDue, Status, '
+            "DocumentType, SkontoDays, SkontoPercent) VALUES (?, '2026-03-04', 'a', 'b', 'c', 'd', 0.19, 1000000, 190000, 1190000, 1190000, 'sent', 'invoice', 14, 2.0)",
+            [(f'S{n:05d}',) for n in range(count)])
+        ids = [row[0] for row in conn.execute('SELECT ID FROM Invoices')]
+        conn.executemany(
+            'INSERT INTO InvoiceItems (InvoiceId, Position, Description, Quantity, PricePerUnit, TotalNet, TaxRate, TaxRateBp) VALUES (?, ?, ?, 1, 1, 1, 0.19, ?)',
+            [(invoice_id, position, 'x', 1900 if position == 3 else None) for invoice_id in ids for position in (1, 2, 3)])
+        conn.commit()
+        params = [STORNO_KIND, *PAYABLE_STATUSES, count + 10]
+        steps = []
+        for sql in (_OPEN_INVOICES, _OPEN_INVOICES_BEFORE):
+            ticks = []
+
+            def tick():
+                ticks.append(1)
+                return 0                                                   # 0 = weiterrechnen
+            conn.set_progress_handler(tick, 100)                           # alle 100 Schritte einmal
+            rows = conn.execute(sql + ' ORDER BY i.InvoiceDate DESC, i.ID DESC LIMIT ?', params).fetchall()
+            conn.set_progress_handler(None, 0)
+            assert len(rows) == count
+            steps.append(len(ticks) * 100)
+    return tuple(steps)
+
+
+def test_the_query_of_the_open_invoices_costs_a_small_multiple_of_the_one_before_and_grows_with_their_number(tmp_db):
+    """Das ``EXISTS`` je Rechnung (Satz oder Erlöskonto aus den Stammdaten an einer Position) läuft über den Index auf ``InvoiceItems.InvoiceId`` – ohne ihn las es je Rechnung alle Positionen (hier 400 × 1 200
+    Zeilen). Gemessen an 400 Rechnungen mit je drei Positionen: knapp das Doppelte der Abfrage von vor 2.9.0, die Grenze liegt bei dem Dreifachen und bei 200 Schritten je Rechnung."""
+    now, before = _steps_of_the_open_invoices(tmp_db, 400)
+    assert now < before * 3, (now, before)
+    assert now < 400 * 200, now

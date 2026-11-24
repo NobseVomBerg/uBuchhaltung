@@ -9,7 +9,9 @@ für mehrere Stichtage. Der zweite Teil lädt den Bestand EINMAL (Profil ``test`
 stimmt: lückenlose Nummern in Datumsfolge, leere Prüfliste, ein DATEV-Export ohne Hinweis für jedes abgeschlossene Jahr, ausgeglichene
 Splits, Anlagen mit AfA, ein Fahrtenbuch ohne Lücken. Ein dritter Teil am Ende gilt der einen Rechnung mit Steuersatz je Position, die nur das
 Profil ``full`` hat (``profiles.full.mixed_example``): ihre Regeln für mehrere Stichtage und, an einem eigenen Bestand dieses Profils, ihre Buchung je Satz
-und die Proben (Summen- und Saldenliste, Liquidität, Prüfliste). Alle Namen, Orte und Beträge sind erfundene Testwerte.
+und die Proben (Summen- und Saldenliste, Liquidität, Prüfliste). Dasselbe gilt für die zweite Beispielrechnung mit steuerfreier Position und – seit 2.9.0 – für die dritte,
+die der Kunde mit Skonto bezahlt (``profiles.full.skonto_example``: ihre Regeln, ihre Sätze unter der Bankbewegung, die Proben in den Monaten der Rechnung, das geschlossene
+Jahr samt DATEV-Stapel); das Profil ``test`` und das Szenario bleiben ohne sie. Alle Namen, Orte und Beträge sind erfundene Testwerte.
 """
 import contextlib
 import datetime
@@ -616,6 +618,88 @@ def test_the_example_with_the_free_position_is_booked_per_rate_and_both_entries_
             for waiting in (4405, 4340)] == [(4405, 1190000, 190000), (4340, 800000, 0)]
 
 
+# ── die dritte Rechnung: vom Kunden mit Skonto bezahlt (nur das Profil full, seit 2.9.0) ─────────────────────
+def _skonto_specs(history):
+    """Die Rechnungen der Vorgaben, deren Zahlung ein Skonto ausbucht (der Schlüssel ``skonto`` an der Zahlung)."""
+    return [spec for spec in history["invoices"] if any(payment.get("skonto") for payment in spec["payments"])]
+
+
+def _discount_invoice(stock):
+    """``(ID, Nummer)`` der Rechnung im Bestand, deren Zuordnung ein Skonto trägt – es ist die einzige."""
+    (found,) = _rows(stock, "SELECT ID, InvoiceNumber FROM Invoices WHERE ID IN (SELECT InvoiceID FROM InvoicePayments WHERE SkontoAmount IS NOT NULL)")
+    return found
+
+
+def test_only_the_full_profile_has_the_one_invoice_paid_with_a_discount():
+    """Das Profil ``test`` und das handgepflegte Szenario bleiben ohne sie: Auf diesem Bestand stehen fest gepinnte Werte (EÜR-Kasten, Summen- und Saldenliste, Liquidität, DATEV)."""
+    assert len(_skonto_specs(demo_history.build_history(TODAY, FULL))) == 1
+    assert _skonto_specs(demo_history.build_history(TODAY, PROFILE)) == []
+    assert "skonto_example" not in _seed_json("demo_history.json")["profiles"][PROFILE]
+    assert not any(payment.get("skonto") for spec in _seed_json("demo_scenario.json")["invoices"] for payment in spec.get("payments", []))
+
+
+@pytest.mark.parametrize("today", CUT_OFFS)
+def test_the_example_paid_with_a_discount_follows_the_rules_of_the_generator(today):
+    """Ein Werktag, nie in den letzten 14 Tagen, nie im Kleinunternehmerjahr, mit Steuerausweis (19 %), Skonto-Bedingungen wie bei den Pauschalrechnungen (2 % in 7 Tagen); die eine Zahlung
+    schließt die Rechnung, kommt an einem Werktag innerhalb der Skontofrist und nie nach dem Stichtag."""
+    (spec,) = _skonto_specs(demo_history.build_history(today, FULL))
+
+    day = _iso(spec["date"])
+    assert day.weekday() < 5 and day <= today - datetime.timedelta(days=14) and day.year > today.year - 3
+    assert spec["show_tax"] is True and spec["customer_number"] == "K008" and spec["key"] == f"{day.year}-skonto" and "tax_mode" not in spec
+    assert [item["tax_rate"] for item in spec["items"]] == [19, 19]
+    assert spec["skonto"] == {"days": 7, "percent": 2.0}
+    (payment,) = spec["payments"]
+    paid = day + datetime.timedelta(days=payment["after_days"])
+    assert payment == {"after_days": payment["after_days"], "percent": 100, "closing": True, "skonto": True}
+    assert day < paid <= day + datetime.timedelta(days=spec["skonto"]["days"]) and paid <= today and paid.weekday() < 5
+
+
+def test_the_example_is_paid_with_the_discount_and_its_rows_are_the_planned_ones(loaded_full):
+    """2 × 95,00 + 120,00 = 310,00 netto, 19 % = 58,90, brutto 368,90. Skonto 2 % = 7,38 (darin 1,18 Steuer): Der Kunde zahlt 361,52. Unter der Bankbewegung stehen „Bank an Debitoren“ und
+    „Wartekonto an Erlöskonto“ über 368,90 (die zweite mit der ganzen Rechnungssteuer, 58,90) und „4736 an Bank“ mit −7,38 und −1,18; in der EÜR steht das Skonto als Erlösschmälerung (−6,20)."""
+    (spec,) = _skonto_specs(loaded_full.history)
+    invoice_id, number = _discount_invoice(loaded_full)
+    (invoice,) = _rows(loaded_full, "SELECT InvoiceDate, Status, SumNet, TaxAmount, SumGross, AmountDue, TaxRate, SkontoDays, SkontoPercent, MixedTaxRates, PDFPath "
+                                    "FROM Invoices WHERE ID = ?", invoice_id)
+    assert invoice == (spec["date"], "paid", 3100000, 589000, 3689000, 0, 0.19, 7, 2.0, None, None)
+    paid_on = (_iso(spec["date"]) + datetime.timedelta(days=spec["payments"][0]["after_days"])).isoformat()
+    assert _rows(loaded_full, "SELECT Amount, SkontoAmount, PaymentDate FROM InvoicePayments WHERE InvoiceID = ?", invoice_id) == [(3615200, 73800, paid_on)]
+    (bank,) = _rows(loaded_full, "SELECT ParentBooking_ID FROM Bookings WHERE DocumentNumber = ? AND Status = 'invoice_payment' LIMIT 1", number)
+    rows = _rows(loaded_full, "SELECT b.EntryForm, c.AccountNumber, g.AccountNumber, b.Amount, b.TaxAmount, b.Text FROM Bookings b JOIN ChartOfAccounts c ON c.ID = b.COA_ID "
+                              "JOIN ChartOfAccounts g ON g.ID = b.CounterCOA_ID WHERE b.ParentBooking_ID = ? ORDER BY b.ID", bank[0])
+    assert rows == [("liquid_first", 1800, 10000, 3689000, None, f"Zahlung zu Re. {number}"), ("transfer", 4405, 4400, 3689000, 589000, f"Umb. zu Re. {number}"),
+                    ("purpose_first", 4736, 1800, -73800, -11800, f"Skonto zu Re. {number}")]
+    assert _rows(loaded_full, "SELECT Amount FROM Bookings WHERE ID = ?", bank[0]) == [(3615200,)]                       # die Bankbewegung trägt das Geld
+    from tests import susa_helpers
+    assert susa_helpers.euer_values(loaded_full.db, (paid_on[:8] + "01", paid_on[:8] + "30"))[4736] == -62000
+
+
+def test_the_books_with_the_discount_pass_every_probe(loaded_full):
+    """Prüfliste leer, Splits ausgeglichen; in den Monaten der Rechnung und der Zahlung und danach: die Summen- und Saldenliste im Gleichgewicht (Proben a bis c: Bankkonten, Erfolgskonten gegen die
+    EÜR), die BWA gleich der EÜR, die Liquidität ohne „Nicht zugeordnet“."""
+    from tests import liquidity_helpers as liq
+    from tests import susa_helpers
+    from tests.test_bwa import check_invariants
+    db = loaded_full.db
+    assert db.find_payment_inconsistencies() == []
+    assert db.find_unbalanced_splits("2023-01-01", f"{CURRENT_YEAR}-12-31") == []
+    for month in (8, 9, 10, 11):
+        report = db.get_susa(CURRENT_YEAR, month)
+        susa_helpers.assert_balanced(report, month)
+        assert susa_helpers.check_bank_accounts(db, report, month) == []
+        assert susa_helpers.check_erfolgskonten_against_euer(db, report, month) == []
+        for variant in ("vorjahr", "jahr"):
+            check_invariants(db, db.get_bwa(CURRENT_YEAR, month, variant))
+            assert set(liq.unassigned_of(db.get_liquidity(CURRENT_YEAR, month, variant)).values()) == {0}, (month, variant)
+
+
+def test_the_profile_test_has_no_payment_with_a_discount_and_books_nothing_on_the_discount_accounts(loaded):
+    """Der gepinnte Bestand: keine Zuordnung mit Skonto und kein Satz auf 4730, 4731 oder 4736 – seine Werte (EÜR-Kasten, Summen- und Saldenliste, Liquidität, DATEV) bleiben, wie sie waren."""
+    assert _rows(loaded, "SELECT COUNT(*) FROM InvoicePayments WHERE SkontoAmount IS NOT NULL") == [(0,)]
+    assert _rows(loaded, "SELECT COUNT(*) FROM Bookings b JOIN ChartOfAccounts c ON c.ID IN (b.COA_ID, b.CounterCOA_ID) WHERE c.AccountNumber IN (4730, 4731, 4736)") == [(0,)]
+
+
 # ── abgeschlossene Jahre des Profils full: auch mit den Beispielen ohne Befund ──────────────────────────────
 NEXT_TODAY = datetime.date(2027, 2, 12)               # die Rechnung mit steuerfreier Position liegt dann im Dezember 2026, ihre zweite Rate im Januar 2027
 CLOSED_YEARS = [2024, 2025, 2026]                     # die Historie des Profils beginnt drei Jahre vor dem Stichtag (``years_back``)
@@ -682,3 +766,22 @@ def test_the_stack_of_the_closed_year_carries_the_free_group_without_a_key_and_w
     assert stack_rows(2026) == [("10000", "4405", "0", "19,00"), ("10000", "4340", "0", ""),
                                 ("1800", "10000", "0", ""), ("4405", "4400", "0", "19,00"), ("4340", "4100", "0", "")]
     assert stack_rows(2027) == [("1800", "10000", "0", ""), ("4405", "4400", "0", "19,00"), ("4340", "4100", "0", "")]
+
+
+def test_the_example_paid_with_a_discount_lies_in_the_closed_year_and_the_stack_carries_its_two_bank_lines(loaded_next_year, tmp_path):
+    """Im Stapel von 2026: die Forderung, „1800 an 10000“ über die ganze Rechnung (368,90 – das Geld und das Skonto) und „4736 an 1800“ über das Skonto (7,38, Schlüssel 101, Spalte 40
+    mit 19,00): zusammen mit der Bankbewegung (361,52) das, was der Kontoauszug zeigt. Kein Hinweis beim Export (die Tests der geschlossenen Jahre oben)."""
+    import csv
+    import io
+    (spec,) = _skonto_specs(loaded_next_year.history)
+    invoice_id, number = _discount_invoice(loaded_next_year)
+    assert spec["date"] == "2026-12-22" == _rows(loaded_next_year, "SELECT InvoiceDate FROM Invoices WHERE ID = ?", invoice_id)[0][0]
+    assert _rows(loaded_next_year, "SELECT PaymentDate FROM InvoicePayments WHERE InvoiceID = ?", invoice_id) == [("2026-12-28",)]
+    assert loaded_next_year.db.find_payment_inconsistencies() == []
+    copy = _copy_of(loaded_next_year, tmp_path)
+
+    result, _name = confirmed_export(copy, "2026-01-01", "2026-12-31")
+    rows = csv.reader(io.StringIO(result.decode("cp1252")), delimiter=";")
+    assert [(row[0], row[1], row[6], row[7], row[8], row[40]) for row in rows if len(row) > 40 and row[10] == number] == [
+        ("368,90", "S", "10000", "4405", "0", "19,00"), ("368,90", "S", "1800", "10000", "0", ""), ("368,90", "S", "4405", "4400", "0", "19,00"),
+        ("7,38", "S", "4736", "1800", "101", "19,00")]
