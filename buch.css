@@ -37,6 +37,7 @@ button.active			{ background-color: #4facfe; color: #FFF; }	/* aktiver Jahres-/M
 .textareaSql			{ font-family: monospace; width: 100%; max-width: 1000px; margin-top: 10px; }
 .muted					{ color: #666; }
 .splitHint				{ color: #666; font-size: 0.78em; margin-top: 2px; } /* Umbuchung im Buchungssatz-Editor */
+.splitLocked input, .splitLocked select { opacity: .65; }	/* Zahlungssatz im Buchungssatz-Editor: nur zur Ansicht */
 /* Form tables (prefered for gridRightCol) */
 .form-table				{ width: 100%; max-width: 700px; border-collapse: collapse; border: none; }
 .form-table td			{ padding: 6px 12px; vertical-align: top; }

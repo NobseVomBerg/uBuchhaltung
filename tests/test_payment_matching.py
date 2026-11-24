@@ -19,6 +19,8 @@ Rein: kein Datenbankzugriff, keine Uhr. Geprüft wird
   Datum, ``ambiguous`` bei gleicher Punktzahl, unabhängig von der Reihenfolge der Eingabe, ``linked`` schließt Paare aus);
 * **das Signal SKONTO (2.9.0):** Der freie Rest der Bewegung ist der offene Betrag nach Abzug des Skontos (``skonto_open_minor`` der Rechnung) – wie BETRAG nie allein ein Vorschlag, mit KUNDE einer,
   Punkte wie BETRAG, die Begründung „Betrag nach Skonto stimmt“, das Merkmal ``skonto`` am Vorschlag, kein ``REASON_PARTIAL`` mit Nummer; ein Wert, der kein Skonto sein kann, gibt kein Signal;
+* **eindeutig (2.9.2, ``is_certain``):** Die Rechnungsnummer steht im Text UND der Betrag stimmt, das Paar ist nicht mehrdeutig und kein Skonto-Vorschlag – nichts anderes; Grundlage von „Alle
+  eindeutigen zuordnen“ (die Oberfläche steht in ``tests/test_payment_suggestions.py``);
 * kaputte Werte (kein Fehler, die Zeile ist kein Kandidat) und die Laufzeit bei langem Text.
 
 Alle Namen, Nummern und Beträge sind erfundene Testwerte; Daten stehen fest im Test (kein „heute“).
@@ -33,7 +35,7 @@ import pytest
 from db import payment_matching
 from db.payment_matching import (
     AMBIGUOUS_TEXT, DAYS_BEFORE_INVOICE, MAX_NUMBER_LENGTH, MAX_SUGGESTIONS, POINTS_AMOUNT, POINTS_CUSTOMER, POINTS_NUMBER, POINTS_SKONTO, REASON_AMOUNT,
-    REASON_CUSTOMER, REASON_NUMBER, REASON_PARTIAL, REASON_SEPARATOR, REASON_SKONTO, PaymentSuggestion, pair_up, rank_invoices, rank_movements, reason_text)
+    REASON_CUSTOMER, REASON_NUMBER, REASON_PARTIAL, REASON_SEPARATOR, REASON_SKONTO, PaymentSuggestion, is_certain, pair_up, rank_invoices, rank_movements, reason_text)
 from db.receipt_matching import MAX_FIELD_LENGTH
 
 DAY = '2026-03-04'                          # das Rechnungsdatum der Tests
@@ -760,3 +762,55 @@ def test_a_dot_between_two_digits_counts_only_where_the_number_itself_has_one(ra
     from db.payment_matching import _number_parts, _number_pattern
     number, joints = _number_parts(raw)
     assert (_number_pattern(number, joints).search(text) is not None) is found
+
+
+# ── EINDEUTIG: was „Alle eindeutigen zuordnen“ zuordnen darf ─────────────────
+
+def a_suggestion(reasons, **kwargs):
+    return PaymentSuggestion(1, 2, 180, tuple(reasons), 0, **kwargs)
+
+
+@pytest.mark.parametrize('reasons, kwargs, expected', [
+    ((REASON_NUMBER, REASON_AMOUNT, REASON_CUSTOMER), {}, True),
+    ((REASON_NUMBER, REASON_AMOUNT), {}, True),                                              # der Kunde ist nicht verlangt
+    ((REASON_AMOUNT, REASON_CUSTOMER), {}, False),                                           # Betrag und Kunde ohne Nummer
+    ((REASON_NUMBER, REASON_CUSTOMER, REASON_PARTIAL), {}, False),                           # die Nummer mit abweichendem Betrag (Teil- oder Überzahlung)
+    ((REASON_NUMBER, REASON_SKONTO, REASON_CUSTOMER), {'skonto': True}, False),              # der Betrag nach Skonto
+    ((REASON_NUMBER, REASON_AMOUNT, REASON_CUSTOMER), {'skonto': True}, False),              # das Merkmal allein schließt aus
+    ((REASON_NUMBER, REASON_AMOUNT, REASON_CUSTOMER), {'ambiguous': True}, False),           # mehrdeutig
+    ((REASON_NUMBER,), {}, False),
+    ((REASON_AMOUNT,), {}, False),
+    ((), {}, False),
+], ids=['Nummer-Betrag-Kunde', 'Nummer-Betrag', 'ohne-Nummer', 'Teilzahlung', 'Skonto-Begruendung', 'Skonto-Merkmal', 'mehrdeutig', 'nur-Nummer', 'nur-Betrag', 'leer'])
+def test_only_the_number_and_the_amount_make_a_suggestion_certain(reasons, kwargs, expected):
+    assert is_certain(a_suggestion(reasons, **kwargs)) is expected
+
+
+def test_the_suggestions_of_the_ranking_are_certain_only_with_the_number_and_the_amount():
+    number_and_amount = rank_invoices(movement(text='Rechnung R26001'), [invoice()])[0]
+    assert number_and_amount.reasons == (REASON_NUMBER, REASON_AMOUNT) and is_certain(number_and_amount) is True
+    with_customer = rank_invoices(movement(text='Rechnung R26001', recipient=BUYER), [invoice(name=BUYER)])[0]
+    assert with_customer.reasons == (REASON_NUMBER, REASON_AMOUNT, REASON_CUSTOMER) and is_certain(with_customer) is True
+    amount_and_customer = rank_invoices(movement(recipient=BUYER), [invoice(name=BUYER)])[0]
+    assert amount_and_customer.reasons == (REASON_AMOUNT, REASON_CUSTOMER) and is_certain(amount_and_customer) is False
+    partial = rank_invoices(movement(amount=500, text='Rechnung R26001'), [invoice()])[0]
+    assert REASON_PARTIAL in partial.reasons and is_certain(partial) is False
+    after_discount = rank_invoices(movement(amount=AFTER_DISCOUNT, text='Rechnung R26001'), [invoice(skonto_open=AFTER_DISCOUNT)])[0]
+    assert after_discount.skonto and is_certain(after_discount) is False
+
+
+def test_a_pair_of_the_overview_is_certain_unless_it_is_ambiguous():
+    movements = [movement(ident=1, text='Rechnung R26001'), movement(ident=2, text='Rechnung R26002', recipient=BUYER)]
+    invoices = [invoice(ident=1, number='R26001'), invoice(ident=2, number='R26002', name=BUYER)]
+    assert [is_certain(s) for s in pair_up(movements, invoices)] == [True, True]
+    # zwei gleich hohe Zahlungen nennen dieselbe Rechnung: Sie bekommt eine, und das Paar ist mehrdeutig – dann ist es nie eindeutig
+    twins = pair_up([movement(ident=1, text='R26001'), movement(ident=2, text='R26001')], [invoice()])
+    assert [(s.movement_id, s.ambiguous, is_certain(s)) for s in twins] == [(1, True, False)]
+    # Betrag und Kunde ohne die Nummer im Text: ein Vorschlag, aber nicht eindeutig
+    assert [is_certain(s) for s in pair_up([movement(recipient=BUYER)], [invoice(name=BUYER)])] == [False]
+
+
+def test_a_certain_suggestion_needs_the_text_of_the_bank_not_the_document_number_of_the_bank_row():
+    """Die Beleg-Nr. der Bankzeile zählt nie (``test_the_number_in_the_document_number_of_the_bank_row_is_no_evidence``) – also macht sie auch nichts eindeutig."""
+    found = rank_invoices(movement(recipient=BUYER, number='R26001'), [invoice(name=BUYER)])
+    assert [(s.reasons, is_certain(s)) for s in found] == [((REASON_AMOUNT, REASON_CUSTOMER), False)]

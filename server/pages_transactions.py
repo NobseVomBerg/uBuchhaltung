@@ -13,7 +13,7 @@ from money import fmt_eur, format_plain, from_minor, round_minor, to_minor
 from db.matching import bank_effect, is_bank_effective, is_mirror_row, purpose_in_counter
 from db.invoices import InvoiceCol
 from db.invoice_payments import PAYABLE_STATUSES, has_mixed_rates
-from db.payment_matching import reason_text
+from db.payment_matching import is_certain, reason_text
 from .pages import Header1, Header2, Header3, Footer, script_json
 from .pages_invoice import SKONTO_JS, revenue_coa_choice, skonto_check_html
 from .period import period_filter_widget
@@ -40,6 +40,12 @@ def _tax_text(tax):
 # „Buchung vollständig gebucht“ und ein grün gefärbter Betrag läsen sich wie ein Geldeingang. Fester Text, wird beim Ausgeben maskiert.
 RECEIVABLE_HINT = ('Forderung an einen Kunden: kein Geldeingang und noch keine Einnahme. Bei einer Rechnung entsteht sie mit dem Versenden; '
                    'der Zahlungseingang wird später an der Rechnung zugeordnet.')
+
+
+# Die Zeile eines Zahlungssatzes (Marke ``invoice_payment``) im Buchungssatz-Editor: Der Hinweis unter dem Text und der Titel des ✕ (feste Sätze, werden beim Ausgeben maskiert).
+# Der Editor schreibt so einen Satz nie (``handlers._plan_split_rows``); das ✕ entfernt die ganze Zuordnung.
+SPLIT_LOCKED_HINT = 'Rechnungszahlung – hier nicht änderbar'
+SPLIT_LOCKED_REMOVE_TITLE = 'Zuordnung der Zahlung entfernen – alle Sätze dieser Zahlung gehen mit'
 
 
 # Hinweistext am Abzeichen einer Bankbewegung über 0,00 € ohne Buchungssatz (seit 2.8.4): Es gibt nichts zu verbuchen, sie gilt nicht als offen.
@@ -174,35 +180,73 @@ function skoMaskInit() {
 
 # ── Zahlungseingänge zu offenen Rechnungen (der Kasten über der Buchungsliste, seit 2.8.1) ───────────────────────────────────────────
 PAY_SUGGEST_LIMIT = 20          # so viele Zeilen zeigt der Kasten höchstens; darunter „… und n weitere“
+PAY_BADGE_LIMIT = 500           # so viele Paare liest die Übersicht je Seite höchstens – EINMAL, für den Kasten (davon die ersten ``PAY_SUGGEST_LIMIT``) und für die Abzeichen der Liste
 PAY_FAILED = 'Die Zahlung konnte nicht zugeordnet werden.'
+PAY_CERTAIN_MIN = 2             # ab so vielen eindeutigen Zeilen im Kasten steht der Knopf „Alle eindeutigen zuordnen“
 
 # „Zuordnen“ ruft den bestehenden Weg (POST /invoice/link-payment, ohne Betrag: so viel wie möglich); das Skript der Fußzeile hängt das CSRF-Token
 # an. Erfolg: die Seite unter derselben Adresse neu laden – der Vorschlag ist dann weg. Fehler: der Klartext der Antwort über appMsg (textContent),
 # die Zeile bleibt. Nur var und function; die IDs stehen als Zahl im Aufruf. **Mit Skonto (seit 2.9.0):** Bei einem Vorschlag mit dem Betrag nach Abzug des Skontos steht neben
 # „Zuordnen“ der Knopf „Mit Skonto zuordnen“ – er ruft ``payAssign(…, true)`` und schickt ``skonto: true``, sonst nie; der Klick ist die Entscheidung. Beide Knöpfe der Zeile sind
 # gesperrt, solange die Anfrage läuft (ein Doppelklick ordnet nicht doppelt zu, auch nicht über den anderen Knopf).
-PAY_SUGGEST_JS = '''function payAssign(invoiceId, bookingId, button, skonto) {
-    var cell = button.parentNode, buttons = cell && cell.querySelectorAll ? cell.querySelectorAll('button') : [button], request = {invoice_id: invoiceId, transaction_id: bookingId}, i;
-    for (i = 0; i < buttons.length; i++) { buttons[i].disabled = true; }      // ein Doppelklick ordnet nicht doppelt zu
+# **„Alle eindeutigen zuordnen“ (seit 2.9.2):** ``payAssignAll`` fragt über ``appConfirm`` nach und ordnet dann die Zeilen mit ``data-certain="1"`` NACHEINANDER über denselben Weg zu
+# (``payLink``, nie mit Skonto); solange es läuft, sind alle Knöpfe des Kastens gesperrt. Gelingt alles, lädt die Seite neu wie bei ``payAssign``; sonst verschwinden die gelungenen Zeilen,
+# die Knöpfe sind wieder frei (der Sammelknopf zählt die übrigen Zeilen neu und entfällt unter zwei), und ``appMsg`` nennt, wie viele zugeordnet wurden, wie viele nicht und den ersten Grund (nur als Text).
+PAY_SUGGEST_JS = r'''function payReload() {
+    // ohne eine alte Meldung in der Adresse neu laden (``err`` eines früheren, gescheiterten Speicherns)
+    var query = new URLSearchParams(window.location.search);
+    query.delete('err');
+    var rest = query.toString();
+    window.location.href = window.location.pathname + (rest ? '?' + rest : '');
+}
+function payLock(buttons, locked) {
+    var i;
+    for (i = 0; i < buttons.length; i++) { buttons[i].disabled = locked; }
+}
+function payLink(invoiceId, bookingId, skonto) {
+    // ordnet zu und liefert den Grund einer Ablehnung als Text, bei Erfolg ''; scheitert nie
+    var request = {invoice_id: invoiceId, transaction_id: bookingId};
     if (skonto === true) { request.skonto = true; }
-    fetch('/invoice/link-payment', {
+    return fetch('/invoice/link-payment', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify(request)
     }).then(function (r) { return r.json(); }).then(function (data) {
-        if (data.success) {
-            // ohne eine alte Meldung in der Adresse neu laden (``err`` eines früheren, gescheiterten Speicherns)
-            var query = new URLSearchParams(window.location.search);
-            query.delete('err');
-            var rest = query.toString();
-            window.location.href = window.location.pathname + (rest ? '?' + rest : '');
-            return;
-        }
-        for (i = 0; i < buttons.length; i++) { buttons[i].disabled = false; }
-        appMsg(data.error || PAY_FAILED, 'error');
-    }).catch(function () {
-        for (i = 0; i < buttons.length; i++) { buttons[i].disabled = false; }
-        appMsg(PAY_FAILED, 'error');
+        return data.success ? '' : (data.error || PAY_FAILED);
+    }).catch(function () { return PAY_FAILED; });
+}
+function payAssign(invoiceId, bookingId, button, skonto) {
+    var cell = button.parentNode, buttons = cell && cell.querySelectorAll ? cell.querySelectorAll('button') : [button];
+    payLock(buttons, true);      // ein Doppelklick ordnet nicht doppelt zu
+    payLink(invoiceId, bookingId, skonto).then(function (problem) {
+        if (!problem) { payReload(); return; }
+        payLock(buttons, false);
+        appMsg(problem, 'error');
+    });
+}
+function payAssignRows(rows, index, outcome) {
+    if (index >= rows.length) { return Promise.resolve(outcome); }
+    var row = rows[index];
+    return payLink(parseInt(row.getAttribute('data-invoice'), 10), parseInt(row.getAttribute('data-booking'), 10), false).then(function (problem) {
+        if (problem) { outcome.failed += 1; outcome.first = outcome.first || problem; } else { outcome.done.push(row); }
+        return payAssignRows(rows, index + 1, outcome);
+    });
+}
+function payAssignAll(button) {
+    var box = document.getElementById('paySuggest'), rows = box ? box.querySelectorAll('tr[data-certain="1"]') : [];
+    if (!rows.length) { return; }
+    appConfirm(rows.length + ' Zahlungseingänge den genannten Rechnungen zuordnen?', function () {
+        var buttons = box.querySelectorAll('button');
+        payLock(buttons, true);
+        payAssignRows(rows, 0, {done: [], failed: 0, first: ''}).then(function (outcome) {
+            var i;
+            if (!outcome.failed) { payReload(); return; }
+            for (i = 0; i < outcome.done.length; i++) { outcome.done[i].parentNode.removeChild(outcome.done[i]); }
+            // übrig sind die Zeilen, die nicht gingen: Der Sammelknopf zählt sie neu und entfällt unter zwei (ein einzelner Rest hat seinen eigenen Knopf)
+            if (outcome.failed < 2) { button.parentNode.removeChild(button); } else { button.textContent = button.textContent.replace(/\d+/, String(outcome.failed)); }
+            payLock(buttons, false);
+            appMsg(outcome.done.length + ' zugeordnet, ' + outcome.failed + ' nicht: ' + outcome.first, 'error');
+        });
     });
 }
 '''
@@ -211,44 +255,76 @@ PAY_SUGGEST_JS = '''function payAssign(invoiceId, bookingId, button, skonto) {
 PAY_SKONTO_BUTTON = 'Mit Skonto zuordnen'
 PAY_SKONTO_TITLE = 'Ordnet den Zahlungseingang zu und bucht den Rest der Rechnung als Skonto aus'
 PAY_SKONTO_HINT = ' „Mit Skonto zuordnen“ bucht den Rest der Rechnung als Skonto aus.'
+# Der Sammelknopf (ab ``PAY_CERTAIN_MIN`` eindeutigen Zeilen im Kasten, ``db.payment_matching.is_certain``) und sein Satz im Hinweis – feste Sätze
+PAY_CERTAIN_BUTTON = 'Alle eindeutigen zuordnen'
+PAY_CERTAIN_HINT = ' Eindeutig: Rechnungsnummer im Verwendungszweck und Betrag stimmt.'
+# Das Abzeichen „Rechnung?“ an einer offenen Bankbewegung der Liste, zu der die Übersicht eine Rechnung vorschlägt: der Titel nennt ihre Nummer (maskiert)
+PAY_BADGE_TEXT = 'Rechnung?'
+PAY_BADGE_TITLE = 'Passt zur offenen Rechnung '
 
 
-def _payment_suggestions_html(db):
-    """Der Inhalt des Kastens „Zahlungseingänge zu offenen Rechnungen“ (``Database.suggest_invoice_payments``): je Vorschlag eine Zeile – Datum und Auftraggeber
-    der Bewegung, ihr freier Betrag, die Rechnung (die Nummer als Link), ihr Kunde und offener Betrag, die Begründung, „Zuordnen“ –, höchstens
-    ``PAY_SUGGEST_LIMIT`` Zeilen, darunter „… und n weitere“. Leer, wenn es keine Vorschläge gibt (dann gibt es auch keinen Kasten). Jeder Wert aus der
-    Datenbank ist maskiert, die IDs stehen nur als Zahl. Es wird nur vorgeschlagen; zugeordnet wird erst mit dem Klick."""
+def _payment_overview(db):
+    """Die Übersicht der Zahlungsvorschläge für die Seite *Buchungen* (``Database.suggest_invoice_payments``): EINMAL je Seite gelesen und von zwei Stellen gebraucht – dem Kasten
+    (``_payment_suggestions_html``) und den Abzeichen der Liste –, höchstens ``PAY_BADGE_LIMIT`` Paare. ``None``, wenn die Abfrage scheitert: Dann gibt es weder Kasten noch Abzeichen, und die
+    Seite steht (der volle Fehler nur im Server-Log)."""
     try:
-        overview = db.suggest_invoice_payments(PAY_SUGGEST_LIMIT)
+        return db.suggest_invoice_payments(PAY_BADGE_LIMIT)
     except Exception:                               # die Seite hängt nicht an den Vorschlägen
         traceback.print_exc()                       # der volle Fehler nur ins Server-Log
-        return ''
-    if not overview.items:
+        return None
+
+
+def _invoice_hint_badge(invoice):
+    """Das blaue Abzeichen „Rechnung?“ an einer offenen Bankbewegung, zu der die Übersicht die offene Rechnung ``invoice`` (``dict`` der Übersicht) vorschlägt – nur ein Hinweis; zugeordnet wird allein
+    auf Klick (im Kasten oder in der Maske). Die Nummer im Titel ist maskiert."""
+    return f"<span class='badge bg-blue' title='{_attr(PAY_BADGE_TITLE + str(invoice['number'] or invoice['id']))}'>{_html.escape(PAY_BADGE_TEXT)}</span>"
+
+
+def _payment_suggestions_html(overview):
+    """Der Inhalt des Kastens „Zahlungseingänge zu offenen Rechnungen“ aus der Übersicht (``_payment_overview``): je Vorschlag eine Zeile – Datum und Auftraggeber
+    der Bewegung, ihr freier Betrag, die Rechnung (die Nummer als Link), ihr Kunde und offener Betrag, die Begründung, „Zuordnen“ –, höchstens
+    ``PAY_SUGGEST_LIMIT`` Zeilen, darunter „… und n weitere“. Leer, wenn es keine Vorschläge gibt oder die Abfrage scheiterte (``None``; dann gibt es auch keinen Kasten). Jeder Wert aus der
+    Datenbank ist maskiert, die IDs stehen nur als Zahl. Es wird nur vorgeschlagen; zugeordnet wird erst mit dem Klick.
+
+    Jede Zeile trägt ``data-invoice`` und ``data-booking`` (die IDs als Zahl), eine eindeutige (``db.payment_matching.is_certain``) zusätzlich ``data-certain="1"``. Stehen mindestens
+    ``PAY_CERTAIN_MIN`` eindeutige Zeilen im Kasten, steht über der Tabelle der Knopf „Alle eindeutigen zuordnen (n)“ (``payAssignAll``) und im Hinweis ein Satz dazu."""
+    if overview is None or not overview.items:
         return ''
 
     def esc(value):
         return _html.escape(str(value), quote=True)
 
-    rows, with_skonto = '', False
-    for suggestion, movement, invoice in overview.items:
+    shown = overview.items[:PAY_SUGGEST_LIMIT]
+    rows, with_skonto, certain_rows = '', False, 0
+    for suggestion, movement, invoice in shown:
         # Bei einem Betrag nach Abzug des Skontos daneben der Knopf, der das Skonto ausbucht – der Klick darauf ist die Entscheidung, „Zuordnen“ bleibt die Teilzahlung wie bisher
         skonto_button = ''
         if suggestion.skonto:
             with_skonto = True
             skonto_button = (f' <button type="button" class="coloredButton btn-sm bg-blue" title="{esc(PAY_SKONTO_TITLE)}" '
                              f'onclick="payAssign({int(invoice["id"])}, {int(movement["id"])}, this, true)">{esc(PAY_SKONTO_BUTTON)}</button>')
+        certain = is_certain(suggestion)
+        certain_rows += certain
+        certain_attribute = ' data-certain="1"' if certain else ''
         rows += (
-            f'<tr><td>{esc(movement["date"] or "–")}</td><td>{esc(movement["recipient"] or "")}</td>'
+            f'<tr data-invoice="{int(invoice["id"])}" data-booking="{int(movement["id"])}"{certain_attribute}>'
+            f'<td>{esc(movement["date"] or "–")}</td><td>{esc(movement["recipient"] or "")}</td>'
             f'<td class="num">{esc(fmt_eur(from_minor(movement["amount_minor"])))}</td>'
             f'<td><a href="/invoice/edit?id={int(invoice["id"])}">{esc(invoice["number"] or invoice["id"])}</a></td>'
             f'<td>{esc(invoice["label"])}</td><td class="num">{esc(fmt_eur(from_minor(invoice["open_minor"])))}</td>'
             f'<td>{esc(reason_text(suggestion))}</td>'
             f'<td><button type="button" class="coloredButton btn-sm bg-green" title="Ordnet den Zahlungseingang dieser Rechnung zu" '
             f'onclick="payAssign({int(invoice["id"])}, {int(movement["id"])}, this)">Zuordnen</button>{skonto_button}</td></tr>\n')
-    more = f'<p class="hint">… und {int(overview.more)} weitere</p>\n' if overview.more else ''
+    more = len(overview.items) - len(shown) + overview.more
+    more = f'<p class="hint">… und {int(more)} weitere</p>\n' if more else ''
+    with_all = certain_rows >= PAY_CERTAIN_MIN
+    all_button = (f'<p><button type="button" class="coloredButton btn-sm bg-green" onclick="payAssignAll(this)">{esc(PAY_CERTAIN_BUTTON)} ({certain_rows})</button></p>\n'
+                  if with_all else '')
     return ('<div class="rectRounded">\n'
             '<h3>Zahlungseingänge zu offenen Rechnungen</h3>\n'
-            f'<p class="hint">Vorschläge aus allen Zeiträumen, nicht nur aus dem gewählten. Zugeordnet wird erst mit „Zuordnen“.{esc(PAY_SKONTO_HINT) if with_skonto else ""}</p>\n'
+            '<p class="hint">Vorschläge aus allen Zeiträumen, nicht nur aus dem gewählten. Zugeordnet wird erst mit „Zuordnen“.'
+            f'{esc(PAY_SKONTO_HINT) if with_skonto else ""}{esc(PAY_CERTAIN_HINT) if with_all else ""}</p>\n'
+            f'{all_button}'
             '<table class="refundTable">\n'
             '<tr><th>Datum</th><th>Auftraggeber</th><th class="num">Betrag (frei)</th><th>Rechnung</th><th>Kunde</th>'
             '<th class="num">offen</th><th>Begründung</th><th></th></tr>\n'
@@ -390,6 +466,8 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
         children = db.get_child_bookings_for_bank(edit_trans[0])
         # Importierte Sätze und AfA-Buchungen löst das Entfernen nur von der Bankbewegung
         detachable = db.detachable_split_rows([c[0] for c in children])
+        # Die Sätze einer Rechnungszahlung (Marke) zeigt der Editor schreibgeschützt
+        payment_rows = db.payment_row_ids([c[0] for c in children])
         for c in children:
             # Reine Doppik-Spiegel (beide Seiten eigene Bank-/Kassenkonten) gehören nicht in den
             # Editor – ein Spiegel mit 1460 schon
@@ -405,7 +483,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                 'id': c[0], 'coa_id': purpose_coa, 'amount': c[4],
                 'tax_rate': c[5], 'tax_amount': c[6],
                 'docnr': c[7] or '', 'text': c[8] or '',
-                'detach': c[0] in detachable,
+                'detach': c[0] in detachable, 'locked': c[0] in payment_rows,
                 'nobank': nobank, 'counter_coa_id': c[2] if nobank else None,
                 # Was der Satz auf dem Konto der Bankbewegung bewegt, im Vergleich zum Betrag
                 # (1, -1 oder 0): so rechnet der Editor wie die Prüfung auf dem Server
@@ -663,11 +741,15 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             docnr = '' if template or not row else _attr(row['docnr'])
             text = '' if template or not row else _attr(row['text'])
             sel_coa = row['coa_id'] if row and not template else None
+            # Der Satz einer Rechnungszahlung (Marke): Die Zeile ist schreibgeschützt, siehe handlers._plan_split_rows
+            locked = bool(row and not template and row.get('locked'))
             opts = '<option value="">-- Kein Konto --</option>'
             sel_label = ''
             for coa in coa_accounts:
                 is_sel = bool(sel_coa and coa[0] == sel_coa)
                 if not (coa[7] if len(coa) > 7 else 1) and not is_sel:
+                    continue
+                if locked and not is_sel:                    # die gesperrte Auswahl zeigt nur das Konto des Satzes
                     continue
                 lbl = f"{coa[2]} - {coa[3]}" if coa[3] else f"{coa[2]}"
                 if is_sel:
@@ -675,7 +757,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                 opts += (f'<option value="{coa[0]}"{" selected" if is_sel else ""}>'
                          f'{_html.escape(str(lbl))}</option>')
             style = ' style="display:none"' if template else ''
-            cls = 'splitTemplate' if template else 'splitRow'
+            cls = 'splitTemplate' if template else ('splitRow splitLocked' if locked else 'splitRow')
             # Umbuchungen zählen nicht in die Summe; der Hinweis nennt das
             # Gegenkonto, das sonst nirgends im Editor sichtbar wäre.
             nobank = bool(row and not template and row.get('nobank'))
@@ -691,6 +773,8 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                         ' – zählt nicht in die Summe der Bankbewegung">'
                         'Umbuchung' + (f' &rarr; {target}' if target else '')
                         + '</div>')
+            if locked:
+                hint += f'<div class="splitHint">{_html.escape(SPLIT_LOCKED_HINT)}</div>'
             # Gegenkonto als Feld: nur Umbuchungen haben eines, das nicht das
             # Bankkonto ist. Ohne dieses Feld könnte eine per Vorschlag
             # kopierte Umbuchung ihr Ziel nicht mitbringen.
@@ -700,6 +784,8 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             # eine AfA-Buchung bleiben bestehen und werden nur gelöst, jede andere wird gelöscht.
             if template:
                 remove_title = 'Teilbuchung entfernen'
+            elif locked:
+                remove_title = _attr(SPLIT_LOCKED_REMOVE_TITLE)
             elif row and row.get('detach'):
                 remove_title = 'Von der Bankbewegung lösen – die Buchung bleibt bestehen'
             else:
@@ -707,23 +793,33 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             # Spaltenfolge: Verwendungszweck zuerst – er benennt die Zeile.
             # Die Feldnamen bleiben; gelesen wird zeilenweise über den Index,
             # die Reihenfolge INNERHALB einer Zeile spielt dafür keine Rolle.
+            # Eine gesperrte Zeile führt alle Felder wie jede andere (gelesen wird über den Index): die Eingaben ``readonly`` (gesendet, ohne Skript), das Konto als
+            # ``disabled``-Auswahl (nur zur Anzeige, nie gesendet) plus verstecktes Feld ``split_coa`` mit dem Wert
+            readonly = ' readonly' if locked else ''
+            on_amount = '' if locked else ' oninput="splitRecalc()"'
+            on_rate = '' if locked else ' oninput="splitTax(this)"'
+            if locked:
+                coa_cell = (f'<select title="{_attr(sel_label)}" disabled>{opts}</select>'
+                            f'<input type="hidden" name="split_coa" value="{sel_coa or ""}">')
+            else:
+                # title zeigt den vollen Kontonamen – in der schmalen Spalte
+                # schneidet das Auswahlfeld lange SKR-Bezeichnungen ab.
+                coa_cell = (f'<select name="split_coa" title="{_attr(sel_label)}"'
+                            f' onchange="this.title = this.selectedOptions[0].text">'
+                            f'{opts}</select>')
             return (
                 f'<tr class="{cls}"{style}{nobank_attr}>'
                 f'<td><input type="hidden" name="split_id" value="{rid}">'
                 f'<input type="text" name="split_text" value="{text}"'
-                f' title="{text}">{hint}</td>'
+                f' title="{text}"{readonly}>{hint}</td>'
                 f'<td><input type="number" step="0.01" class="noButtons splitAmount"'
-                f' name="split_amount" value="{amount}" oninput="splitRecalc()"></td>'
-                # title zeigt den vollen Kontonamen – in der schmalen Spalte
-                # schneidet das Auswahlfeld lange SKR-Bezeichnungen ab.
-                f'<td><select name="split_coa" title="{_attr(sel_label)}"'
-                f' onchange="this.title = this.selectedOptions[0].text">'
-                f'{opts}</select></td>'
+                f' name="split_amount" value="{amount}"{readonly}{on_amount}></td>'
+                f'<td>{coa_cell}</td>'
                 f'<td><input type="number" step="0.01" class="noButtons splitRate"'
-                f' name="split_tax_rate" value="{rate}" oninput="splitTax(this)"></td>'
+                f' name="split_tax_rate" value="{rate}"{readonly}{on_rate}></td>'
                 f'<td><input type="number" step="0.01" class="noButtons splitTax"'
-                f' name="split_tax_amount" value="{tax}"></td>'
-                f'<td><input type="text" name="split_docnr" value="{docnr}"></td>'
+                f' name="split_tax_amount" value="{tax}"{readonly}></td>'
+                f'<td><input type="text" name="split_docnr" value="{docnr}"{readonly}></td>'
                 f'<td><a href="javascript:void(0)" class="action-icon delete-icon"'
                 f' title="{remove_title}" onclick="splitRemove(this)">&#10005;</a></td>'
                 f'</tr>')
@@ -956,7 +1052,8 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                 function suggestFillSplit(rows) {{
                     // Bestehende Zeilen weichen der Vorlage – ein Vorschlag
                     // ersetzt die Kontierung, er ergänzt sie nicht.
-                    document.querySelectorAll('#splitTable tr.splitRow').forEach(r => r.remove());
+                    // Eine gesperrte Zeile (Zahlungssatz) bleibt: Fiele sie aus dem Formular, entfernte das Speichern die ganze Zuordnung.
+                    document.querySelectorAll('#splitTable tr.splitRow:not(.splitLocked)').forEach(r => r.remove());
                     const tpl = document.querySelector('#splitTable tr.splitTemplate');
                     rows.forEach((row, i) => {{
                         const tr = tpl.cloneNode(true);
@@ -1434,7 +1531,10 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
     s+= '<div id="importPreview"></div>'              # Inline-Import-Vorschau (per Beleg)
     # Der Kasten „Zahlungseingänge zu offenen Rechnungen“ steht links über der Liste – nicht im rechten Bereich, den openEditForm austauscht, und
     # nicht in der Menüzeile. Der Container ist immer da (leer, wenn es keine Vorschläge gibt): refreshTable füllt ihn nach einem Import neu.
-    s+= '<div id="paySuggest">' + _payment_suggestions_html(db) + '</div>'
+    # Die Übersicht der Vorschläge wird EINMAL je Seite gelesen: für den Kasten und für die Abzeichen „Rechnung?“ in der Liste darunter (``pay_hints``).
+    pay_overview = _payment_overview(db)
+    pay_hints = {movement['id']: invoice for _suggestion, movement, invoice in pay_overview.items} if pay_overview is not None else {}
+    s+= '<div id="paySuggest">' + _payment_suggestions_html(pay_overview) + '</div>'
     s+= '<script>var PAY_FAILED = ' + script_json(PAY_FAILED) + ';\n' + PAY_SUGGEST_JS + '</script>'
     # Feste Spaltenbreiten via colgroup (table-layout: fixed in buch.css):
     # Empfänger bekommt ~26%, Text den gesamten Rest – auf großen Bildschirmen
@@ -1707,6 +1807,8 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                     status_badge, row_class, amount_color = _zero_movement_badge(), 'transaction-row', 'inherit'
                 else:
                     status_badge, row_class = "<span class='badge bg-orange' title='Noch nicht verbucht'>offen</span>", 'transaction-row row-open'
+                    if bank_id in pay_hints:
+                        status_badge += _invoice_hint_badge(pay_hints[bank_id])
                 s+= (f"<tr class='{row_class}' "
                      f"data-account-id='{account_id or ''}' "
                      f"data-date='{date_booking}' "

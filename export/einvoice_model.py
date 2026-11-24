@@ -73,7 +73,7 @@ _UNIT_CODES = {
     'qm': 'MTK', 'm2': 'MTK', 'm³': 'MTQ', 'cbm': 'MTQ', 'm3': 'MTQ',
     'l': 'LTR', 'ltr': 'LTR', 'liter': 'LTR', 'kg': 'KGM', 'g': 'GRM',
     't': 'TNE', 'pkt': 'XPK', 'pkt.': 'XPK', 'packung': 'XPK', 'set': 'SET',
-    'paar': 'PR', 'satz': 'SET', 'karton': 'XCT', 'flasche': 'XBO',
+    'paar': 'PR', 'satz': 'SET', 'karton': 'XCT', 'flasche': 'XBO', 'fl': 'XBO', 'fl.': 'XBO',
     'kwh': 'KWH', 'seite': 'C62', 'lizenz': 'C62',
 }
 # Anzeige (deutsche Kurzform) je UN/ECE-Code – Rückrichtung für Menschen
@@ -82,7 +82,7 @@ _UNIT_LABELS = {
     'ANN': 'Jahr', 'MIN': 'Min.', 'KMT': 'km', 'MTR': 'm', 'CMT': 'cm',
     'MMT': 'mm', 'MTK': 'm²', 'MTQ': 'm³', 'LTR': 'l', 'KGM': 'kg', 'GRM': 'g',
     'TNE': 't', 'XPK': 'Pkt.', 'SET': 'Satz', 'PR': 'Paar', 'KWH': 'kWh',
-    'LS': 'pausch.',
+    'LS': 'pausch.', 'XBO': 'Fl.',
 }
 _UNECE_RE = re.compile(r'^[A-Z0-9]{2,3}$')
 

@@ -49,7 +49,7 @@ from server import handlers
 from server.handlers import PAYMENT_NOT_ASSIGNED, handle_add_transaction
 from server.pages import script_json
 from server.pages_invoice import PageInvoice
-from server.pages_transactions import PAY_FAILED, PAY_SUGGEST_JS, PAY_SUGGEST_LIMIT, PageTransactions
+from server.pages_transactions import PAY_BADGE_LIMIT, PAY_FAILED, PAY_SUGGEST_JS, PAY_SUGGEST_LIMIT, PageTransactions
 from tests.document_helpers import post_json, state, table_rows
 from tests.dom_helpers import Dom, app_msg_arguments, assert_same_structure
 from tests.entry_form_roundtrip import differences, open_form, snapshot
@@ -788,12 +788,16 @@ def test_the_box_refreshes_with_the_table_after_an_import(tmp_db):
     assert 'curSuggest.innerHTML = freshSuggest.innerHTML' in refresh and 'if (freshSuggest && curSuggest)' in refresh      # nur, wenn beide da sind
 
 
+FUNCTIONS = ['payReload', 'payLock', 'payLink', 'payAssign', 'payAssignRows', 'payAssignAll']       # was das Skript des Kastens an Funktionen führt (2.9.2: Sammelknopf mit Hilfsfunktionen)
+
+
 def test_the_script_of_the_box_has_only_var_and_function_and_nothing_that_sets_markup():
-    """Wie bei den übrigen Skripten der Seiten nur ``var`` und ``function`` (kein ``let``/``const``) und außerhalb der Funktion nichts Globales; in der Funktion gibt es
-    lokale ``var`` (die Adresse für das Neuladen ohne ``err``)."""
+    """Wie bei den übrigen Skripten der Seiten nur ``var`` und ``function`` (kein ``let``/``const``) und außerhalb der Funktionen nichts Globales; in den Funktionen gibt es
+    lokale ``var`` (die Adresse für das Neuladen ohne ``err``, die Knöpfe, die Zeilen) und keine verschachtelte benannte Funktion."""
     declarations = re.findall(r'^[ \t]*(var|let|const|function)\s+(\w+)', PAY_SUGGEST_JS, re.M)
-    assert re.findall(r'^(var|let|const|function)\s+(\w+)', PAY_SUGGEST_JS, re.M) == [('function', 'payAssign')]            # nichts steht außerhalb der Funktion
-    assert declarations[0] == ('function', 'payAssign') and {kind for kind, _name in declarations[1:]} <= {'var'}         # innen nur ``var`` (kein let, const)
+    assert re.findall(r'^(var|let|const|function)\s+(\w+)', PAY_SUGGEST_JS, re.M) == [('function', name) for name in FUNCTIONS]       # nichts steht außerhalb der Funktionen
+    assert [name for kind, name in declarations if kind == 'function'] == FUNCTIONS                  # innen nur ``var``: keine verschachtelte benannte Funktion …
+    assert {kind for kind, _name in declarations} <= {'var', 'function'}                            # … und nie ``let`` oder ``const``
     assert 'innerHTML' not in PAY_SUGGEST_JS and 'insertAdjacentHTML' not in PAY_SUGGEST_JS and 'document.write' not in PAY_SUGGEST_JS
     assert 'outerHTML' not in PAY_SUGGEST_JS and 'eval(' not in PAY_SUGGEST_JS
 
@@ -900,6 +904,331 @@ def test_the_script_of_the_box_parses_in_node(tmp_path):
     source.write_text(PAY_SUGGEST_JS, encoding='utf-8')
     done = subprocess.run([NODE, '--check', str(source)], capture_output=True, text=True, timeout=60)
     assert done.returncode == 0, done.stderr
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# „Alle eindeutigen zuordnen“ und das Abzeichen „Rechnung?“ (2.9.2)
+# ═════════════════════════════════════════════════════════════════════════════
+
+ALL_BUTTON = re.compile(r'<button type="button" class="coloredButton btn-sm bg-green" onclick="payAssignAll\(this\)">(.*?)</button>')
+CERTAIN_SENTENCE = 'Eindeutig: Rechnungsnummer im Verwendungszweck und Betrag stimmt.'
+BADGE = re.compile(r"<span class='badge bg-blue' title='([^']*)'>Rechnung\?</span>")
+OPEN_BADGE = "<span class='badge bg-orange' title='Noch nicht verbucht'>offen</span>"
+
+
+def box_row_tags(page):
+    """Die Attribute der ``<tr>`` der Zeilen des Kastens (ohne Kopfzeile), in der Reihenfolge der Zeilen."""
+    return [attrs for tag, attrs in Dom(box_of(page)).tags if tag == 'tr' and 'data-invoice' in attrs]
+
+
+def list_rows(page):
+    """Die Zeilen der Liste (``#transactionsTable``) als ``{ID der Bankbewegung: HTML der Zeile}`` – die ID steht im Aufruf ``openEditForm(<ID>)``."""
+    table = page.split("<table id='transactionsTable'>", 1)[1].split('</table>', 1)[0]
+    rows = {}
+    for chunk in re.findall(r"<tr class='transaction-row.*?</tr>", table, re.S):
+        found = re.search(r'openEditForm\((\d+)\)', chunk)
+        if found:
+            rows[int(found.group(1))] = chunk
+    return rows
+
+
+def badge_titles(row):
+    return [unescape(title) for title in BADGE.findall(row)]
+
+
+def mixed_world(db):
+    """Zwei eindeutige Zeilen (Nummer und Betrag) und vier, die es nicht sind: Betrag und Kunde ohne Nummer, die Nummer mit abweichendem Betrag, der Betrag nach Skonto mit der Nummer,
+    zwei gleich hohe Zahlungen mit derselben Nummer (mehrdeutig). Liefert die Rechnungen als Wörterbuch."""
+    account = bank_account(db)
+    ids = {}
+    for key, number, gross, name, extra in (('number', 'R26001', 119.00, 'Käufer AG', {}), ('second', 'R26002', 238.00, 'Müller GmbH', {}),
+                                            ('amount', 'R26003', 357.00, 'Schmidt GmbH', {}), ('partial', 'R26004', 476.00, 'Bauer KG', {}),
+                                            ('skonto', 'R26005', 595.00, 'Weber AG', TERMS), ('twin', 'R26006', 714.00, 'Fischer OHG', {})):
+        ids[key] = add_invoice(db, number, gross, name=name, person='Pat Person', customer_id=customer(db, name), **extra)
+    add_payment(db, account, 119.00, '2026-03-10', 'Käufer AG', 'Rechnung R26001')
+    add_payment(db, account, 238.00, '2026-03-10', 'Müller GmbH', 'Rechnung R26002')
+    add_payment(db, account, 357.00, '2026-03-10', 'Schmidt GmbH', 'Danke')                         # nur Betrag und Kunde
+    add_payment(db, account, 100.00, '2026-03-10', 'Bauer KG', 'Rechnung R26004')                   # die Nummer, aber ein anderer Betrag
+    add_payment(db, account, 583.10, '2026-03-10', 'Weber AG', 'Rechnung R26005')                   # die Nummer und der Betrag nach Abzug des Skontos
+    add_payment(db, account, 714.00, '2026-03-10', 'Fischer OHG', 'Rechnung R26006')               # zwei Zahlungen für dieselbe Rechnung
+    add_payment(db, account, 714.00, '2026-03-11', 'Fischer OHG', 'Rechnung R26006')
+    return ids
+
+
+def test_every_row_of_the_box_carries_the_ids_as_numbers_and_a_certain_one_the_mark(tmp_db):
+    w = a_world(tmp_db)
+    assert box_row_tags(period_page(tmp_db)) == [
+        {'data-invoice': str(w['one']), 'data-booking': str(w['first']), 'data-certain': '1'},
+        {'data-invoice': str(w['two']), 'data-booking': str(w['second']), 'data-certain': '1'}]
+
+
+def test_with_two_certain_rows_the_box_offers_the_button_for_all_of_them_and_the_sentence_in_the_hint(tmp_db):
+    a_world(tmp_db)
+    box = box_of(period_page(tmp_db))
+    assert [unescape(label) for label in ALL_BUTTON.findall(box)] == ['Alle eindeutigen zuordnen (2)']
+    assert box.index('payAssignAll(this)') < box.index('<table')                                   # über der Tabelle
+    hint = unescape(re.search(r'<p class="hint">(.*?)</p>', box, re.S).group(1))
+    assert hint == f'Vorschläge aus allen Zeiträumen, nicht nur aus dem gewählten. Zugeordnet wird erst mit „Zuordnen“. {CERTAIN_SENTENCE}'
+
+
+def test_with_one_certain_row_there_is_no_button_and_no_sentence_but_the_row_keeps_its_mark(tmp_db):
+    w = a_world(tmp_db)
+    run_sql(tmp_db, 'UPDATE Bookings SET Text = ? WHERE ID = ?', 'Danke', w['second'])             # ohne die Nummer: Betrag und Kunde, nicht eindeutig
+    page = period_page(tmp_db)
+    assert [tag.get('data-certain') for tag in box_row_tags(page)] == ['1', None]
+    box = box_of(page)
+    assert 'payAssignAll' not in box and 'Alle eindeutigen' not in box and CERTAIN_SENTENCE not in box
+
+
+def test_without_a_certain_row_there_is_no_button_and_no_mark(tmp_db):
+    w = a_world(tmp_db)
+    for payment in (w['first'], w['second']):
+        run_sql(tmp_db, 'UPDATE Bookings SET Text = ? WHERE ID = ?', 'Danke', payment)
+    page = period_page(tmp_db)
+    assert [tag.get('data-certain') for tag in box_row_tags(page)] == [None, None] and len(box_rows(page)) == 2
+    assert 'payAssignAll' not in box_of(page) and CERTAIN_SENTENCE not in box_of(page)
+
+
+def test_only_the_number_with_the_amount_is_certain_never_an_ambiguous_a_discount_or_an_amount_only_row(tmp_db):
+    ids = mixed_world(tmp_db)
+    page = period_page(tmp_db)
+    tags = {int(tag['data-invoice']): tag for tag in box_row_tags(page)}
+    assert set(tags) == set(ids.values())                                                           # alle sechs sind Vorschläge …
+    assert {key for key, invoice_id in ids.items() if tags[invoice_id].get('data-certain') == '1'} == {'number', 'second'}      # … eindeutig sind nur zwei
+    box = box_of(page)
+    assert [unescape(label) for label in ALL_BUTTON.findall(box)] == ['Alle eindeutigen zuordnen (2)']
+    assert 'mehrere möglich' in box and 'Mit Skonto zuordnen' in box and 'Betrag weicht ab' in box   # die Zeilen, die nicht eindeutig sind, bleiben einzeln zu entscheiden
+
+
+def test_the_button_counts_the_certain_rows_of_the_box_not_those_behind_the_limit(tmp_db):
+    account, buyer = bank_account(tmp_db), customer(tmp_db)
+    for n in range(1, 24):
+        add_invoice(tmp_db, f'R30{n:03d}', 100.00 + n, customer_id=buyer)
+        add_payment(tmp_db, account, 100.00 + n, f'2026-03-{n:02d}', 'Käufer AG', f'R30{n:03d}')
+    page = period_page(tmp_db)
+    assert len(box_row_tags(page)) == 20 and all(tag.get('data-certain') == '1' for tag in box_row_tags(page))
+    assert [unescape(label) for label in ALL_BUTTON.findall(box_of(page))] == ['Alle eindeutigen zuordnen (20)'] and '… und 3 weitere' in box_of(page)
+
+
+# ── Das Skript „Alle eindeutigen zuordnen“ (Node, ohne Browser) ──────────────
+
+ALL_HARNESS = r"""
+const vm = require('vm');
+const input = JSON.parse(require('fs').readFileSync(0, 'utf8'));
+const scenario = input.scenario;
+const calls = {fetch: [], msg: [], confirm: [], navigations: [], removed: [], inFlight: 0, maxInFlight: 0, buttonRemoved: false};
+const location = {pathname: scenario.pathname, search: scenario.search};
+Object.defineProperty(location, 'href', {set: value => { calls.navigations.push(value); }});
+const tbody = {removeChild: row => { calls.removed.push(row.index); }};
+const rows = scenario.rows.map(([invoice, booking], index) => ({index, parentNode: tbody, getAttribute(name) { return {'data-invoice': String(invoice), 'data-booking': String(booking)}[name]; }}));
+const allButton = {disabled: false, textContent: scenario.label, parentNode: {removeChild: node => { calls.buttonRemoved = node === allButton; }}};
+const buttons = [...rows.map(() => ({disabled: false})), allButton];
+const box = {querySelectorAll: selector => (selector === 'tr[data-certain="1"]' ? rows : selector === 'button' ? buttons : [])};
+const context = {
+  window: {location}, URLSearchParams, JSON, Promise, parseInt, String, setTimeout,
+  document: {getElementById: id => (id === 'paySuggest' ? box : null)},
+  appConfirm: (text, onOk) => { calls.confirm.push(text); if (scenario.confirm !== false) { onOk(); } },
+  appMsg: (text, type) => calls.msg.push([text, type]),
+  fetch: (url, init) => {
+    const answer = scenario.answers[calls.fetch.length];
+    calls.fetch.push({url, method: init.method, headers: init.headers, body: init.body, allDisabled: buttons.every(b => b.disabled)});
+    calls.maxInFlight = Math.max(calls.maxInFlight, ++calls.inFlight);
+    return new Promise((resolve, reject) => setTimeout(() => {
+      calls.inFlight -= 1;
+      if (answer === 'reject') { reject(new Error('Netz')); return; }
+      resolve({json: () => (answer === 'badJson' ? Promise.reject(new Error('kein JSON')) : Promise.resolve(answer))});
+    }, 2));
+  },
+};
+vm.createContext(context);
+vm.runInContext(input.source, context);
+context.payAssignAll(allButton);
+// fertig, wenn alle erwarteten Anfragen beantwortet sind und danach kurz nichts mehr geschieht (nicht nach einer festen Zeit: Ein belasteter Rechner bräuchte länger)
+const expected = scenario.confirm === false ? 0 : rows.length;
+let quiet = 0;
+const finish = () => { calls.disabledAtEnd = buttons.map(b => b.disabled); calls.label = allButton.textContent; console.log(JSON.stringify(calls)); process.exit(0); };
+setInterval(() => { quiet = calls.fetch.length === expected && calls.inFlight === 0 ? quiet + 1 : 0; if (quiet >= 4) { finish(); } }, 5);
+setTimeout(finish, 20000);
+"""
+
+OK_ANSWER = {'success': True}
+
+
+def run_all(rows, answers, **scenario):
+    source = f'var PAY_FAILED = {script_json(PAY_FAILED)};\n{PAY_SUGGEST_JS}'
+    scenario = {**PAGE, 'rows': rows, 'answers': answers, 'label': f'Alle eindeutigen zuordnen ({len(rows)})', **scenario}
+    result = subprocess.run([NODE, '-e', ALL_HARNESS], input=json.dumps({'source': source, 'scenario': scenario}), capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
+@NO_NODE
+def test_assign_all_asks_first_and_then_assigns_one_row_after_the_other_over_the_existing_route_and_loads_the_page_again():
+    calls = run_all([[11, 21], [12, 22], [13, 23]], [OK_ANSWER] * 3)
+    assert calls['confirm'] == ['3 Zahlungseingänge den genannten Rechnungen zuordnen?']
+    assert [(fetched['url'], fetched['method']) for fetched in calls['fetch']] == [('/invoice/link-payment', 'POST')] * 3
+    assert [json.loads(fetched['body']) for fetched in calls['fetch']] == [{'invoice_id': 11, 'transaction_id': 21}, {'invoice_id': 12, 'transaction_id': 22},
+                                                                          {'invoice_id': 13, 'transaction_id': 23}]       # nie ``skonto``, in der Reihenfolge der Zeilen
+    assert all(fetched['headers'] == {'Content-Type': 'application/json'} for fetched in calls['fetch'])
+    assert calls['maxInFlight'] == 1                                                                # nacheinander: Die nächste Anfrage beginnt erst nach der Antwort
+    assert all(fetched['allDisabled'] for fetched in calls['fetch'])                                # alle Knöpfe des Kastens sind gesperrt, solange es läuft
+    assert calls['navigations'] == ['/transactions?from=2026-01-01&to=2026-12-31'] and calls['msg'] == [] and calls['removed'] == []      # neu laden wie ``payAssign``
+
+
+@NO_NODE
+def test_assign_all_drops_an_old_message_from_the_address_when_it_loads_the_page_again():
+    calls = run_all([[11, 21], [12, 22]], [OK_ANSWER] * 2, search='?from=2026-01-01&err=Alte+Meldung')
+    assert calls['navigations'] == ['/transactions?from=2026-01-01']
+
+
+@NO_NODE
+def test_assign_all_does_nothing_when_the_question_is_not_confirmed():
+    calls = run_all([[11, 21], [12, 22]], [OK_ANSWER] * 2, confirm=False)
+    assert calls['confirm'] == ['2 Zahlungseingänge den genannten Rechnungen zuordnen?']
+    assert calls['fetch'] == [] and calls['msg'] == [] and calls['navigations'] == [] and calls['disabledAtEnd'] == [False] * 3
+
+
+@NO_NODE
+def test_assign_all_without_certain_rows_does_not_even_ask():
+    calls = run_all([], [])
+    assert calls['confirm'] == [] and calls['fetch'] == [] and calls['msg'] == [] and calls['navigations'] == []
+
+
+@NO_NODE
+def test_assign_all_tries_every_row_removes_the_assigned_ones_frees_the_buttons_and_names_the_first_reason():
+    calls = run_all([[11, 21], [12, 22], [13, 23], [14, 24]],
+                    [OK_ANSWER, {'success': False, 'error': 'Die Rechnung ist nicht (mehr) zahlbar.'}, OK_ANSWER, {'success': False, 'error': 'Das Bankkonto hat keine SKR-Nummer.'}])
+    assert len(calls['fetch']) == 4 and calls['maxInFlight'] == 1                                   # ein Fehler hält die übrigen nicht auf
+    assert calls['removed'] == [0, 2]                                                               # nur die gelungenen Zeilen verschwinden
+    assert calls['msg'] == [['2 zugeordnet, 2 nicht: Die Rechnung ist nicht (mehr) zahlbar.', 'error']]       # die erste Meldung, nur als Text
+    assert calls['navigations'] == [] and calls['disabledAtEnd'] == [False] * 5                      # die Knöpfe sind wieder frei
+    assert calls['label'] == 'Alle eindeutigen zuordnen (2)' and calls['buttonRemoved'] is False      # übrig sind die beiden Zeilen, die nicht gingen: der Knopf zählt sie neu
+
+
+@NO_NODE
+@pytest.mark.parametrize('answer', ['reject', 'badJson', {'success': False}, None], ids=['kein-Netz', 'kein-JSON', 'ohne-Grund', 'null'])
+def test_assign_all_names_a_failure_without_a_reason_with_the_fixed_sentence(answer):
+    calls = run_all([[11, 21], [12, 22]], [answer, OK_ANSWER])
+    assert calls['msg'] == [[f'1 zugeordnet, 1 nicht: {PAY_FAILED}', 'error']] and calls['removed'] == [1] and calls['navigations'] == []
+
+
+@NO_NODE
+def test_assign_all_takes_the_button_away_when_fewer_than_two_rows_are_left():
+    """Ein einzelner Rest hat seinen eigenen „Zuordnen“-Knopf – der Sammelknopf gälte nur bis zu zwei Zeilen, wie ihn die Seite zeigt."""
+    calls = run_all([[11, 21], [12, 22], [13, 23]], [OK_ANSWER, {'success': False, 'error': 'Die Rechnung ist nicht (mehr) zahlbar.'}, OK_ANSWER])
+    assert calls['removed'] == [0, 2] and calls['buttonRemoved'] is True and calls['label'] == 'Alle eindeutigen zuordnen (3)'
+    assert calls['msg'] == [['2 zugeordnet, 1 nicht: Die Rechnung ist nicht (mehr) zahlbar.', 'error']] and calls['disabledAtEnd'][:3] == [False] * 3
+
+
+@NO_NODE
+def test_assign_all_with_nothing_assigned_says_so_and_keeps_every_row():
+    calls = run_all([[11, 21], [12, 22]], [{'success': False, 'error': 'Erster Grund'}, {'success': False, 'error': 'Zweiter Grund'}])
+    assert calls['msg'] == [['0 zugeordnet, 2 nicht: Erster Grund', 'error']] and calls['removed'] == [] and calls['disabledAtEnd'] == [False] * 3
+
+
+@NO_NODE
+def test_the_script_of_the_box_still_parses_in_node_with_the_new_functions(tmp_path):
+    source = tmp_path / 'pay_all.js'
+    source.write_text(PAY_SUGGEST_JS, encoding='utf-8')
+    done = subprocess.run([NODE, '--check', str(source)], capture_output=True, text=True, timeout=60)
+    assert done.returncode == 0, done.stderr
+
+
+# ── Das Abzeichen „Rechnung?“ an einer offenen Bankbewegung der Liste ────────
+
+def test_an_open_movement_with_a_suggestion_carries_the_badge_beside_open(tmp_db):
+    w = a_world(tmp_db)
+    rows = list_rows(period_page(tmp_db))
+    assert badge_titles(rows[w['first']]) == ['Passt zur offenen Rechnung R26001'] and badge_titles(rows[w['second']]) == ['Passt zur offenen Rechnung R26002']
+    assert OPEN_BADGE + "<span class='badge bg-blue'" in rows[w['first']]                          # zusätzlich zu „offen“, nicht an seiner Stelle
+
+
+def test_a_movement_without_a_suggestion_has_no_badge(tmp_db):
+    w = a_world(tmp_db)
+    alone = add_payment(tmp_db, w['account'], 77.00, '2026-03-12', 'Fremde GmbH', 'Danke')
+    rows = list_rows(period_page(tmp_db))
+    assert BADGE.findall(rows[alone]) == [] and OPEN_BADGE in rows[alone]
+
+
+def test_an_assigned_movement_and_one_with_a_child_have_no_badge(tmp_db):
+    w = a_world(tmp_db)
+    assert tmp_db.assign_invoice_payment(w['one'], w['first']).ok
+    tmp_db.insert_booking('2026-03-11', 100.00, booking_type='entry', parent_booking_id=w['second'], coa_id=tmp_db.get_coa_id_by_account_number(6815))
+    rows = list_rows(period_page(tmp_db))
+    assert BADGE.findall(rows[w['first']]) == [] and BADGE.findall(rows[w['second']]) == []
+    assert 'Buchungssätze unvollständig' in rows[w['second']]                                       # die zweite ist „offen“ mit Kind – das Abzeichen gilt nur Zeilen ohne Kind
+
+
+def test_the_badges_cover_every_pair_of_the_overview_not_only_the_rows_of_the_box(tmp_db):
+    account, buyer = bank_account(tmp_db), customer(tmp_db)
+    payments = []
+    for n in range(1, 24):
+        add_invoice(tmp_db, f'R30{n:03d}', 100.00 + n, customer_id=buyer)
+        payments.append(add_payment(tmp_db, account, 100.00 + n, f'2026-03-{n:02d}', 'Käufer AG', f'R30{n:03d}'))
+    page = period_page(tmp_db)
+    rows = list_rows(page)
+    assert len(box_row_tags(page)) == 20                                                             # der Kasten zeigt die ersten zwanzig
+    assert [badge_titles(rows[payment]) for payment in payments] == [[f'Passt zur offenen Rechnung R30{n:03d}'] for n in range(1, 24)]     # auch die drei hinter dem Kasten
+
+
+def test_the_overview_is_read_once_per_page_with_the_larger_limit(tmp_db, monkeypatch):
+    w = a_world(tmp_db)
+    limits = []
+    original = Database.suggest_invoice_payments
+
+    def counting(self, limit=20):
+        limits.append(limit)
+        return original(self, limit)
+    monkeypatch.setattr(Database, 'suggest_invoice_payments', counting)
+    period_page(tmp_db)
+    assert limits == [PAY_BADGE_LIMIT] and PAY_BADGE_LIMIT == 500                                    # EINMAL für den Kasten und die Abzeichen
+    PageTransactions(tmp_db, edit_transaction_id=w['first'])                                         # die Seite mit der Maske liest sie ebenfalls einmal
+    assert limits == [PAY_BADGE_LIMIT] * 2
+
+
+def test_a_failing_query_gives_neither_box_nor_badges_and_the_page_stands(tmp_db, monkeypatch, capsys):
+    w = a_world(tmp_db)
+
+    def failing(self, limit=20):
+        raise RuntimeError('Abfrage kaputt')
+    monkeypatch.setattr(Database, 'suggest_invoice_payments', failing)
+    page = period_page(tmp_db)
+    assert box_of(page).strip() == '' and '<h3>Zahlungseingänge zu offenen Rechnungen</h3>' not in page and BADGE.findall(page) == []
+    assert OPEN_BADGE in list_rows(page)[w['first']]                                                 # die Liste steht, die Zeile ist „offen“
+    assert 'Abfrage kaputt' in capsys.readouterr().err and 'Abfrage kaputt' not in page             # der Fehler nur im Server-Log
+
+
+def test_the_number_of_the_invoice_in_the_badge_is_masked(tmp_db):
+    hostile_number = "R1' onmouseover='alert(1)' x='" + HOSTILE
+
+    def build(db, number):
+        account, buyer = bank_account(db), customer(db, 'Käufer AG')
+        add_invoice(db, number, 119.00, customer_id=buyer)
+        payment = add_payment(db, account, 119.00, '2026-03-10', 'Käufer AG', 'Danke')           # Betrag und Kunde: die Nummer muss nicht im Text stehen
+        return period_page(db), payment
+    hostile_page, payment = build(tmp_db, hostile_number)
+    benign_page, _ = build(Database(db_name=tmp_db.db_name + '.benign'), 'R26001')
+    assert_same_structure(hostile_page, benign_page)
+    assert not any(name.startswith('on') and 'alert(' in (value or '') for _tag, attrs in Dom(hostile_page).tags for name, value in attrs.items())
+    assert '<img src=x' not in hostile_page and Dom(hostile_page).all('img') == [] and HOSTILE not in hostile_page
+    assert badge_titles(list_rows(hostile_page)[payment]) == [f'Passt zur offenen Rechnung {hostile_number}']
+
+
+def test_the_badge_stands_in_the_table_that_refresh_table_copies_after_an_import(tmp_db):
+    a_world(tmp_db)
+    page = period_page(tmp_db)
+    table = page.split("<table id='transactionsTable'>", 1)[1].split('</table>', 1)[0]
+    assert len(BADGE.findall(table)) == 2 and len(BADGE.findall(page)) == 2                         # nur in der Tabelle, die der Weg ``refreshTable()`` austauscht
+    refresh = page[page.index('function refreshTable()'):page.index('function openEditForm(')]
+    assert "doc.getElementById('transactionsTable')" in refresh and 'cur.innerHTML = fresh.innerHTML' in refresh
+
+
+def test_the_badge_is_only_a_hint_looking_at_the_page_assigns_nothing(tmp_db):
+    w = a_world(tmp_db)
+    before = state(tmp_db, 'Bookings', 'Invoices', 'InvoicePayments')
+    period_page(tmp_db)
+    PageTransactions(tmp_db, edit_transaction_id=w['first'])
+    assert state(tmp_db, 'Bookings', 'Invoices', 'InvoicePayments') == before
 
 
 # ── Der bestehende Weg: Zuordnen über die Route ──────────────────────────────

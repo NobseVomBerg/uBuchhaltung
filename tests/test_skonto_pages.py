@@ -668,10 +668,14 @@ def test_nothing_is_assigned_by_looking_at_the_pages_with_a_discount_on_offer(tm
     assert state(tmp_db, *TABLES) == before
 
 
-def test_the_script_of_the_box_stays_a_single_function_with_only_var_inside():
+def test_the_script_of_the_box_has_only_functions_at_the_top_and_only_var_inside():
+    """``payAssign`` ruft seit 2.9.2 Hilfsfunktionen (``payLink`` …, dazu ``payAssignAll``); die Gestalt des Skripts – nur ``var`` und ``function``, außerhalb der Funktionen nichts
+    Globales, innen nur ``var`` – steht ausführlich in ``tests/test_payment_suggestions.py``."""
     declarations = re.findall(r'^[ \t]*(var|let|const|function)\s+(\w+)', PAY_SUGGEST_JS, re.M)
-    assert re.findall(r'^(var|let|const|function)\s+(\w+)', PAY_SUGGEST_JS, re.M) == [('function', 'payAssign')]
-    assert declarations[0] == ('function', 'payAssign') and {kind for kind, _name in declarations[1:]} <= {'var'}
+    top_level = re.findall(r'^(var|let|const|function)\s+(\w+)', PAY_SUGGEST_JS, re.M)
+    assert ('function', 'payAssign') in top_level and {kind for kind, _name in top_level} == {'function'}                      # außerhalb der Funktionen steht nichts
+    assert [name for kind, name in declarations if kind == 'function'] == [name for _kind, name in top_level]               # keine verschachtelte benannte Funktion
+    assert {kind for kind, _name in declarations} <= {'var', 'function'}                                                    # kein let, const
     assert 'innerHTML' not in PAY_SUGGEST_JS and 'eval(' not in PAY_SUGGEST_JS and 'outerHTML' not in PAY_SUGGEST_JS
 
 

@@ -41,7 +41,7 @@ from db.invoice_lock import (DocumentNotFound, EDITABLE_STATUSES, InvoiceLocked,
                              buyer_snapshot, status_group)
 from db.invoice_storno import NO_COUNTER_BOOKING_HINT
 from db.invoice_versions import CorrectionInvalid
-from db.invoice_payments import RECEIVABLE_STATUSES, SKONTO_REFUND, BankChangeRefused, PaymentRemovalRefused, has_mixed_rates
+from db.invoice_payments import PAYMENT_MARK, RECEIVABLE_STATUSES, SKONTO_REFUND, BankChangeRefused, PaymentRemovalRefused, has_mixed_rates
 from db.invoice_repair import REBUILD_WARNING
 from db.numbering import NumberRangeError, number_format_error
 from db.matching import FORM_LIQUID_FIRST, FORM_TRANSFER, is_bank_effective, is_mirror_row, purpose_in_counter, read_entry_form
@@ -619,6 +619,15 @@ def _loaded_split_ids(post_data):
     return ids
 
 
+def _follow_bank(fields, old_row, bank_row):
+    """Datum, Steuerdatum und Empfänger eines Satzes unter der Bankbewegung folgen ihrer Änderung nur, wenn er den Wert vorher mit ihr geteilt hat (derselbe Wert wie die
+    Bankbewegung bis jetzt trägt; leer = leer), je Feld für sich: Hat er einen eigenen – eine zugeordnete Bestandsbuchung, ein verknüpfter Beleg –, bleibt der, und das Feld
+    fällt aus ``fields``. ``old_row``/``bank_row``: gespeicherte Zeilen (``get_booking_by_id``). Die EINE Stelle dieser Regel."""
+    for name, column in (('date_booking', 1), ('date_tax', 2), ('recipient_client', 6)):
+        if (old_row[column] or None) != (bank_row[column] or None):
+            del fields[name]
+
+
 def _plan_split_rows(db, bank_id, post_data, account_coa_id, date, date_tax,
                      recipient, currency):
     """Buchungssätze einer Bankbewegung aus dem Editor lesen und prüfen (schreibt nichts).
@@ -652,6 +661,12 @@ def _plan_split_rows(db, bank_id, post_data, account_coa_id, date, date_tax,
     beide Felder leer (so schickt sie ein Browser mit dem alten Skript der Seite),
     bleibt der gespeicherte Wert. Sonst gilt, was in der Zeile steht; leer heißt
     keine Steuer. Auf dem Server wird sie nie nachgerechnet.
+
+    **Die Sätze einer Rechnungszahlung sind schreibgeschützt:** Ein bestehender Satz unter DIESER Bankbewegung (nicht zugeordnet), der die Marke ``PAYMENT_MARK`` trägt – gelesen
+    aus dem gespeicherten Stand, nie aus einem Formularfeld –, bekommt Betrag, Konto, Gegenkonto, Steuersatz, Steuerbetrag, Text, Beleg-Nr. und Währung vom Editor nie geschrieben;
+    diese Felder seiner Zeile werden nicht einmal gelesen (ein Unsinn darin lehnt nicht ab, die Prüfung auf dasselbe Konto entfällt). Datum, Steuerdatum und Empfänger folgen der
+    Bankbewegung wie bei jedem Satz (``_follow_bank``). Keine Ablehnung: Gespeichert bleibt, was gespeichert ist. Das Entfernen der Zeile gilt wie bei jedem Satz – die ganze
+    Zuordnung geht mit (siehe unten).
 
     Erst werden ALLE Zeilen gelesen und geprüft, dann geschrieben: Eine ungültige
     Zahl in einer späteren Zeile bricht ab, bevor eine frühere gespeichert ist. Das
@@ -706,9 +721,16 @@ def _plan_split_rows(db, bank_id, post_data, account_coa_id, date, date_tax,
                                        [(i + 1, _at(ids, i).strip()) for i in lines if _at(ids, i).strip()])
     planned = []
     for i in lines:
+        rid, old_row = booking_rows.get(i + 1, (None, None))
+        if old_row and rid in existing_by_id and old_row[19] == PAYMENT_MARK:       # 19 = Status
+            # Satz einer Rechnungszahlung oder Erstattung (die Marke aus dem gespeicherten Stand): Der Editor schreibt von ihm nur Datum, Steuerdatum und Empfänger – nichts von
+            # dem, was die Zeile zeigt, und er liest es auch nicht. Keine Ablehnung: Gespeichert bleibt, was gespeichert ist.
+            fields = dict(date_booking=date, date_tax=date_tax, recipient_client=recipient)
+            _follow_bank(fields, old_row, bank_row)
+            planned.append((rid, fields, False))
+            continue
         raw_amount = _at(amounts, i).strip()
         raw_coa = _at(coas, i).strip()
-        rid, old_row = booking_rows.get(i + 1, (None, None))
         sent_rate = _at(rates, i, None)   # None: das Formular bringt das Feld gar nicht mit
         sent_tax = _at(tax_amounts, i, None)
         row_rate = (sent_rate or '').strip()
@@ -789,12 +811,8 @@ def _plan_split_rows(db, bank_id, post_data, account_coa_id, date, date_tax,
             for name in ('date_booking', 'date_tax', 'recipient_client', 'currency'):
                 del fields[name]
         elif old_row:
-            # Satz unter dieser Bankbewegung: Datum, Steuerdatum und Empfänger folgen ihrer Änderung nur,
-            # wenn er den Wert mit ihr geteilt hat (derselbe wie bis jetzt, leer = leer). Hat er einen
-            # eigenen – eine zugeordnete Bestandsbuchung, ein verknüpfter Beleg –, bleibt der, je Feld.
-            for name, column in (('date_booking', 1), ('date_tax', 2), ('recipient_client', 6)):
-                if (old_row[column] or None) != (bank_row[column] or None):
-                    del fields[name]
+            # Satz unter dieser Bankbewegung: Datum, Steuerdatum und Empfänger folgen ihrer Änderung nur, wenn er den Wert mit ihr geteilt hat
+            _follow_bank(fields, old_row, bank_row)
         if old_row:
             # Text und Beleg-Nr. schreibt der Editor nur, wenn die Zeile sie geändert hat (leer und NULL sind
             # dasselbe): Ein Satz, den man zuordnet und wieder löst, soll in jeder Spalte so dastehen wie vorher.

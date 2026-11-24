@@ -32,7 +32,8 @@ stehen in fester Reihenfolge (Nummer, Betrag bzw. Skonto, Kunde); trifft NUMMER 
 ist dann möglich). Trifft SKONTO zu, trägt der Vorschlag ``skonto`` – die Seiten bieten dann neben „Zuordnen“ „Mit Skonto zuordnen“ an; vorgeschlagen wird nur, zugeordnet (und das
 Skonto ausgebucht) wird allein auf Klick. ``rank_invoices`` und ``rank_movements`` bringen die Paare EINER Bewegung bzw. EINER Rechnung in eine Rangfolge (höchstens
 ``MAX_SUGGESTIONS``); ``pair_up`` macht daraus die Eins-zu-eins-Liste für die Übersicht – jede Bewegung und jede Rechnung höchstens einmal, die
-zeitlich nächste zuerst, deterministisch. Schon zugeordnete Paare (``linked``) sind nie ein Vorschlag.
+zeitlich nächste zuerst, deterministisch. Schon zugeordnete Paare (``linked``) sind nie ein Vorschlag. ``is_certain`` nennt den Teil, den die Übersicht mit einem Klick auf einmal zuordnen darf: NUMMER und
+BETRAG, nicht mehrdeutig, kein Skonto.
 
 Laufzeit: je Paar mit brauchbarer Nummer ein billiger Test (die normalisierte Nummer steht in den normalisierten Feldern der Bewegung, ein ``in``);
 nur bei einem Treffer läuft der genaue reguläre Ausdruck, und der ist linear. Die Paare aus Betrag und Kunde entstehen über einen Index nach dem
@@ -89,6 +90,15 @@ def reason_text(suggestion: PaymentSuggestion) -> str:
     """Die Begründung zum Anzeigen: die festen Sätze mit ``REASON_SEPARATOR`` verbunden, bei einem mehrdeutigen Vorschlag mit dem Zusatz
     ``AMBIGUOUS_TEXT`` am Ende. EINE Stelle für den Kasten der Übersicht, die Maske und die Rechnungsseite."""
     return REASON_SEPARATOR.join(suggestion.reasons + ((AMBIGUOUS_TEXT,) if suggestion.ambiguous else ()))
+
+
+def is_certain(suggestion: PaymentSuggestion) -> bool:
+    """Ist der Vorschlag eindeutig – gut genug für „Alle eindeutigen zuordnen“ in der Übersicht? Nur dann, wenn die Rechnungsnummer im Verwendungszweck steht UND der Betrag stimmt
+    (``REASON_NUMBER`` und ``REASON_AMOUNT`` unter den Begründungen), das Paar nicht mehrdeutig ist (``ambiguous``) und kein Skonto-Vorschlag (``skonto``). Nichts anderes ist „eindeutig“:
+    Betrag und Kunde ohne Nummer, eine Nummer mit abweichendem Betrag (Teil- oder Überzahlung) und ein Betrag nach Skonto bleiben Vorschläge, die der Nutzer einzeln entscheidet. EINE Stelle
+    für die Seiten; rein wie der Rest des Moduls."""
+    return (REASON_NUMBER in suggestion.reasons and REASON_AMOUNT in suggestion.reasons
+            and not suggestion.ambiguous and not suggestion.skonto)
 
 
 _NOT_ALPHANUMERIC = re.compile(r'[^a-z0-9]+')

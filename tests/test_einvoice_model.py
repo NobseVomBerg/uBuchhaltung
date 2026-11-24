@@ -41,7 +41,8 @@ def test_kleinunternehmer_is_exempt_with_reason(tmp_db):
 
 @pytest.mark.parametrize('text, code', [
     ('Stk.', 'C62'), ('Std.', 'HUR'), ('HUR', 'HUR'), ('C62', 'C62'),
-    ('Tag', 'DAY'), ('pauschal', 'LS'), ('STD.', 'HUR'), ('m²', 'MTK'), ('kg', 'KGM'), ('', 'C62'), (None, 'C62'), ('unbekannt', 'C62')])
+    ('Tag', 'DAY'), ('pauschal', 'LS'), ('STD.', 'HUR'), ('m²', 'MTK'), ('kg', 'KGM'), ('', 'C62'), (None, 'C62'), ('unbekannt', 'C62'),
+    ('Fl.', 'XBO'), ('fl.', 'XBO'), ('FL.', 'XBO'), ('Fl', 'XBO'), ('fl', 'XBO'), ('Flasche', 'XBO')])
 def test_unit_code(text, code):
     assert unit_code(text) == code
 
@@ -79,7 +80,7 @@ def test_control_characters_do_not_break_ubl(tmp_db):
 @pytest.mark.parametrize('stored, shown', [
     ('Std.', 'Std.'), ('Stk.', 'Stk.'), ('Tag', 'Tag'), ('h', 'h'),       # Freitext bleibt
     ('HUR', 'Std.'), ('C62', 'Stk.'), ('DAY', 'Tag'), ('KMT', 'km'), ('KGM', 'kg'),
-    ('MTR', 'm'), ('MTK', 'm²'), ('LTR', 'l'), ('LS', 'pausch.'),
+    ('MTR', 'm'), ('MTK', 'm²'), ('LTR', 'l'), ('LS', 'pausch.'), ('XBO', 'Fl.'),
     ('ZZZ', 'ZZZ'),                                                        # unbekannter Code
     ('', 'Stk.'), (None, 'Stk.')])
 def test_unit_display(stored, shown):
@@ -430,3 +431,13 @@ def test_the_skonto_sentence_names_the_due_date_only_when_the_period_does_not_en
     assert after == ('Bei Zahlung bis zum 03.04.2026 (innerhalb von 30 Tagen ab Rechnungsdatum) gewähren wir 2 % Skonto: '
                      'abzüglich 3,56 EUR sind dann 174,35 EUR zu zahlen.')
     assert 'Ohne Abzug' not in skonto_sentence(Skonto(7, Decimal('2.00'), date(2026, 3, 11)), 1779100, None)
+
+
+@pytest.mark.parametrize('typed', ['Fl.', 'fl.', 'Fl', 'fl', 'Flasche'])
+def test_a_bottle_goes_to_the_e_invoice_as_xbo_and_comes_back_as_fl(typed):
+    """„Fl.“ (Flasche) steht als UN/ECE-Code ``XBO`` in der E-Rechnung und wird für Menschen wieder „Fl.“ – der Rundweg Text → Code → Anzeige."""
+    from export.einvoice_model import unit_display
+    unknown = []
+    assert unit_code(typed, unknown) == 'XBO' and unknown == []                      # kein Fallback auf Stück: nichts wird als unbekannt gesammelt
+    assert unit_display(unit_code(typed)) == 'Fl.'
+    assert unit_display('Fl.') == 'Fl.'                                              # der Freitext selbst bleibt, wie er gespeichert ist
