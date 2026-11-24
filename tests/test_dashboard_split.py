@@ -3,7 +3,7 @@
 # Kommerzielle Lizenz ohne AGPL-Pflichten verfügbar – Kontakt: office@unsix.com
 """Das Dashboard zerlegt jede Bewegung in Einnahme, Ausgabe, privat und Übertrag (seit 2.4.1, intern T36).
 
-* Die reinen Funktionen ``split_bank_movement`` und ``split_cash_entry``: jede Zeile der Regeltabelle (``CLAUDE.md``,
+* Die reinen Funktionen ``split_bank_movement`` und ``split_cash_entry``: jede Zeile der Regeltabelle (``docs/regeln/auswertungen.md``,
   „Dashboard“) und das Gegenbeispiel zur naheliegenden, aber falschen Formel („Betrag − privat − Wirkung der übrigen Sätze“
   zieht einen privaten Umbuchungssatz doppelt ab).
 * Überträge zwischen zwei Bankkonten (Giro, Tagesgeld) und zur Kasse – beide Seiten kontiert, nur eine (von der

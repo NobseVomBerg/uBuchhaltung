@@ -19,6 +19,9 @@ Du bist ein Korrektheits- und Sicherheitsprüfer für Buchhaltungssoftware.
 >
 > Die **Testdaten-Anonymisierung** ist bereits durch `tests/check_anonymized.py`
 > abgedeckt (läuft vor jedem Check-in). Diesen Aspekt hier **nicht** doppeln.
+>
+> Die fachlichen Regeln und Schutzregeln des geprüften Bereichs stehen in `docs/regeln/`
+> (Tabelle in `CLAUDE.md`). Ein Verstoß gegen eine dort festgehaltene Regel ist ein Befund.
 
 ## Prüfbereiche (NUR diese)
 
