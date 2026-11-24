@@ -1303,8 +1303,11 @@ kein Subagent darauf:
   die Form ist an vier Kandidaten gemessen; ein Satz „Skonto an Debitoren“ liest die EÜR ohne Steuer und die Summen- und Saldenliste unzerlegt. Im
   DATEV-Stapel stehen dafür zwei Bankzeilen (119,00 und 2,38, zusammen der Betrag des Auszugs). **Konten** (`SKONTO_ACCOUNTS`): 19 % → 4736, 7 % →
   4731, 0 % und § 19 → 4730 ohne Steuer (Standardkonten; fehlt eines, legt die erste Zuordnung es vor der Transaktion an – eine abgelehnte legt
-  nichts an); ein Skonto-Konto lehrt nie ein Erlöskonto, zählt nicht in `_allocations_tax` und steht nicht in der Wahl des Erlöskontos einer Zahlung
-  (`payment_revenue_choices`). **Regeln** (`skonto_terms`, `_skonto_state` – EINE
+  nichts an); ein Skonto-Konto lehrt nie ein Erlöskonto, der Skonto-Satz einer Zuordnung mit Skonto zählt nicht in `_allocations_tax`, und es steht nicht in der Wahl des Erlöskontos einer Zahlung
+  (`payment_revenue_choices`) und eines Stammdaten-Steuersatzes. **Ein Skonto-Satz wird nie allein am Konto erkannt – maßgeblich ist `SkontoAmount` der Zuordnung:**
+  Ein Skonto-Konto kann aus einem Stammdaten-Steuersatz oder einer früheren Wahl des Nutzers auch Erlöskonto einer Zahlung sein; sein Erlössatz zählt deshalb in `_allocations_tax`,
+  löst weder `skonto_mismatch` noch `SKONTO_STORNO_EDITED` aus und ist kein Skonto für `_skonto_booked` (ohne Wert in der Spalte erkennen Stornieren und `_skonto_booked` ein
+  Skonto nur an einem Satz mit negativem Betrag; `tests/test_skonto_revenue_account.py`). **Regeln** (`skonto_terms`, `_skonto_state` – EINE
   Stelle für Vorprüfung und Transaktion): Skonto = der Rest nach der Zahlung (zahlt der Kunde 117,00, sind es 2,00), in ganzen Cent, höchstens
   `skonto_amount(Brutto, Prozent)`; die Frist wird gezeigt, nie geprüft; je Rechnung höchstens EIN Skonto; Skonto-Steuer = Skonto × Satz / (100 + Satz),
   EINMAL auf den Cent gerundet (`skonto_tax`). **Stufe 1:** nur Rechnungen mit einem Satz (19 %, 7 %, 0 %, § 19) – ein Beleg mit Steuersatz je Position,

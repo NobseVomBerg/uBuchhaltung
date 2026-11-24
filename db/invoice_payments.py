@@ -828,23 +828,32 @@ class InvoicePaymentsMixin:
         Bankbewegung, deren Zuordnung nicht mitzählt. Die EINE Rechenstelle für den schließenden Teil einer Zahlung
         (``_remaining_tax``) und die Erstattung einer Stornorechnung (``assign_storno_refund``).
 
-        **Die Sätze auf einem Skonto-Konto zählen nicht** (``SKONTO_ACCOUNT_NUMBERS``, als ``COA_ID`` des Satzes): Der Skonto-Satz einer Zahlung mit Skonto (−0,38 € im Beispiel mit 119,00 € und 2,38 €
+        **Die Sätze auf einem Skonto-Konto zählen nur nicht, wo die Zuordnung ein Skonto trägt** (``InvoicePayments.SkontoAmount``, gültig nach ``valid_skonto_sql``; die Sätze selbst an ihrem
+        Konto, ``SKONTO_ACCOUNT_NUMBERS``, als ``COA_ID`` des Satzes): Der Skonto-Satz einer Zahlung mit Skonto (−0,38 € im Beispiel mit 119,00 € und 2,38 €
         Skonto) nimmt von der Steuer der Zahlung selbst ab – er trägt keine Steuer, die zum gezahlten Geld gehörte. Zählte er mit, bekäme ein Teil, der die Rechnung danach schließt (die
-        Teilzahlung ging, eine neue kam), den Rest 19,00 − (11,02 − 0,38) = 8,36 € statt 7,98 €, und Σ Steuer stünde bei 19,00 € statt 18,62 €. Nach dem Stornieren (``_reverse_skonto_in``) heben sich
-        der Skonto-Satz der Zahlung und der der Rücknahme auf, der Erlössatz der Rücknahme (−0,38 €) zählt: 19,00 − 0,38 = 18,62 € – die Steuer des Geldes, das die Erstattung zurücknimmt, wie mit allen Sätzen."""
+        Teilzahlung ging, eine neue kam), den Rest 19,00 − (11,02 − 0,38) = 8,36 € statt 7,98 €, und Σ Steuer stünde bei 19,00 € statt 18,62 €. Für jede andere Zuordnung zählt jeder markierte Satz:
+        **Ein Skonto-Satz wird nie allein am Konto erkannt** – ein Skonto-Konto kann auch Erlöskonto einer Zahlung sein (ein Steuersatz der Stammdaten mit 4736, eine frühere Wahl des Nutzers),
+        und sein Erlössatz trägt Steuer wie jeder andere. Ließe man ihn weg, bekäme bei einer 5,5-%-Rechnung über 211,00 € mit dem Erlöskonto 4736 die schließende Zahlung nach 100,00 € (5,21 € Steuer)
+        den ganzen Rest: 11,00 € statt 5,79 €. Nach dem Stornieren (``_reverse_skonto_in``) ist die Spalte NULL: Der Skonto-Satz der Zahlung (−0,38 €) und der der Rücknahme (+0,38 €)
+        heben sich auf, der Erlössatz der Rücknahme (−0,38 €) zählt: 19,00 − 0,38 = 18,62 € – die Steuer des Geldes, das die Erstattung zurücknimmt, wie mit allen Sätzen."""
         skip, params = ((' AND BookingID <> ?', (invoice_id, except_booking)) if except_booking is not None
                         else ('', (invoice_id,)))
         numbers = sorted(SKONTO_ACCOUNT_NUMBERS)
+        # Je Bewegung, ob die Zuordnung (Rechnung, Bewegung) ein gültiges Skonto trägt – nur dann fallen die Sätze auf den Skonto-Konten heraus
         taxed = 0
-        for other_booking, other_amount in conn.execute(
-                f'SELECT BookingID, SUM(Amount) FROM InvoicePayments WHERE InvoiceID = ?{skip} GROUP BY BookingID',
+        for other_booking, other_amount, discounted in conn.execute(
+                f'SELECT BookingID, SUM(Amount), MAX(CASE WHEN {valid_skonto_sql()} THEN 1 ELSE 0 END) FROM InvoicePayments WHERE InvoiceID = ?{skip} GROUP BY BookingID',
                 params).fetchall():
             marked = self._payment_children(conn, other_booking, number)
             if marked:
+                not_on_discount_accounts, extra = '', []
+                if discounted:
+                    not_on_discount_accounts = ("AND (COA_ID IS NULL OR COA_ID NOT IN (SELECT ID FROM ChartOfAccounts "
+                                                f"WHERE AccountNumber IN ({','.join('?' * len(numbers))})))")
+                    extra = numbers
                 taxed += conn.execute(
-                    f"SELECT COALESCE(SUM(TaxAmount), 0) FROM Bookings WHERE ID IN ({','.join('?' * len(marked))}) "
-                    "AND (COA_ID IS NULL OR COA_ID NOT IN (SELECT ID FROM ChartOfAccounts "
-                    f"WHERE AccountNumber IN ({','.join('?' * len(numbers))})))", [*marked, *numbers]).fetchone()[0]
+                    f"SELECT COALESCE(SUM(TaxAmount), 0) FROM Bookings WHERE ID IN ({','.join('?' * len(marked))}) {not_on_discount_accounts}",
+                    [*marked, *extra]).fetchone()[0]
             else:
                 taxed += self._prorated_tax(tax_total, other_amount, gross)
         return taxed
@@ -1269,10 +1278,13 @@ class InvoicePaymentsMixin:
 
         ``skonto``: Soll die Zahlung den Rest der Rechnung als Skonto ausbuchen? Dann prüft sie dieselben Regeln wie ``assign_invoice_payment(…, skonto=True)`` (``_skonto_precheck``),
         mit ``amount`` als Betrag der neuen Bewegung (Euro; sie hat noch keinen Rest, also ist ihr freier Rest ihr Betrag – der Betrag der Zahlung ist ``min(Rest der Rechnung,
-        amount)``), vor allem, was ein Konto anlegt. Ohne ``amount`` ist die Zahlung der ganze Rest, und es bleibt kein Skonto (``SKONTO_NO_REST``)."""
+        amount)``), vor allem, was ein Konto anlegt. **Der Betrag zählt genau, nicht auf Cent gerundet:** Die Bewegung wird mit genau diesem Betrag angelegt (die Maske speichert ihn so),
+        und die Zuordnung rechnet mit ihrem freien Rest – bei 116,625 € bliebe ein Rest von 2,375 €, den die Zuordnung mit ``SKONTO_NOT_CENTS`` ablehnt; die Vorprüfung sagt dasselbe, damit
+        die Bewegung gar nicht erst entsteht. Ohne ``skonto`` gibt es nichts zu prüfen, was vom Betrag abhängt. Ohne ``amount`` ist die Zahlung der ganze Rest, und es bleibt kein Skonto
+        (``SKONTO_NO_REST``)."""
         skonto_args = None
         if skonto:
-            minor = None if amount is None else round_minor(to_minor(amount), 2)
+            minor = None if amount is None else to_minor(amount)
             skonto_args = (minor, minor)
         return self._payment_prerequisites(invoice_id, account_id, revenue_coa_id, on, skonto=skonto_args)[0]
 
@@ -2003,9 +2015,11 @@ class InvoicePaymentsMixin:
         „Erlöskonto an Bank“ sind. Ein Konto, das einem Satz fehlt, gilt ebenso als geändert. Die Konten der Rücknahme sind die dieser Sätze; Satz und Steuer die des Skonto-Satzes, wie gespeichert
         (nichts wird nachgerechnet).
 
-        **Auch das Gegenstück:** Trägt eine Zuordnung der Rechnung kein Skonto (NULL), stehen unter ihrer Bewegung aber markierte Sätze mit der Nummer der Rechnung auf einem Skonto-Konto, deren
-        Beträge zusammen nicht 0 ergeben (ein Satz mit einem Betrag, der keine ganze Zahl ist, zählt als geändert), hat jemand den Wert aus der Spalte genommen, und die Rücknahme ließe das Skonto
-        stehen: ebenfalls ``SKONTO_STORNO_EDITED``. Nach einer regulären Rücknahme ergeben der Skonto-Satz der Zahlung und der der Rücknahme 0 – so eine Rechnung lehnt nie ab.
+        **Auch das Gegenstück:** Trägt eine Zuordnung der Rechnung kein Skonto (NULL), steht unter ihrer Bewegung aber ein markierter Satz mit der Nummer der Rechnung auf einem Skonto-Konto
+        mit **negativem** Betrag, und die Beträge aller markierten Sätze auf Skonto-Konten dort ergeben zusammen nicht 0 (ein Satz mit einem Betrag, der keine ganze Zahl ist, zählt als geändert),
+        hat jemand den Wert aus der Spalte genommen, und die Rücknahme ließe das Skonto stehen: ebenfalls ``SKONTO_STORNO_EDITED``. So sieht ein Skonto aus, dessen Wert fehlt – **ein Skonto-Satz
+        wird nie allein am Konto erkannt:** Ein Skonto-Konto kann auch Erlöskonto einer Zahlung sein (ein Steuersatz der Stammdaten, eine frühere Wahl des Nutzers), und sein Erlössatz ist positiv –
+        er lehnt nie ab. Nach einer regulären Rücknahme ergeben der Skonto-Satz der Zahlung und der der Rücknahme 0 – so eine Rechnung lehnt nie ab.
 
         Die EINE Prüfung: ``_storno_blocker`` fragt sie vor allem, was ein Konto anlegt oder eine Nummer verbraucht (Vorprüfung und Transaktion), ``_reverse_skonto_in`` liest den Plan, den es
         schreibt, aus derselben Antwort."""
@@ -2024,7 +2038,7 @@ class InvoicePaymentsMixin:
         discount_coas = {row[0] for row in conn.execute(f"SELECT ID FROM ChartOfAccounts WHERE AccountNumber IN ({','.join('?' * len(numbers))})", numbers)}
         without = sorted({booking_id for booking_id in plain if booking_id not in skonto_of})
         if without and discount_coas:
-            sums = {}
+            sums, negative = {}, set()
             for booking_id, amount in conn.execute(
                     f"SELECT ParentBooking_ID, Amount FROM Bookings WHERE ParentBooking_ID IN ({','.join('?' * len(without))}) AND Status = ? AND DocumentNumber = ? "
                     f"AND (SourceGroup IS NULL OR SourceGroup = '') AND COA_ID IN ({','.join('?' * len(discount_coas))})",
@@ -2032,7 +2046,10 @@ class InvoicePaymentsMixin:
                 if type(amount) is not int:
                     return SKONTO_STORNO_EDITED, None
                 sums[booking_id] = sums.get(booking_id, 0) + amount
-            if any(sums.values()):                                          # Skonto-Sätze, die sich nicht aufheben, ohne Skonto an der Zuordnung
+                if amount < 0:
+                    negative.add(booking_id)
+            # Ein Skonto-Satz ohne Skonto an der Zuordnung ist negativ (−Skonto) und hebt sich nicht auf; ein positiver Satz auf einem Skonto-Konto ist ein Erlössatz
+            if any(sums[booking_id] for booking_id in negative):
                 return SKONTO_STORNO_EDITED, None
         reversals = []
         for booking_id, skonto in skonto_of.items():
@@ -2097,19 +2114,20 @@ class InvoicePaymentsMixin:
 
     @staticmethod
     def _skonto_booked(conn, invoice_id, number, bank_id=None):
-        """Trägt die Rechnung eine Zahlung mit Skonto – an dieser Bankbewegung (``bank_id``) oder, ohne sie, an einer ihrer Bewegungen? Ja, wenn eine Zuordnung ein Skonto trägt
-        (``InvoicePayments.SkontoAmount`` ≠ 0) ODER unter der Bewegung ein markierter Satz mit der Nummer der Rechnung auf einem Skonto-Konto steht (``SKONTO_ACCOUNT_NUMBERS``). Das
-        zweite fängt, was nach dem Stornieren bleibt: ``SkontoAmount`` ist dort NULL (``_reverse_skonto_in``), der Skonto-Satz der Zahlung und der der Rücknahme stehen noch da. Der Umzug der
-        Zahlungen (``_movable_payment``, Grund ``skonto``) und der Neuaufbau (``Database.rebuild_invoice_payments``) fragen es: Sie schrieben die Sätze neu, ohne das Skonto zu kennen.
-        Rein lesend, in der Verbindung oder Transaktion von ``conn``."""
+        """Trägt die Rechnung eine Zahlung mit Skonto – an dieser Bankbewegung (``bank_id``) oder, ohne sie, an einer ihrer Bewegungen? Ja, wenn eine Zuordnung ein gültiges Skonto trägt
+        (``InvoicePayments.SkontoAmount``, ``valid_skonto_sql``) ODER unter der Bewegung ein markierter Satz mit der Nummer der Rechnung auf einem Skonto-Konto (``SKONTO_ACCOUNT_NUMBERS``)
+        mit **negativem** Betrag steht. Das zweite fängt, was nach dem Stornieren bleibt: ``SkontoAmount`` ist dort NULL (``_reverse_skonto_in``), der Skonto-Satz der Zahlung (−Skonto) und der
+        der Rücknahme (+Skonto) stehen noch da. **Ein Skonto-Satz wird nie allein am Konto erkannt:** Ein Skonto-Konto kann auch Erlöskonto einer Zahlung sein (ein Steuersatz der Stammdaten,
+        eine frühere Wahl des Nutzers) – sein Erlössatz ist positiv und zählt nicht. Der Umzug der Zahlungen (``_movable_payment``, Grund ``skonto``) und der Neuaufbau
+        (``Database.rebuild_invoice_payments``) fragen es: Sie schrieben die Sätze neu, ohne das Skonto zu kennen. Rein lesend, in der Verbindung oder Transaktion von ``conn``."""
         by_bank, params = (' AND BookingID = ?', (bank_id,)) if bank_id is not None else ('', ())
-        if conn.execute(f'SELECT 1 FROM InvoicePayments WHERE InvoiceID = ? AND COALESCE(SkontoAmount, 0) <> 0{by_bank} LIMIT 1', (invoice_id, *params)).fetchone():
+        if conn.execute(f'SELECT 1 FROM InvoicePayments WHERE InvoiceID = ? AND {valid_skonto_sql()}{by_bank} LIMIT 1', (invoice_id, *params)).fetchone():
             return True
         numbers = sorted(SKONTO_ACCOUNT_NUMBERS)
         parent, params = (' AND k.ParentBooking_ID = ?', (bank_id,)) if bank_id is not None else (
             ' AND k.ParentBooking_ID IN (SELECT BookingID FROM InvoicePayments WHERE InvoiceID = ?)', (invoice_id,))
         return conn.execute(
-            'SELECT 1 FROM Bookings k JOIN ChartOfAccounts c ON c.ID = k.COA_ID WHERE k.Status = ? AND k.DocumentNumber = ? '
+            'SELECT 1 FROM Bookings k JOIN ChartOfAccounts c ON c.ID = k.COA_ID WHERE k.Status = ? AND k.DocumentNumber = ? AND k.Amount < 0 '
             f"AND (k.SourceGroup IS NULL OR k.SourceGroup = '') AND c.AccountNumber IN ({','.join('?' * len(numbers))}){parent} LIMIT 1",
             (PAYMENT_MARK, number, *numbers, *params)).fetchone() is not None
 
@@ -2738,11 +2756,14 @@ class InvoicePaymentsMixin:
         * ``outgoing_payment``   Zuordnung auf einen Ausgang;
         * ``status_unsent``      Forderung gebucht, Status aber Entwurf/abgeschlossen;
         * ``amount_due_mismatch`` offener Rest passt nicht zu den Zuordnungen (Geld plus Skonto);
-        * ``skonto_mismatch``    eine Zuordnung trägt ein anderes Skonto (``InvoicePayments.SkontoAmount``, NULL zählt 0), als
+        * ``skonto_mismatch``    eine Zuordnung mit einem Wert in ``InvoicePayments.SkontoAmount`` (nicht NULL) trägt ein anderes Skonto, als
                                  ihre markierten Sätze auf den Skonto-Konten buchen (Summe = −Skonto) – etwa weil ein Satz von Hand
-                                 geändert oder gelöscht wurde –, oder einen ungültigen Wert (nicht NULL und keine ganze Zahl über 0:
+                                 geändert oder gelöscht wurde –, oder einen ungültigen Wert (keine ganze Zahl über 0:
                                  Text, Kommazahl, 0, negativ, Blob – ``valid_skonto_sql``): Dann nennt der Befund ihn nicht, sondern
-                                 sagt in einem festen Satz, dass er ungültig ist; er zählt nie als erledigter Betrag;
+                                 sagt in einem festen Satz, dass er ungültig ist; er zählt nie als erledigter Betrag. Eine Zuordnung
+                                 ohne Wert (NULL) wird nie verglichen – ein Skonto-Konto kann auch Erlöskonto einer Zahlung sein, ein
+                                 Skonto-Satz wird nie allein am Konto erkannt; fehlt der Wert, obwohl der Skonto-Satz noch steht, fallen
+                                 ``transfer_mismatch`` und ``amount_due_mismatch`` auf;
         * ``storno_counter_mismatch`` bei einer Rechnung mit Stornorechnung steht nur eine der beiden
                                  Buchungen („Forderung“ der Rechnung, Gegenbuchung der Stornorechnung);
         * ``legacy_cancelled_open`` eine von Hand stornierte Rechnung ohne Stornorechnung, deren
@@ -2967,11 +2988,14 @@ class InvoicePaymentsMixin:
                     f'Offen sind {euro(due)}, nach den Zuordnungen müssten es '
                     f'{euro((gross or 0) - paid)} sein.')
 
-        # Skonto: Jede Zuordnung trägt genau so viel Skonto, wie ihre Skonto-Sätze buchen – die markierten Sätze (wie ``_payment_children``) unter ihrer Bewegung, die auf einem
-        # Skonto-Konto (``SKONTO_ACCOUNTS``) stehen, ergeben in der Summe −``SkontoAmount`` (NULL zählt 0). Das fängt eine Zuordnung mit Skonto, deren Sätze von Hand geändert oder
-        # gelöscht wurden, und Skonto-Sätze ohne Skonto an der Zuordnung. Ein Wert in der Spalte, der nicht NULL und keine ganze Zahl über 0 ist (``valid_skonto_sql``: Text, eine Kommazahl, 0,
-        # eine negative Zahl, ein Blob – nur die SQL-Konsole schreibt so etwas), ist ein eigener Befund mit festem Satz: Er wird nie formatiert oder gerechnet (er ist keine Zahl, auf die man sich
-        # verlassen kann, und der rohe Wert brach die Prüfliste ab). Eine Abfrage für alle Zuordnungen (die Sätze eines Paares über den Index auf ``ParentBooking_ID``)
+        # Skonto: Eine Zuordnung, deren ``SkontoAmount`` nicht NULL ist, trägt genau so viel Skonto, wie ihre Skonto-Sätze buchen – die markierten Sätze (wie ``_payment_children``) unter ihrer
+        # Bewegung, die auf einem Skonto-Konto (``SKONTO_ACCOUNTS``) stehen, ergeben in der Summe −``SkontoAmount``. Das fängt eine Zuordnung mit Skonto, deren Sätze von Hand geändert oder
+        # gelöscht wurden. **Maßgeblich ist die Spalte, das Konto allein nie:** Ein Skonto-Konto kann auch Erlöskonto einer Zahlung sein (ein Steuersatz der Stammdaten, eine frühere Wahl
+        # des Nutzers); sein Erlössatz ist kein Skonto, und eine Zuordnung ohne den Wert (NULL) wird hier nicht verglichen. Wurde der Wert aus der Spalte genommen, obwohl der Skonto-Satz
+        # noch steht, fällt der Bestand an anderer Stelle auf (``transfer_mismatch``: Geld ohne Skonto ≠ umgebucht; ``amount_due_mismatch``: der Rest passt nicht zu den Zuordnungen). Ein
+        # Wert in der Spalte, der nicht NULL und keine ganze Zahl über 0 ist (``valid_skonto_sql``: Text, eine Kommazahl, 0, eine negative Zahl, ein Blob – nur die SQL-Konsole schreibt so
+        # etwas), ist ein eigener Befund mit festem Satz: Er wird nie formatiert oder gerechnet (er ist keine Zahl, auf die man sich verlassen kann, und der rohe Wert brach die Prüfliste ab).
+        # Eine Abfrage für alle Zuordnungen mit einem Wert (die Sätze eines Paares über den Index auf ``ParentBooking_ID``)
         skonto_numbers = sorted(SKONTO_ACCOUNT_NUMBERS)
         valid = valid_skonto_sql('ip')
         invalid = f'(ip.SkontoAmount IS NOT NULL AND NOT {valid})'
@@ -2981,7 +3005,7 @@ class InvoicePaymentsMixin:
                 "LEFT JOIN Bookings k ON k.ParentBooking_ID = ip.BookingID AND k.DocumentNumber = i.InvoiceNumber AND k.Status = ? "
                 "AND (k.SourceGroup IS NULL OR k.SourceGroup = '') "
                 f"AND k.COA_ID IN (SELECT ID FROM ChartOfAccounts WHERE AccountNumber IN ({','.join('?' * len(skonto_numbers))})) "
-                f"WHERE {is_invoice}{only} GROUP BY ip.ID "
+                f"WHERE {is_invoice}{only} AND ip.SkontoAmount IS NOT NULL GROUP BY ip.ID "
                 f"HAVING {invalid} OR COALESCE(SUM(k.Amount), 0) <> -(CASE WHEN {valid} THEN ip.SkontoAmount ELSE 0 END) ORDER BY i.InvoiceNumber, ip.ID",
                 [PAYMENT_MARK, *skonto_numbers, *only_params]):
             if is_invalid:

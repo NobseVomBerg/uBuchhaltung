@@ -635,7 +635,7 @@ Marke `Status='invoice_payment'`. Es gibt eine Stelle, die Zahlungen zuordnet
   greift das Standardkonto. Das Konto der Bankzeile (der Anzeige-Backfill) und die Sätze des
   WISO-Imports lehren nichts: Dort kann ein Bank-, Aufwands- oder Wartekonto stehen. Nur wenn für den Satz kein Konto hinterlegt ist – z. B. bei 5 % oder 16 % ohne
   Historie – wählt der Nutzer es (`revenue_coa_id`, im Formular „Erlöskonto“): ein vorhandenes
-  Erlöskonto (`get_revenue_coas`, kein Wartekonto), sonst lehnt `assign_invoice_payment` ab – die
+  Erlöskonto (`payment_revenue_choices`: kein Wartekonto, seit 2.9.0 kein Skonto-Konto), sonst lehnt `assign_invoice_payment` ab – die
   Prüfung liegt in der DB-Schicht. Ist ein Konto hinterlegt, wird die Wahl ignoriert.
   `suggest_revenue_coa(Steuersatz)` liefert nur die Vorauswahl (das häufigste Erlöskonto unter den
   Buchungen mit diesem Satz, bei Gleichstand die kleinste Nummer); eine Entscheidung trifft der Nutzer.

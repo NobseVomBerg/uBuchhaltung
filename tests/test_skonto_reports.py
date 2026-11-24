@@ -317,15 +317,18 @@ def test_a_changed_discount_row_is_found(db):
     assert findings(db, invoice_id) == [('skonto_mismatch', 'Zuordnung #1 trägt Skonto 2,38 €, gebucht sind 2,00 €.')]
 
 
-def test_a_discount_row_without_a_discount_on_the_assignment_is_found_with_the_other_two_findings(db):
-    """Ohne ``SkontoAmount`` an der Zuordnung zählt nur das Geld: Der offene Rest und die Umbuchung passen dann auch nicht mehr."""
-    invoice_id, _bank = world(db)
+@pytest.mark.parametrize('receivable', [True, False], ids=['mit-Forderung', 'ohne-Forderung'])
+def test_a_discount_row_without_a_discount_on_the_assignment_is_found_by_the_other_findings(db, receivable):
+    """Ohne ``SkontoAmount`` an der Zuordnung wird sie nicht auf ``skonto_mismatch`` verglichen: Ein Skonto-Konto kann auch Erlöskonto einer Zahlung sein (``tests/test_skonto_revenue_account.py``),
+    maßgeblich ist die Spalte, das Konto allein nie. Zählt nur noch das Geld, passen der offene Rest und – mit Forderung – die Umbuchung nicht mehr: Beides nennt die Prüfliste."""
+    invoice_id, _bank = world(db, receivable=receivable)
     raw(db, 'UPDATE InvoicePayments SET SkontoAmount = NULL')
 
-    assert [category for category, _text in findings(db, invoice_id)] == ['transfer_mismatch', 'amount_due_mismatch', 'skonto_mismatch']
-    assert ('skonto_mismatch', 'Zuordnung #1 trägt Skonto 0,00 €, gebucht sind 2,38 €.') in findings(db, invoice_id)
-    assert ('amount_due_mismatch', 'Offen sind 0,00 €, nach den Zuordnungen müssten es 2,38 € sein.') in findings(db, invoice_id)
-    assert ('transfer_mismatch', 'Zugeordnet sind 116,62 €, auf das Erlöskonto umgebucht 119,00 €.') in findings(db, invoice_id)
+    found = findings(db, invoice_id)
+    assert [category for category, _text in found] == (['transfer_mismatch', 'amount_due_mismatch'] if receivable else ['amount_due_mismatch'])
+    assert ('amount_due_mismatch', 'Offen sind 0,00 €, nach den Zuordnungen müssten es 2,38 € sein.') in found
+    assert (('transfer_mismatch', 'Zugeordnet sind 116,62 €, auf das Erlöskonto umgebucht 119,00 €.') in found) is receivable
+    assert not [category for category, _text in found if category == 'skonto_mismatch'] and findings(db) == found
 
 
 def test_the_open_amount_and_the_transfer_count_the_discount_as_settled(db):
