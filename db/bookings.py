@@ -851,7 +851,8 @@ class BookingsMixin:
         Eine **Zahlung** an einer stornierten Rechnung mit Stornorechnung geht auf keinem dieser Wege verloren, wenn danach mehr
         erstattet als gezahlt wäre: ``PaymentRemovalRefused`` (``_refund_removal_blocker``, vor dem ersten Schreiben in der
         Transaktion geprüft, nichts ist geändert) – erst die Erstattung an der Stornorechnung entfernen. Das Löschen einer
-        Erstattung bleibt frei.
+        Erstattung bleibt frei. Ebenso geht keine Zahlung, solange eine andere Zuordnung derselben Rechnung ein Skonto trägt
+        (``SKONTO_REMOVAL_REFUSED``) – erst die Zahlung mit dem Skonto entfernen; die Bewegung, die beide trägt, geht ganz.
         """
         conn = self._get_connection()
         try:
@@ -929,8 +930,8 @@ class BookingsMixin:
         für jeden Satz), weil dabei die Zahlung einer stornierten Rechnung wegfiele, zu der schon erstattet wurde
         (``PaymentRemovalRefused``) – sonst ``None``. Rein lesend: Die Maske fragt es vor dem ersten Schreiben, damit ein
         Speichern ganz oder gar nicht gelingt. Geprüft werden alle Sätze zusammen (zwei Zahlungen, von denen jede allein gehen
-        dürfte, zusammen aber nicht), und nur die, die das Entfernen löscht: ein importierter Satz oder eine AfA-Buchung wird
-        nur abgehängt (``detachable_split_rows``) und nimmt keine Zuordnung mit."""
+        dürfte, zusammen aber nicht; trägt eine ein Skonto, geht die andere Zahlung derselben Rechnung nur mit ihr zusammen), und nur die, die das Entfernen löscht: ein importierter Satz
+        oder eine AfA-Buchung wird nur abgehängt (``detachable_split_rows``) und nimmt keine Zuordnung mit."""
         ids = [int(booking_id) for booking_id in booking_ids]
         detached = self.detachable_split_rows(ids)
         conn = self._get_connection()

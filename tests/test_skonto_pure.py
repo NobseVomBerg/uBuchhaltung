@@ -23,9 +23,9 @@ from fractions import Fraction
 import pytest
 
 from db import invoice_payments as payments
-from db.invoice_payments import (PAYMENT_MARK, SKONTO_ACCOUNT_NUMBERS, SKONTO_ACCOUNTS, SKONTO_MIXED, SKONTO_NO_REST, SKONTO_NO_TERMS, SKONTO_RATE,
-                                 SKONTO_REFUND, SKONTO_STORNO_EDITED, SKONTO_TAX_ENTRY, SKONTO_TOO_LARGE, SkontoPart, payment_rows, settled_sql,
-                                 skonto_limit, skonto_open_minor, skonto_rate_key, skonto_tax, skonto_terms)
+from db.invoice_payments import (PAYMENT_MARK, SKONTO_ACCOUNT_NUMBERS, SKONTO_ACCOUNTS, SKONTO_ALREADY, SKONTO_MIXED, SKONTO_NO_REST, SKONTO_NO_TERMS, SKONTO_NOT_CENTS,
+                                 SKONTO_RATE, SKONTO_REFUND, SKONTO_REMOVAL_REFUSED, SKONTO_STORNO_EDITED, SKONTO_TAX_ENTRY, SKONTO_TOO_LARGE, SkontoPart, payment_rows,
+                                 settled_sql, skonto_limit, skonto_open_minor, skonto_rate_key, skonto_tax, skonto_terms, valid_skonto_sql)
 from export.einvoice_model import skonto_amount
 from money import fmt_eur, from_minor, round_minor, tax_from_gross
 from tests.document_helpers import add_contacts, add_document
@@ -213,19 +213,26 @@ def test_the_fixed_sentences():
     assert SKONTO_TOO_LARGE == 'Der Rest nach dieser Zahlung ({rest}) ist größer als das Skonto der Rechnung ({skonto}).'
     assert SKONTO_REFUND == 'Skonto gibt es nur bei einer Zahlung, nicht bei einer Erstattung.'
     assert SKONTO_STORNO_EDITED == ('Die Skonto-Buchung einer Zahlung dieser Rechnung wurde geändert – bitte die Zahlung erst entfernen und neu zuordnen.')
+    assert SKONTO_NOT_CENTS == 'Skonto lässt sich nur für einen Rest in ganzen Cent ausbuchen.'
+    assert SKONTO_ALREADY == 'An dieser Rechnung ist schon ein Skonto gebucht.'
+    assert SKONTO_REMOVAL_REFUSED == 'An der Rechnung {number} ist eine Zahlung mit Skonto gebucht – bitte zuerst diese Zahlung entfernen.'
 
 
 def test_the_sentences_are_short_and_carry_no_placeholder_but_their_own():
-    sentences = [SKONTO_NO_TERMS, SKONTO_MIXED, SKONTO_TAX_ENTRY, SKONTO_RATE, SKONTO_NO_REST, SKONTO_REFUND, SKONTO_STORNO_EDITED]
+    sentences = [SKONTO_NO_TERMS, SKONTO_MIXED, SKONTO_TAX_ENTRY, SKONTO_RATE, SKONTO_NO_REST, SKONTO_REFUND, SKONTO_STORNO_EDITED, SKONTO_NOT_CENTS, SKONTO_ALREADY]
     for text in sentences:
         assert text.endswith('.') and '{' not in text and '}' not in text and len(text) < 160, text
+    assert SKONTO_REMOVAL_REFUSED.format(number='R26003') == 'An der Rechnung R26003 ist eine Zahlung mit Skonto gebucht – bitte zuerst diese Zahlung entfernen.'
+    assert SKONTO_REMOVAL_REFUSED.endswith('.') and len(SKONTO_REMOVAL_REFUSED) < 160
     shown = SKONTO_TOO_LARGE.format(rest=fmt_eur(from_minor(23800)), skonto=fmt_eur(from_minor(10000)))
     assert shown == 'Der Rest nach dieser Zahlung (2,38 €) ist größer als das Skonto der Rechnung (1,00 €).'
 
 
-def test_settled_sql_counts_the_money_and_the_discount():
-    assert settled_sql() == 'Amount + COALESCE(SkontoAmount, 0)'
-    assert settled_sql('ip') == 'ip.Amount + COALESCE(ip.SkontoAmount, 0)'
+def test_settled_sql_counts_the_money_and_the_valid_discount():
+    assert valid_skonto_sql() == "(typeof(SkontoAmount) = 'integer' AND SkontoAmount > 0)"
+    assert valid_skonto_sql('ip') == "(typeof(ip.SkontoAmount) = 'integer' AND ip.SkontoAmount > 0)"
+    assert settled_sql() == "Amount + CASE WHEN (typeof(SkontoAmount) = 'integer' AND SkontoAmount > 0) THEN SkontoAmount ELSE 0 END"
+    assert settled_sql('ip') == "ip.Amount + CASE WHEN (typeof(ip.SkontoAmount) = 'integer' AND ip.SkontoAmount > 0) THEN ip.SkontoAmount ELSE 0 END"
     with closing(sqlite3.connect(':memory:')) as con:
         con.execute('CREATE TABLE InvoicePayments (ID INTEGER PRIMARY KEY, InvoiceID INTEGER, Amount INTEGER NOT NULL, SkontoAmount INTEGER)')
         con.executemany('INSERT INTO InvoicePayments (InvoiceID, Amount, SkontoAmount) VALUES (?, ?, ?)',
@@ -233,6 +240,21 @@ def test_settled_sql_counts_the_money_and_the_discount():
         assert con.execute(f'SELECT InvoiceID, SUM({settled_sql()}) FROM InvoicePayments GROUP BY InvoiceID ORDER BY InvoiceID').fetchall() == [
             (1, 1190000), (2, 1190000), (3, -100)]
         assert con.execute(f'SELECT SUM({settled_sql("ip")}) FROM InvoicePayments ip').fetchone()[0] == 2379900
+
+
+@pytest.mark.parametrize('literal, kind', [("'abc'", 'text'), ("'23800abc'", 'text'), ('23800.5', 'real'), ('0', 'integer'), ('-23800', 'integer'), ("X'4142'", 'blob')],
+                         ids=['text', 'text-with-a-number', 'fraction', 'zero', 'negative', 'blob'])
+def test_an_invalid_discount_value_is_never_settled_and_never_valid(literal, kind):
+    """Nur eine ganze Zahl über 0 zählt als Skonto (Text, eine Kommazahl, 0, eine negative Zahl und ein Blob nur über die SQL-Konsole): Der Wert wird nie gerechnet – auch nicht über
+    die Zahl, die SQLite einem Text vorn abliest (``'23800abc'`` ist in einer Rechnung 23800)."""
+    with closing(sqlite3.connect(':memory:')) as con:
+        con.execute('CREATE TABLE InvoicePayments (ID INTEGER PRIMARY KEY, InvoiceID INTEGER, Amount INTEGER NOT NULL, SkontoAmount INTEGER)')
+        con.execute(f'INSERT INTO InvoicePayments (InvoiceID, Amount, SkontoAmount) VALUES (1, 1166200, {literal})')
+
+        assert con.execute('SELECT typeof(SkontoAmount) FROM InvoicePayments').fetchone() == (kind,)
+        assert con.execute(f'SELECT {settled_sql()} FROM InvoicePayments').fetchone() == (1166200,)
+        assert con.execute(f'SELECT {valid_skonto_sql()} FROM InvoicePayments').fetchone() == (0,)
+        assert con.execute(f'SELECT {settled_sql("ip")} FROM InvoicePayments ip').fetchone() == (1166200,)
 
 
 # ── payment_rows(skonto=…) ───────────────────────────────────────────────────

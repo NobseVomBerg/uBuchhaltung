@@ -306,7 +306,7 @@ def test_two_partial_refunds_split_the_tax_of_the_money_and_the_second_one_close
     assert shape(kids(db, second)) == [('liquid_first', 1800, 10000, D('-66.62'), None), ('transfer', 4405, 4400, D('-66.62'), D('-10.64'))]   # der Rest der Steuer: 18,62 − 7,98
     with closing(db._get_connection()) as conn:
         original_gross, original_tax = conn.execute('SELECT SumGross, TaxAmount FROM Invoices WHERE ID = ?', (invoice_id,)).fetchone()
-        assert db._allocations_tax(conn, invoice_id, NUMBER, original_gross, original_tax) == 186200             # was die Zahlungen der stornierten Rechnung tragen: 19,00 − 0,38 − 0,38 + 0,38
+        assert db._allocations_tax(conn, invoice_id, NUMBER, original_gross, original_tax) == 186200             # was die Zahlungen der stornierten Rechnung tragen: 19,00 − 0,38 (der Erlössatz der Rücknahme; die Skonto-Sätze zählen nicht)
     assert db.get_storno_credits() == {storno.storno_id: 0} and balances(db, 7) == [0] * 6 and helpers.euer_values(db, RANGE) == {}
     assert marked_tax(db) == 0
     check_every_probe(db, (7, 8, 12))
@@ -642,7 +642,7 @@ def test_a_part_payment_of_the_same_invoice_moves_and_the_payment_with_the_disco
     assert db.get_storno_credits() == {storno.storno_id: D('66.62')}
     assert findings(db) == []
     check_every_probe(db, (4, 5, 6, 7))
-    refund(db, storno.storno_id, '66.62', day='2025-07-01')                                                   # der Rest des Guthabens: seine Steuer ist 11,02 − 0,38 − 0,38 + 0,38 = 10,64
+    refund(db, storno.storno_id, '66.62', day='2025-07-01')                                                   # der Rest des Guthabens: seine Steuer ist 11,02 − 0,38 (der Erlössatz der Rücknahme) = 10,64
     assert shape(kids(db, raw(db, 'SELECT MAX(ID) FROM Bookings WHERE BookingType = ?', 'bank')[0][0])) == [
         ('liquid_first', 1800, 10000, D('-66.62'), None), ('transfer', 4405, 4400, D('-66.62'), D('-10.64'))]
     assert db.get_storno_credits() == {storno.storno_id: 0} and findings(db) == []

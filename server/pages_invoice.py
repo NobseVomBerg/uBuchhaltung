@@ -820,11 +820,11 @@ def normalize_status(status):
 
 def _revenue_coa_select(db, tax_rate, selected=None, field_id='revenueCoa'):
     """Das Auswahlfeld „Erlöskonto“ (``revenue_coa_id``, Pflichtfeld) mit den wählbaren Erlöskonten
-    (``Database.get_revenue_coas``). Vorgewählt ist ``selected`` (wenn es ein wählbares Erlöskonto ist), sonst der
+    (``Database.payment_revenue_choices``: ohne die Skonto-Konten). Vorgewählt ist ``selected`` (wenn es ein wählbares Erlöskonto ist), sonst der
     Vorschlag ``Database.suggest_revenue_coa`` – eine Vorauswahl, keine Entscheidung; ohne beides steht „bitte wählen“
     da. Alle Werte sind maskiert. ``field_id``: das ``id`` des Felds – eine Seite trägt mehrere Auswahlen (Zahlung, Neuaufbau
     der Zuordnung), jede mit eigener ID."""
-    accounts = db.get_revenue_coas()
+    accounts = db.payment_revenue_choices()
     if selected not in {coa_id for coa_id, _number, _name in accounts}:
         selected = db.suggest_revenue_coa(tax_rate) if tax_rate is not None else None
     options = '<option value="">— bitte wählen —</option>'

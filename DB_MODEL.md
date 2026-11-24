@@ -660,6 +660,11 @@ Marke `Status='invoice_payment'`. Es gibt eine Stelle, die Zahlungen zuordnet
   einmal auf den Cent gerundet). Das Skonto-Konto je Satz (`SKONTO_ACCOUNTS`): 19 % → 4736, 7 % → 4731, 0 % und § 19 → 4730 (Standardkonten; fehlt eines,
   legt die erste Zuordnung es an); jeder andere Satz hat keines. Die Bankseite der Sätze (Summe minus Skonto) ergibt genau das Geld; das gelernte Erlöskonto
   ändert sich nie (ein Skonto-Konto lehrt nichts). Die Prüfliste nennt ein Skonto, dessen Sätze nicht zu `SkontoAmount` passen (`skonto_mismatch`).
+  **Stornieren** nimmt das Skonto in seiner Transaktion zurück (`_reverse_skonto_in`): `Bank → 10000` −Skonto, `Wartekonto → Erlöskonto` −Skonto mit −Steuer,
+  `Skonto-Konto → Bank` +Skonto mit +Steuer (ohne Forderung die letzten beiden als `Erlöskonto → Bank` und `Skonto-Konto → Bank`), markiert, Beleg-Nr. der
+  stornierten Rechnung, am späteren von Stornodatum und Datum der Bankbewegung; danach ist `SkontoAmount` NULL und das Guthaben das gezahlte Geld. Je Rechnung
+  gibt es höchstens ein Skonto; solange es gebucht ist, lässt sich keine andere Zahlung der Rechnung entfernen. Der Umzug auf die Ersatzrechnung und „Zuordnung
+  neu aufbauen“ übergehen eine Zahlung mit Skonto mit benanntem Grund.
 - **Gleichzeitigkeit:** Prüfung, Schreiben und Neuberechnung laufen in einer `BEGIN IMMEDIATE`-Transaktion;
   zwei gleichzeitige Anfragen legen das Paar nicht doppelt an (zusätzlich fängt der UNIQUE-Index
   `ux_invoicepayments_invoice_booking` es ab, Abschnitt 14). Konten,
