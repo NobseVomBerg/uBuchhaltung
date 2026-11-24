@@ -3327,7 +3327,7 @@ def _backfill_booking_skr(db, booking_id, invoice, revenue_coa_id):
                                contact_id=invoice[13], document_number=invoice[1])
 
 
-def link_booking_to_invoice_capped(db, invoice_id, booking_id, amount=None, revenue_coa_id=None):
+def link_booking_to_invoice_capped(db, invoice_id, booking_id, amount=None, revenue_coa_id=None, skonto=False):
     """Buchung einer Rechnung als Zahlung zuordnen (idempotent, gekappt).
 
     Zuordnungsbetrag = min(gewünschter Betrag, offener Rechnungsrest, freier
@@ -3336,11 +3336,12 @@ def link_booking_to_invoice_capped(db, invoice_id, booking_id, amount=None, reve
     bedeutet "so viel wie möglich". Zuordnung und Buchungssätze legt
     ``Database.assign_invoice_payment`` in einer Transaktion an. ``revenue_coa_id``: das
     Erlöskonto, das der Nutzer wählt, wenn für den Steuersatz keines hinterlegt ist (sonst
-    ohne Wirkung).
+    ohne Wirkung). ``skonto``: Die Zahlung schließt die Rechnung mit Skonto (der Rest nach
+    der Zahlung wird als Skonto ausgebucht, siehe ``assign_invoice_payment``).
 
     Returns (True, None) bei Erfolg, sonst (False, Fehlermeldung).
     """
-    assignment = db.assign_invoice_payment(invoice_id, booking_id, amount, revenue_coa_id)
+    assignment = db.assign_invoice_payment(invoice_id, booking_id, amount, revenue_coa_id, skonto)
     if not assignment.ok:
         return False, assignment.message
     try:

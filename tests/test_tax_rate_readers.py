@@ -74,6 +74,10 @@ READERS = {
     ('db/invoice_payments.py', '_refund_plan'): ('Erstattung einer Stornorechnung: Satz und Steuer der stornierten Rechnung; mit Steuersatz je Position '
                                                  '(MixedTaxRates) an beiden Belegen erstattet sie je Satz (_mixed_refund_parts), der Kopfsatz wird nie gelesen; '
                                                  'trägt nur einer von beiden das Kennzeichen, wird abgelehnt'),
+    ('db/invoice_payments.py', '_skonto_state'): ('Zahlung mit Skonto (assign_invoice_payment(…, skonto=True)): Kopfsatz der Rechnung für das Skonto-Konto und die Steuer des '
+                                                  'Skontos (skonto_rate_key: nur 19 %, 7 %, 0 % und § 19 haben eines, jeder andere Kopfsatz lehnt ab); ein Beleg mit Steuersatz '
+                                                  'je Position (MixedTaxRates) oder mit einem Satz aus den Stammdaten lehnt ab – sein Kopfsatz wird nie als Satz eines Skontos '
+                                                  'gelesen. Dieselben Regeln in der Vorprüfung und, am frisch gelesenen Stand, in der Transaktion'),
     ('db/invoice_repair.py', '_rebuild_in'): ('Zuordnung neu aufbauen: Satz der Rechnung für die neuen Sätze; ein Beleg mit Steuersatz je Position '
                                               '(MixedTaxRates) baut nichts neu auf (Grund mixed: nur der offene Betrag wird neu gerechnet), ebenso einer mit einem '
                                               'Erlöskonto aus den Stammdaten (Grund tax_entry)'),

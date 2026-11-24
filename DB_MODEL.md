@@ -1,6 +1,6 @@
 # Datenbankmodell uBuchhaltung
 
-**Stand:** Version 2.8.0 (Schema 2008)
+**Stand:** Version 2.9.0 (Schema 2009)
 **DBMS:** SQLite 3
 **Datei:** `data/users/<Name>/buch.db`
 
@@ -651,6 +651,15 @@ Marke `Status='invoice_payment'`. Es gibt eine Stelle, die Zahlungen zuordnet
   eine Zuordnung ohne markierte Sätze (Altbestand, WISO-Import) zählt mit ihrem anteiligen Betrag – die
   Summe der Zahlungssätze stimmt so mit der Steuer der Rechnung überein, auch wenn die Sätze einer
   Altzahlung eine andere oder keine Beleg-Nr. tragen.
+- **Skonto (seit 2.9.0, `assign_invoice_payment(…, skonto=True)`):** Die Zahlung, die die Rechnung schließt, bucht den Rest der Rechnung nach ihr als
+  Skonto aus – `SkontoAmount` > 0, `Amount` bleibt das Geld. Gebucht wird der tatsächliche Rest (nie mehr als das Skonto der Rechnung: Prozent vom Brutto,
+  auf den Cent; die Frist wird nicht geprüft), und nur für eine Rechnung mit Skonto-Bedingungen, einem Satz und ohne Steuersatz je Position und ohne Steuersatz
+  aus den Stammdaten; sonst lehnt sie mit einem festen Satz ab (`SKONTO_*`), ohne zu schreiben und ohne ein Konto anzulegen. Die Sätze, in dieser Reihenfolge:
+  `Bank → 10000` über Geld plus Skonto (nur mit Forderung), `Wartekonto → Erlöskonto` bzw. ohne Forderung `Erlöskonto → Bank` über dieselbe Summe mit dem
+  Rest der Rechnungssteuer, zuletzt `Skonto-Konto → Bank` (`purpose_first`) mit dem negativen Skonto und seiner Steuer (Skonto × Satz / (100 + Satz),
+  einmal auf den Cent gerundet). Das Skonto-Konto je Satz (`SKONTO_ACCOUNTS`): 19 % → 4736, 7 % → 4731, 0 % und § 19 → 4730 (Standardkonten; fehlt eines,
+  legt die erste Zuordnung es an); jeder andere Satz hat keines. Die Bankseite der Sätze (Summe minus Skonto) ergibt genau das Geld; das gelernte Erlöskonto
+  ändert sich nie (ein Skonto-Konto lehrt nichts). Die Prüfliste nennt ein Skonto, dessen Sätze nicht zu `SkontoAmount` passen (`skonto_mismatch`).
 - **Gleichzeitigkeit:** Prüfung, Schreiben und Neuberechnung laufen in einer `BEGIN IMMEDIATE`-Transaktion;
   zwei gleichzeitige Anfragen legen das Paar nicht doppelt an (zusätzlich fängt der UNIQUE-Index
   `ux_invoicepayments_invoice_booking` es ab, Abschnitt 14). Konten,
@@ -1050,10 +1059,11 @@ unverändert mit (`db.invoice_payments.ITEM_SNAPSHOT_COLUMNS`, von `db.invoices`
 | ID | INTEGER | PRIMARY KEY | |
 | InvoiceID | INTEGER | NOT NULL, FK → Invoices (ON DELETE CASCADE) | |
 | BookingID | INTEGER | NOT NULL, FK → Bookings | Bankbewegung der Zahlung (Altbestand: auch ein Buchungssatz) |
-| Amount | INTEGER | NOT NULL | Zahlungsbetrag in Minor Units (1 = 0,0001 EUR). Negativ sind die Zuordnungen des WISO-Imports (Storno, Gutschrift) und die Erstattung einer Stornorechnung (an der Stornorechnung); sonst legt die Oberfläche nur positive Beträge an |
+| Amount | INTEGER | NOT NULL | Zahlungsbetrag in Minor Units (1 = 0,0001 EUR) – das Geld, das geflossen ist, ohne das Skonto (`SkontoAmount`). Negativ sind die Zuordnungen des WISO-Imports (Storno, Gutschrift) und die Erstattung einer Stornorechnung (an der Stornorechnung); sonst legt die Oberfläche nur positive Beträge an |
 | PaymentDate | DATE | NOT NULL | Datum der Bankbewegung |
 | Notes | TEXT | | |
 | CreatedAt | DATETIME | | |
+| SkontoAmount | INTEGER | | **Skonto (Schema 2009, seit 2.9.0):** der Rest der Rechnung, den diese Zahlung als Skonto ausbucht, in Minor Units; NULL = keines (der ganze Bestand). Nur an der Zuordnung, die die Rechnung mit Skonto schließt (`assign_invoice_payment(…, skonto=True)`); höchstens das Skonto, das die Rechnung vorsieht (`SkontoDays`/`SkontoPercent`). Die Spalte steht am Ende der Tabelle (Index 7), die Migration fügt sie überall mit NULL an |
 
 Das Paar (`InvoiceID`, `BookingID`) kommt höchstens einmal vor. Jeder Schreiber
 (`assign_invoice_payment`, `assign_storno_refund`, `link_invoice_to_transaction`) prüft und fügt in einer
@@ -1063,6 +1073,12 @@ Datenbanken bekommen ihn gleich, bestehende beim Öffnen – nur wenn sie keine 
 wird er übersprungen (kein Fehler), die Prüfliste „Zahlungszuordnungen“ meldet die Dubletten, und
 beim ersten Start ohne Dubletten entsteht er.
 Die Sätze zur Zuordnung stehen in Abschnitt 9a.
+
+**Geldbegriff der Rechnung (seit 2.9.0):** Was eine Zuordnung an der Rechnung erledigt, ist `Amount + COALESCE(SkontoAmount, 0)` (`db.invoice_payments.settled_sql`):
+`AmountDue` (`_recalc_invoice`), der Rest vor einer weiteren Zuordnung (`_assign_in_tx`), die Prüfliste (`transfer_mismatch`, `amount_due_mismatch`) und
+Schritt D des Neuaufbaus rechnen so; eine Rechnung, die mit Skonto bezahlt ist, hat den Rest 0 und den Status „bezahlt“. Alles, was das Geld selbst meint –
+freier Rest einer Bewegung, Guthaben eines Storno-Paares, Erstattung, Änderung von Betrag oder Datum einer zugeordneten Bewegung –, liest weiter `Amount`.
+Die Buchungssätze eines Skontos beschreibt Abschnitt 9a; die Prüfliste nennt eine Zuordnung, deren Skonto-Sätze nicht zu `SkontoAmount` passen (`skonto_mismatch`).
 
 ---
 
@@ -1685,4 +1701,4 @@ Wörterbücher, je Gruppe einmal sortiert, das Umfeld über Halbierungssuche):
 
 ---
 
-**Letzte Aktualisierung:** 22. November 2026 (Schema 2008)
+**Letzte Aktualisierung:** 23. November 2026 (Schema 2009)

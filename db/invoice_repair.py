@@ -63,7 +63,7 @@ from collections import defaultdict, namedtuple
 
 from money import fmt_eur, from_minor
 from .invoice_payments import (NO_REVENUE_COA, PAYMENT_ROW_COLUMNS, RECEIVABLE_STATUSES, SMALL_BUSINESS_REVENUE_NUMBERS, STORNO_KIND,
-                               has_mixed_rates, next_payment_status, small_business_revenue_number, uses_small_business_rule)
+                               has_mixed_rates, next_payment_status, settled_sql, small_business_revenue_number, uses_small_business_rule)
 from .invoice_versions import is_iso_date
 from .reporting import is_income_account
 
@@ -383,8 +383,9 @@ class InvoiceRepairMixin:
         # ── D: offener Betrag und Status ─────────────────────────────────────
         # Geschrieben wird, wenn A–C etwas geschrieben haben (ihre Bausteine rechnen die Rechnung zwischendurch mit der
         # Uhr von jetzt neu – hier kommt der Status zurück, den sie hatte) oder wenn der Rest nicht zu den Zuordnungen
-        # passt; eine Überzahlung (Rest unter 0, keine Stornorechnung) bleibt ein Befund
-        paid = conn.execute('SELECT COALESCE(SUM(Amount), 0) FROM InvoicePayments WHERE InvoiceID = ?',
+        # passt; eine Überzahlung (Rest unter 0, keine Stornorechnung) bleibt ein Befund. Erledigt ist, was die Zuordnungen an der Rechnung erledigen:
+        # das Geld und das Skonto (``settled_sql``)
+        paid = conn.execute(f'SELECT COALESCE(SUM({settled_sql()}), 0) FROM InvoicePayments WHERE InvoiceID = ?',
                             (invoice_id,)).fetchone()[0]
         due_after = gross - paid
         status_after = next_payment_status(status, gross, paid, due_date, today) if removals else status

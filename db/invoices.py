@@ -18,7 +18,7 @@ from .invoice_payments import (MIXED_ALLOCATION_UNREADABLE, MIXED_GROUP_NOT_POSI
                                MIXED_LINK_NOT_BOOKABLE, MIXED_NO_REVENUE_COA, MIXED_RECEIVABLE_MISMATCH, PAYABLE_STATUSES,
                                PAYMENT_MARK, STORNO_KIND, STORNO_PAYMENT_MESSAGE, ITEM_SNAPSHOT_COLUMNS, ITEM_SNAPSHOT_KEYS, MixedNotBookable,
                                SMALL_BUSINESS_REVENUE_BEFORE, SMALL_BUSINESS_REVENUE_FROM, SMALL_BUSINESS_REVENUE_NAMES,
-                               SMALL_BUSINESS_REVENUE_NUMBERS, SMALL_BUSINESS_SWITCH, has_mixed_rates, small_business_day,
+                               SMALL_BUSINESS_REVENUE_NUMBERS, SMALL_BUSINESS_SWITCH, SKONTO_ACCOUNT_NUMBERS, has_mixed_rates, small_business_day,
                                small_business_revenue_number, uses_small_business_rule)
 from .matching import FORM_TRANSFER
 from .reporting import is_income_account
@@ -600,6 +600,17 @@ class InvoicesMixin:
         rows = cursor.fetchall()
         conn.close()
         return [self._euro_row(r, 3) for r in rows]  # Amount (Index 3) -> Euro-Decimal
+    def get_invoice_skonto(self, invoice_id):
+        """Das Skonto, das die Zuordnungen einer Rechnung ausbuchen: ``{ID der Zuordnung: Betrag (Euro, Decimal)}`` – nur Zuordnungen mit einem Skonto über 0 (NULL und 0 heißen
+        „keines“; ein Wert, der keine ganze Zahl ist, per SQL-Konsole geschrieben, zählt nicht). Eine eigene Lesestelle neben ``get_invoice_payments``, dessen Tupel (eine Zeile je
+        Zuordnung) sich nicht verbreitert: Es wird an vielen Stellen entpackt. Rein lesend."""
+        conn = self._get_connection()
+        try:
+            rows = conn.execute("SELECT ID, SkontoAmount FROM InvoicePayments WHERE InvoiceID = ? "
+                                "AND typeof(SkontoAmount) = 'integer' AND SkontoAmount > 0 ORDER BY ID", (invoice_id,)).fetchall()
+        finally:
+            conn.close()
+        return {payment_id: from_minor(minor) for payment_id, minor in rows}
     def delete_invoice_payment(self, payment_id):
         """Eine Zuordnung samt ihren Buchungssätzen entfernen und die Rechnung neu rechnen –
         siehe ``unassign_invoice_payment``."""
@@ -820,6 +831,9 @@ class InvoicesMixin:
 
         Alles andere lehrt nichts – auch „Bank an Debitoren“ nicht, und kein Satz, den ein Nutzer
         im Split-Editor in eine andere Form gebracht hat (aus „4405 an 4400“ wurde „4736 an 4400“).
+        **Ein Skonto-Konto (4730, 4731, 4736: ``SKONTO_ACCOUNT_NUMBERS``) lehrt nie:** Der Satz fällt heraus, ein älterer lehrt weiter. Der Skonto-Satz einer Zahlung mit Skonto ist
+        negativ und zählte ohnehin nicht, aber ein positiver auf einem dieser Konten (die Rücknahme eines Skontos beim Stornieren, ein im Editor umgedrehter Satz) machte sonst
+        das Skonto-Konto zum Erlöskonto des Satzes – und die nächste Zahlung bucht ihren Erlös dorthin.
         **Auch keine Rechnung, die ein Erlöskonto aus den Stammdaten trägt** (2.8.0, ``InvoiceItems.RevenueCoaId``): Ein ausdrücklich
         gewähltes Konto ist keine Erfahrung – ein ganz steuerfreier Beleg (Kopf 0) läge sonst im Topf von „0 und § 19“ und lehrte der nächsten
         Kleinunternehmer-Rechnung das Konto der Heilbehandlung. Die Zahlungen von Rechnungen mit 19 oder 7 % ohne Erlöskonto (die Vorbelegung der
@@ -838,6 +852,8 @@ class InvoicesMixin:
         und 1). Ein Satz von 0 % trägt ``TaxRate`` NULL (Schlüssel −999) und lehrt deshalb kein Konto für 0 %."""
         waiting = tuple(number for number, _name in self.OPEN_REVENUE_ACCOUNTS.values())
         waiting_marks = ','.join('?' * len(waiting))
+        skonto = tuple(sorted(SKONTO_ACCOUNT_NUMBERS))
+        skonto_marks = ','.join('?' * len(skonto))
         conn = self._get_connection()
         try:
             payment_ids = sorted(self._get_payment_coa_ids(conn.cursor()))
@@ -851,6 +867,7 @@ class InvoicesMixin:
                     WHEN own.AccountNumber IN ({waiting_marks}) THEN k.CounterCOA_ID
                     ELSE k.COA_ID END
                 WHERE k.Status = ? AND k.ParentBooking_ID IS NOT NULL AND k.Amount > 0
+                  AND cand.AccountNumber NOT IN ({skonto_marks})
                   AND (i.DocumentType = 'invoice' OR i.DocumentType IS NULL)
                   AND NOT EXISTS (SELECT 1 FROM InvoiceItems it WHERE it.InvoiceId = i.ID AND it.RevenueCoaId IS NOT NULL)
                   AND (own.AccountNumber IN ({waiting_marks})
@@ -859,7 +876,7 @@ class InvoicesMixin:
                             THEN {self._revenue_rate_key_sql('k.TaxRate')}
                             ELSE {self._revenue_rate_key_sql('i.TaxRate')} END) = ?
                 ORDER BY k.ID DESC LIMIT 1
-            ''', (*waiting, PAYMENT_MARK, *waiting, *payment_ids, key)).fetchone()
+            ''', (*waiting, PAYMENT_MARK, *skonto, *waiting, *payment_ids, key)).fetchone()
         finally:
             conn.close()
         return (row[0], row[1]) if row and is_income_account(row[1]) else (None, None)

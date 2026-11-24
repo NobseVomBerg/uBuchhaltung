@@ -100,6 +100,11 @@ MIXED_TAX_SCHEMA = 2007
 #: ``_ensure_tax_rates_schema`` (in der Transaktion der Umstellung), die Spalten fügt ``_run_migrations`` an.
 TAX_RATES_SCHEMA = 2008
 
+#: Ab dieser Schema-Zahl (Version 2.9.0) kann eine Zahlungszuordnung ein Skonto tragen (``InvoicePayments.SkontoAmount``: Minor Units, NULL = keines).
+#: Die Spalte steht nur an der Zuordnung, die die Rechnung mit Skonto schließt; ``Amount`` bleibt das Geld, das geflossen ist. Der Bestand behält überall
+#: NULL – nichts wird umgedeutet. Die Spalte fügt ``_run_migrations`` am Ende der Tabelle an, wie das CREATE TABLE der frischen Datenbank sie führt.
+SKONTO_SCHEMA = 2009
+
 
 class SchemaMixin:
     def _column_exists(self, cursor, table, column):
@@ -221,6 +226,10 @@ class SchemaMixin:
             self._add_column_if_missing(cursor, 'InvoiceItems', 'TaxRateBp', 'INTEGER')
             self._add_column_if_missing(cursor, 'InvoiceItems', 'TaxExemptReason', 'TEXT')
             self._add_column_if_missing(cursor, 'InvoiceItems', 'RevenueCoaId', 'INTEGER')
+        if from_version < SKONTO_SCHEMA:
+            # 2.9.0: Skonto an der Zahlungszuordnung. Die Spalte kommt ans Ende, wie im CREATE TABLE der frischen Datenbank; der Bestand behält überall
+            # NULL (= kein Skonto: ``Amount`` ist die ganze Zahlung) – nichts wird umgedeutet.
+            self._add_column_if_missing(cursor, 'InvoicePayments', 'SkontoAmount', 'INTEGER')
 
     def _correct_tax_keys(self, cursor):
         """Die Zeilen von ``TAX_KEY_CORRECTIONS`` in ``TaxKeys`` berichtigen (eine abweichende Zeile wird überschrieben,
@@ -877,6 +886,9 @@ class SchemaMixin:
                 PaymentDate DATE NOT NULL,
                 Notes TEXT,
                 CreatedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+                -- Skonto (2.9.0, Schema 2009; Reihenfolge wie das ALTER TABLE der Migration): der Rest der Rechnung, den diese Zahlung als
+                -- Skonto ausbucht, in Minor Units; NULL = keines. Nur an der Zuordnung, die die Rechnung schließt; Amount bleibt das Geld
+                SkontoAmount INTEGER,
                 FOREIGN KEY (InvoiceID) REFERENCES Invoices(ID) ON DELETE CASCADE,
                 FOREIGN KEY (BookingID) REFERENCES Bookings(ID)
             )

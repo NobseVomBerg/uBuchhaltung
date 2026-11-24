@@ -16,14 +16,20 @@ Stornorechnung, seit 2.2.3), und EINE, die Zuordnungen entfernt (``unassign_invo
 ``delete_transaction`` und der WISO-Import gehen über dieselben Bausteine. Anlegen und Entfernen laufen in
 einer Transaktion mit ``BEGIN IMMEDIATE``: Prüfung, Schreiben und Neuberechnung der Rechnung sehen denselben
 Stand – zwei gleichzeitige Anfragen legen das Paar (Rechnung, Bankbewegung) nie zweimal an.
+
+Seit 2.9.0 kann die Zahlung, die eine Rechnung schließt, ein **Skonto** ausbuchen (``assign_invoice_payment(…, skonto=True)``,
+Abschnitt „Skonto bei der Zahlungszuordnung“ unten): ``InvoicePayments.Amount`` bleibt das Geld, ``InvoicePayments.SkontoAmount`` ist der
+ausgebuchte Rest, und ein dritter markierter Satz „Skonto-Konto an Bank“ trägt ihn. Was eine Zuordnung an der Rechnung erledigt, ist Geld
+plus Skonto (``settled_sql``) – der offene Betrag, der Status und die Prüfliste zählen so; alles, was das Geld selbst meint (freier Rest
+einer Bewegung, Guthaben, Erstattung), liest weiter ``Amount``.
 """
 import datetime
 import re
 import sqlite3
 from collections import defaultdict, namedtuple
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
-from money import to_minor, from_minor, prorate, round_minor, fmt_eur, is_covered
+from money import SCALE, to_minor, from_minor, prorate, round_minor, fmt_eur, is_covered
 from tax_groups import (MAX_RATE_BP, MIN_RATE_BP, RateGroupsMismatch, booked_fault, booking_rate, bp_pct, group_label, item_rate_of, mixed_groups,
                         rate_pct, refund_pool, split_payment)
 from .matching import FORM_LIQUID_FIRST, FORM_PURPOSE_FIRST, FORM_TRANSFER, REVENUE_ACCOUNT_RANGE, bank_effect, receivables_covered
@@ -228,6 +234,110 @@ def _revenue_today():
     return datetime.date.today()
 
 
+# ── Skonto bei der Zahlungszuordnung (2.9.0, Schema 2009) ────────────────────────────────────────────────────────────────────────────────────────
+# Eine Zahlung, die eine Rechnung mit Skonto schließt (``assign_invoice_payment(…, skonto=True)``), bucht den Rest der Rechnung als Erlösschmälerung aus: ``InvoicePayments.Amount`` bleibt das
+# Geld, das geflossen ist, ``SkontoAmount`` ist der ausgebuchte Rest, und drei markierte Sätze tragen es (``payment_rows(skonto=…)``). Was dafür gilt – Konten, Steuer, Grenzen, die festen Sätze der
+# Ablehnungen –, steht hier an EINER Stelle; die Reihenfolge der Prüfungen und das Schreiben stehen in ``InvoicePaymentsMixin``.
+
+#: Das Skonto-Konto je Steuersatz der Rechnung – Satz (19, 7 oder 0) → (Kontonummer, Name), SKR04: 19 % auf 4736, 7 % auf 4731, 0 % mit Steuerausweis und ein Beleg ohne Steuerausweis
+#: (§ 19, Kopfsatz −1) auf 4730. Es sind Standardkonten (``seed_data/chart_of_accounts_skr04.json``); fehlt eines in einem älteren Bestand, legt die erste Zuordnung mit Skonto es an
+#: (``_ensure_standard_coa`` – vor der Transaktion, nie darin). Jeder andere Kopfsatz hat keines: ``skonto_rate_key`` liefert dann ``None``, und die Zuordnung lehnt ab.
+SKONTO_ACCOUNTS = {
+    19: (4736, 'Gewährte Skonti 19 % USt'),
+    7: (4731, 'Gewährte Skonti 7 % USt'),
+    0: (4730, 'Gewährte Skonti'),
+}
+SKONTO_ACCOUNT_NUMBERS = frozenset(number for number, _name in SKONTO_ACCOUNTS.values())
+
+# Die Ablehnungen einer Zuordnung mit Skonto: feste Sätze, ohne Ausnahmetext. ``{rest}``/``{skonto}``: ein Betrag (``fmt_eur``)
+SKONTO_NO_TERMS = 'Diese Rechnung sieht kein Skonto vor.'
+SKONTO_MIXED = 'Skonto lässt sich bei einer Rechnung mit mehreren Steuersätzen noch nicht ausbuchen.'
+SKONTO_TAX_ENTRY = 'Skonto lässt sich bei einer Rechnung mit Steuersatz aus den Stammdaten noch nicht ausbuchen.'
+SKONTO_RATE = 'Skonto lässt sich für den Steuersatz dieser Rechnung noch nicht ausbuchen.'
+SKONTO_NO_REST = 'Nach dieser Zahlung bleibt kein Rest – es gibt kein Skonto auszubuchen.'
+SKONTO_TOO_LARGE = 'Der Rest nach dieser Zahlung ({rest}) ist größer als das Skonto der Rechnung ({skonto}).'
+# Die beiden folgenden gehören zur Erstattung und zum Stornieren einer Rechnung, die ein Skonto trägt (spätere Etappen: die Route, die Rücknahme beim Stornieren)
+SKONTO_REFUND = 'Skonto gibt es nur bei einer Zahlung, nicht bei einer Erstattung.'
+SKONTO_STORNO_EDITED = ('Die Skonto-Buchung einer Zahlung dieser Rechnung wurde geändert – bitte die Zahlung erst entfernen und neu '
+                        'zuordnen.')
+
+
+def settled_sql(alias=''):
+    """Der SQL-Ausdruck für das, was eine Zuordnung an der Rechnung erledigt: das Geld und das Skonto (``Amount + COALESCE(SkontoAmount, 0)``). **Der Geldbegriff der Rechnung:**
+    Der offene Betrag (``AmountDue``), der Status und die Prüfliste zählen so; alles, was das Geld selbst meint (freier Rest einer Bewegung, Guthaben, Erstattung), liest
+    weiter ``Amount``. ``alias``: der Name der Tabelle in der Abfrage (``'ip'``), sonst unqualifiziert."""
+    prefix = f'{alias}.' if alias else ''
+    return f'{prefix}Amount + COALESCE({prefix}SkontoAmount, 0)'
+
+
+def skonto_rate_key(tax_rate):
+    """Der Schlüssel des Skonto-Kontos zum Kopfsatz einer Rechnung (``Invoices.TaxRate``): 19 oder 7 für diese Sätze, 0 für „0 % mit Steuerausweis“, kein Satz und den Platzhalter „ohne
+    Steuerausweis“ (§ 19, < 0; ``uses_small_business_rule``) – sonst ``None`` (16 %, 5 %, ein freier Satz aus dem Altbestand: ein Skonto-Konto gibt es für sie nicht). Der Satz
+    wird wie überall gelesen (``tax_groups.rate_pct``: der Bruch 0,19 und die Prozentzahl 19 sind derselbe Satz)."""
+    if uses_small_business_rule(tax_rate) or not tax_rate:
+        return 0
+    try:
+        pct = rate_pct(tax_rate)
+    except (ArithmeticError, ValueError):
+        return None
+    return int(pct) if pct in (19, 7) else None
+
+
+def skonto_tax(skonto_minor, rate_key):
+    """Die im Skonto enthaltene Steuer in Minor Units: ``Skonto × Satz / (100 + Satz)``, EINMAL kaufmännisch auf den Cent gerundet – wie ``export.einvoice_model.skonto_amount`` das Skonto
+    selbst rundet. Nicht über ``money.tax_from_gross`` und danach auf den Cent: Das rundete zweimal und läge einen Cent daneben – bei 0,72 € Skonto zu 19 % sind es 0,114958… €, einmal
+    gerundet 0,11 €, über die Minor Unit (0,1150) und dann den Cent 0,12 €. ``rate_key``: der Satz (``skonto_rate_key``: 19, 7 oder 0); bei 0 gibt es keine Steuer."""
+    if not rate_key:
+        return 0
+    cent = 10 ** (SCALE - 2)
+    exact = Decimal(int(skonto_minor)) * rate_key / (100 + rate_key) / cent
+    return int(exact.quantize(Decimal(1), rounding=ROUND_HALF_UP)) * cent
+
+
+def skonto_limit(gross_minor, percent):
+    """Das Skonto, das eine Rechnung höchstens vorsieht, in Minor Units: ``percent`` Prozent des Bruttos, in EINEM Schritt auf den Cent gerundet – derselbe Abzug, den das PDF der Rechnung druckt
+    (``export.einvoice_model.skonto_amount``, hier nur weitergereicht)."""
+    from export.einvoice_model import skonto_amount          # ``export`` importiert diese Schicht: erst zur Laufzeit
+    return skonto_amount(gross_minor, percent)
+
+
+def skonto_terms(gross, days, percent, tax_rate, mixed, carries_entry):
+    """Lässt sich zu dieser Rechnung ein Skonto ausbuchen, und welches? ``(Fehlertext, None)`` oder ``(None, (Schlüssel, Grenze))``: der Schlüssel des Skonto-Kontos (``skonto_rate_key``: 19, 7
+    oder 0), die Grenze das Skonto, das die Rechnung vorsieht (``skonto_limit``). Rein: ``gross`` ist ``Invoices.SumGross`` (Minor Units), ``days`` und ``percent`` sind ``SkontoDays`` und
+    ``SkontoPercent`` wie gespeichert, ``tax_rate`` ist ``Invoices.TaxRate``, ``mixed`` ist ``MixedTaxRates`` (``has_mixed_rates``), ``carries_entry``: Trägt eine Position die Momentaufnahme
+    eines Steuersatzes oder ein Erlöskonto aus den Stammdaten?
+
+    Die Reihenfolge der Ablehnungen: Steuersatz je Position (``SKONTO_MIXED``), Stammdaten (``SKONTO_TAX_ENTRY``), ein Kopfsatz ohne Skonto-Konto (``SKONTO_RATE``), keine oder unlesbare
+    Bedingungen (``SKONTO_NO_TERMS``; gelesen wie überall, ``export.einvoice_model.parse_skonto``). **Die Frist des Skontos wird nie geprüft:** Sie zu überschreiten ist kein Verbot – das
+    Skonto zieht der Kunde ab, die App bucht, was geflossen ist."""
+    from export.einvoice_model import parse_skonto          # ``export`` importiert diese Schicht: erst zur Laufzeit
+    if has_mixed_rates(mixed):
+        return SKONTO_MIXED, None
+    if carries_entry:
+        return SKONTO_TAX_ENTRY, None
+    rate_key = skonto_rate_key(tax_rate)
+    if rate_key is None:
+        return SKONTO_RATE, None
+    try:
+        terms = parse_skonto(days, percent)
+    except ValueError:
+        terms = None
+    if terms is None:
+        return SKONTO_NO_TERMS, None
+    return None, (rate_key, skonto_limit(gross or 0, terms[1]))
+
+
+def skonto_open_minor(open_minor, gross, days, percent, tax_rate, mixed, carries_entry):
+    """Was der Kunde zahlt, wenn er von einem offenen Betrag (``open_minor``, Minor Units) das Skonto der Rechnung abzieht – oder ``None``, wenn es das nicht gibt: Die Rechnung lässt kein Skonto
+    zu (``skonto_terms``, dieselben Regeln wie beim Zuordnen, ohne den Text der Ablehnung) oder das Skonto ist 0 oder nicht kleiner als der offene Betrag. Die übrigen Angaben wie bei
+    ``skonto_terms``."""
+    error, terms = skonto_terms(gross, days, percent, tax_rate, mixed, carries_entry)
+    if error is not None:
+        return None
+    limit = terms[1]
+    return open_minor - limit if 0 < limit < open_minor else None
+
+
 # Die Erstattung einer Stornorechnung (``assign_storno_refund``) und der Schutz des Guthabens
 REFUND_ONLY_STORNO_MESSAGE = 'Erstatten lässt sich nur auf eine Stornorechnung.'
 REFUND_ONLY_OUTGOING_MESSAGE = 'Nur Zahlungsausgänge lassen sich als Erstattung zuordnen.'
@@ -288,9 +398,17 @@ PaymentRow = namedtuple('PaymentRow', 'values description')
 # die Steuer (Minor Units, ``None`` ohne Satz)
 PaymentPart = namedtuple('PaymentPart', 'waiting revenue amount rate tax')
 
+# Das Skonto einer Zahlung (``payment_rows(skonto=…)``): das Skonto-Konto (COA-ID, ``SKONTO_ACCOUNTS``), der ausgebuchte Betrag (Minor Units, positiv), der Satz als Bruch
+# (``None`` ohne Steuer – 0 % und § 19) und die darin enthaltene Steuer (Minor Units, positiv, ``skonto_tax``; ``None`` ohne Satz)
+SkontoPart = namedtuple('SkontoPart', 'coa amount rate tax')
+
+# Was die Regeln einer Zahlung mit Skonto am Ende festhalten (``InvoicePaymentsMixin._skonto_state``): der Schlüssel des Skonto-Kontos (19, 7 oder 0), das Skonto, das die Rechnung
+# vorsieht (Grenze), und das Skonto, das diese Zahlung ausbucht (der Rest nach ihr, Minor Units, > 0 und höchstens die Grenze)
+SkontoState = namedtuple('SkontoState', 'rate_key limit amount')
+
 
 def payment_rows(*, number, customer_id, bank_id, bank_date, bank_tax_date, recipient, currency, amount, tax_rate,
-                 tax_value, bank_coa, revenue_coa, debtor_side=None, waiting_side=None, parts=None):
+                 tax_value, bank_coa, revenue_coa, debtor_side=None, waiting_side=None, parts=None, skonto=None):
     """Die Buchungssätze, die die App für eine Zuordnung schreibt – die EINE Stelle, die ihre Werte festlegt: ``_assign_in_tx``
     schreibt sie, der Umzug der Zahlungen vergleicht den Bestand damit.
 
@@ -308,7 +426,17 @@ def payment_rows(*, number, customer_id, bank_id, bank_date, bank_tax_date, reci
     Zeichen für Zeichen die von immer): je Satz ein :class:`PaymentPart` mit seinem Betrag (nie 0) und seiner Steuer; ihre Beträge ergeben
     ``amount`` (sonst ``ValueError``). Dann gibt es mit Forderung (``debtor_side``, jeder Teil mit seinem Wartekonto) „Bank an Debitoren“ über
     ``amount`` und je Teil „Wartekonto an Erlöskonto“, ohne Forderung je Teil „Erlöskonto an Bank“ – Konten, Betrag, Satz und Steuer je Teil.
-    ``tax_rate``, ``tax_value``, ``revenue_coa`` und ``waiting_side`` gelten dann nicht."""
+    ``tax_rate``, ``tax_value``, ``revenue_coa`` und ``waiting_side`` gelten dann nicht.
+
+    ``skonto``: nur für die Zahlung, die eine Rechnung mit Skonto schließt (:class:`SkontoPart`; sonst ``None`` – die Ausgabe ist dann Zeichen für Zeichen die von immer). ``amount`` ist
+    das Geld, das geflossen ist; die Sätze buchen den ganzen Rest der Rechnung, den die Zahlung erledigt (``amount`` plus Skonto): „Bank an Debitoren“ und „Wartekonto an Erlöskonto“ bzw.
+    „Erlöskonto an Bank“ über diese Summe – ``tax_value`` ist dort die Steuer der ganzen Summe (der Rest der Rechnungssteuer) –, danach als **letzter** Satz „Skonto-Konto an Bank“
+    (``purpose_first``) mit dem negativen Skonto und seiner negativen Steuer. Die Reihenfolge ist Pflicht: ``_payment_revenue_coa`` nimmt den ersten Satz der Form als Erlöskonto, und
+    der Skonto-Satz ist keines. Die Bankseite der Sätze (Summe minus Skonto) ergibt genau das Geld. Mit ``parts`` zusammen gibt es kein Skonto (``ValueError``): ein Beleg mit Steuersatz
+    je Position bucht in dieser Version kein Skonto."""
+    if skonto is not None and (parts is not None or amount < 0 or skonto.amount <= 0):
+        raise ValueError('Ein Skonto gibt es nur bei einer Zahlung eines Belegs mit einem Satz und mit einem Betrag über 0.')
+
     def row(coa_id, counter_coa_id, form, text, taxed, description, row_amount=amount, row_rate=tax_rate, row_tax=tax_value):
         return PaymentRow({
             'DateBooking': bank_date, 'DateTax': bank_tax_date, 'RecipientClient': recipient or '',
@@ -332,13 +460,19 @@ def payment_rows(*, number, customer_id, bank_id, bank_date, bank_tax_date, reci
                     'Payment child (open item to revenue)', part.amount, part.rate, part.tax) for part in parts]
         return [row(part.revenue, bank_coa, FORM_PURPOSE_FIRST, f'{paid} zu Re. {number}', True,
                     'Payment child (revenue to bank)', part.amount, part.rate, part.tax) for part in parts]
+    settled = amount + (skonto.amount if skonto is not None else 0)           # das Geld und das Skonto: der Rest der Rechnung, den diese Zahlung erledigt
     if debtor_side and waiting_side:
-        return [row(bank_coa, debtor_side, FORM_LIQUID_FIRST, f'{paid} zu Re. {number}', False,
-                    'Payment child (bank to debtor)'),
+        rows = [row(bank_coa, debtor_side, FORM_LIQUID_FIRST, f'{paid} zu Re. {number}', False,
+                    'Payment child (bank to debtor)', settled),
                 row(waiting_side, revenue_coa, FORM_TRANSFER, f'{moved} zu Re. {number}', True,
-                    'Payment child (open item to revenue)')]
-    return [row(revenue_coa, bank_coa, FORM_PURPOSE_FIRST, f'{paid} zu Re. {number}', True,
-                'Payment child (revenue to bank)')]
+                    'Payment child (open item to revenue)', settled)]
+    else:
+        rows = [row(revenue_coa, bank_coa, FORM_PURPOSE_FIRST, f'{paid} zu Re. {number}', True,
+                    'Payment child (revenue to bank)', settled)]
+    if skonto is not None:
+        rows.append(row(skonto.coa, bank_coa, FORM_PURPOSE_FIRST, f'Skonto zu Re. {number}', skonto.rate is not None,
+                        'Payment child (discount to bank)', -skonto.amount, skonto.rate, None if skonto.tax is None else -skonto.tax))
+    return rows
 
 
 # Warum eine Zuordnung beim Umzug auf die Ersatzrechnung an der stornierten Rechnung bleibt: Kennung → Klartext. In dieser
@@ -508,13 +642,14 @@ class InvoicePaymentsMixin:
     def _recalc_invoice(self, conn, invoice_id, adjust_status=True, today=None):
         """AmountDue (und, mit ``adjust_status``, der Status) aus den Zahlungen neu berechnen –
         in der Transaktion von ``conn``, ohne zu committen. Der Status einer Stornorechnung ändert sich
-        dabei nie."""
+        dabei nie. Gezählt wird, was die Zuordnungen an der Rechnung erledigen: das Geld und das Skonto
+        (``settled_sql``) – eine Rechnung, die mit Skonto bezahlt ist, hat den Rest 0 und ist „bezahlt“."""
         row = conn.execute('SELECT SumGross, Status, PaymentDueDate, InvoiceKind FROM Invoices WHERE ID = ?',
                            (invoice_id,)).fetchone()
         if row is None:
             return
         gross, status, due_date, kind = row[0] or 0, row[1], row[2], row[3]
-        paid = conn.execute('SELECT COALESCE(SUM(Amount), 0) FROM InvoicePayments '
+        paid = conn.execute(f'SELECT COALESCE(SUM({settled_sql()}), 0) FROM InvoicePayments '
                             'WHERE InvoiceID = ?', (invoice_id,)).fetchone()[0]
         if adjust_status and kind != STORNO_KIND:
             status = next_payment_status(status, gross, paid, due_date,
@@ -911,10 +1046,59 @@ class InvoicePaymentsMixin:
                     f'ein Konto aus dem Kontenrahmen wählen (üblich: 1800), sonst lässt sich die {what} nicht kontieren.'), None
         return None, bank_coa
 
-    def _payment_prerequisites(self, invoice_id, account_id, revenue_coa_id=None, on=None):
+    def _skonto_state(self, conn, invoice_id, due, alloc):
+        """Die Regeln einer Zahlung mit Skonto am Stand der Verbindung ``conn`` – die EINE Stelle für die Vorprüfung (``_skonto_precheck``, eigene Verbindung) und die Transaktion
+        (``_assign_in_tx``, frisch gelesen): ``(Fehlertext, None)`` oder ``(None, SkontoState(rate_key, limit, amount))``. ``due``: der Rest der Rechnung vor dieser Zahlung
+        (Brutto minus das Erledigte der anderen Zuordnungen, Minor Units), ``alloc``: der Betrag der Zahlung (Geld). Der Rest nach der Zahlung, ``due − alloc``, ist das Skonto.
+
+        Zuerst die Bedingungen der Rechnung (``skonto_terms``: Steuersatz je Position, Stammdaten, ein Satz ohne Skonto-Konto, keine Bedingungen), dann der Rest: Ist keiner da (``≤ 0``),
+        lehnt ``SKONTO_NO_REST`` ab, ist er größer als das Skonto, das die Rechnung vorsieht (``skonto_limit``), ``SKONTO_TOO_LARGE`` mit beiden Beträgen – gebucht wird der tatsächliche
+        Rest (zahlt der Kunde 117,00 statt 116,62, sind es 2,00), nie mehr als der gedruckte Abzug. Eine Zahlung ohne Betrag (``alloc`` ≤ 0) lässt sich nicht zuordnen
+        (``NOTHING_TO_ASSIGN_MESSAGE``). Die Frist wird nie geprüft (``skonto_terms``)."""
+        row = conn.execute('SELECT SumGross, SkontoDays, SkontoPercent, TaxRate, MixedTaxRates FROM Invoices WHERE ID = ?', (invoice_id,)).fetchone()
+        if row is None:
+            return 'Rechnung nicht gefunden', None
+        gross, days, percent, rate, mixed = row
+        error, terms = skonto_terms(gross or 0, days, percent, rate, mixed, self._carries_snapshot(conn, invoice_id) or self._entry_accounts(conn, invoice_id))
+        if error is not None:
+            return error, None
+        rate_key, limit = terms
+        if alloc <= 0:
+            return NOTHING_TO_ASSIGN_MESSAGE, None
+        rest = due - alloc
+        if rest <= 0:
+            return SKONTO_NO_REST, None
+        if rest > limit:
+            return SKONTO_TOO_LARGE.format(rest=fmt_eur(from_minor(rest)), skonto=fmt_eur(from_minor(limit))), None
+        return None, SkontoState(rate_key, limit, rest)
+
+    def _skonto_precheck(self, invoice_id, free, requested):
+        """Die Vorprüfung einer Zuordnung mit Skonto, rein lesend in einer eigenen Verbindung (vor der Transaktion und vor allem, was ein Konto anlegt): ``(Fehlertext, SkontoState)``
+        wie ``_skonto_state``. ``free``: der freie Rest der Bewegung (Minor Units; ``None``: keine Grenze), ``requested``: der gewünschte Betrag (``None``: so viel wie möglich) – der
+        Betrag der Zahlung ist wie in ``_assign_in_tx`` ``min(Rest der Rechnung, free, requested)``, der Rest der Rechnung das Brutto minus das Erledigte der Zuordnungen."""
+        conn = self._get_connection()
+        try:
+            row = conn.execute('SELECT SumGross FROM Invoices WHERE ID = ?', (invoice_id,)).fetchone()
+            if row is None:
+                return 'Rechnung nicht gefunden', None
+            paid = conn.execute(f'SELECT COALESCE(SUM({settled_sql()}), 0) FROM InvoicePayments WHERE InvoiceID = ?', (invoice_id,)).fetchone()[0]
+            due = (row[0] or 0) - paid
+            alloc = min(due, due if free is None else free, due if requested is None else requested)
+            return self._skonto_state(conn, invoice_id, due, alloc)
+        finally:
+            conn.close()
+
+    def _payment_prerequisites(self, invoice_id, account_id, revenue_coa_id=None, on=None, skonto=None):
         """Was vor einer Zuordnung geklärt sein muss, in eigenen Verbindungen: Beim Auflösen
         des Erlöskontos werden bei Bedarf Konten angelegt – das darf nicht innerhalb von
         ``BEGIN IMMEDIATE`` geschehen (ein zweiter Schreiber sperrte sich selbst).
+
+        **``skonto``: eine Zuordnung mit Skonto** – ``None`` (ohne) oder ``(frei, gewünscht)``, der freie Rest der Bewegung und der gewünschte Betrag in Minor Units
+        (``_skonto_precheck``; ``None`` heißt „keine Grenze“ bzw. „so viel wie möglich“). Die Regeln des Skontos (``skonto_terms``, Rest und Grenze) kommen gleich nach der Prüfung, ob
+        die Rechnung sich bezahlen lässt, und VOR allem, was ein Konto anlegen kann: Eine abgelehnte Zuordnung legt kein Konto an, auch nicht 4184/4185 oder das Skonto-Konto. Erst am
+        Ende, wenn alles andere gilt, wird das Skonto-Konto des Satzes aufgelöst (``SKONTO_ACCOUNTS``, ``_ensure_standard_coa``: fehlt es in einem älteren Bestand, entsteht es hier,
+        in einer eigenen Verbindung). Der Kontext trägt dann ``skonto`` = ``{'coa': COA-ID, 'rate_key': 19/7/0}`` (``_assign_in_tx``). Ein Beleg mit Steuersatz je Position und einer
+        mit Stammdaten-Satz lehnen ab, also gibt es dort nie ein Skonto im Kontext.
 
         Das Erlöskonto ergibt sich aus der Rechnung (``resolve_revenue_coa``); ``revenue_coa_id``
         zählt nur, wenn dafür keines hinterlegt ist, und muss dann ein Erlöskonto sein.
@@ -945,6 +1129,11 @@ class InvoicePaymentsMixin:
                                   invoice[50] if len(invoice) > 50 else None)
         if blocked:
             return blocked, None
+        skonto_state = None
+        if skonto is not None:
+            error, skonto_state = self._skonto_precheck(invoice_id, *skonto)
+            if error:
+                return error, None
         mixed = has_mixed_rates(invoice[55] if len(invoice) > 55 else None)
         groups = snapshots = None
         if mixed:
@@ -986,14 +1175,25 @@ class InvoicePaymentsMixin:
         }
         if by_date:
             context['revenue_date_number'] = small_business_revenue_number(on)
+        if skonto_state is not None:
+            number, name = SKONTO_ACCOUNTS[skonto_state.rate_key]
+            context['skonto'] = {'coa': self._ensure_standard_coa(number, name), 'rate_key': skonto_state.rate_key}
         return None, context
 
-    def payment_precheck(self, invoice_id, account_id, revenue_coa_id=None, on=None):
+    def payment_precheck(self, invoice_id, account_id, revenue_coa_id=None, on=None, amount=None, skonto=False):
         """Fehlertext, wenn sich auf diese Rechnung über dieses Bankkonto keine Zahlung zuordnen
         lässt – sonst ``None``. Für Masken, die die Bankbewegung erst noch anlegen: Wer prüft,
         bevor er schreibt, hinterlässt keine Bewegung ohne Zuordnung. ``revenue_coa_id`` wie
-        bei ``assign_invoice_payment``, ``on``: das Datum der neuen Bankbewegung (``_payment_prerequisites``)."""
-        return self._payment_prerequisites(invoice_id, account_id, revenue_coa_id, on)[0]
+        bei ``assign_invoice_payment``, ``on``: das Datum der neuen Bankbewegung (``_payment_prerequisites``).
+
+        ``skonto``: Soll die Zahlung den Rest der Rechnung als Skonto ausbuchen? Dann prüft sie dieselben Regeln wie ``assign_invoice_payment(…, skonto=True)`` (``_skonto_precheck``),
+        mit ``amount`` als Betrag der neuen Bewegung (Euro; sie hat noch keinen Rest, also ist ihr freier Rest ihr Betrag – der Betrag der Zahlung ist ``min(Rest der Rechnung,
+        amount)``), vor allem, was ein Konto anlegt. Ohne ``amount`` ist die Zahlung der ganze Rest, und es bleibt kein Skonto (``SKONTO_NO_REST``)."""
+        skonto_args = None
+        if skonto:
+            minor = None if amount is None else round_minor(to_minor(amount), 2)
+            skonto_args = (minor, minor)
+        return self._payment_prerequisites(invoice_id, account_id, revenue_coa_id, on, skonto=skonto_args)[0]
 
     # ── Erlöskonto: Wahl, wenn keines hinterlegt ist ────────────────────────
     @staticmethod
@@ -1063,8 +1263,9 @@ class InvoicePaymentsMixin:
         (``get_revenue_coas``), das unter den Buchungen mit diesem Steuersatz am häufigsten als
         Konto oder Gegenkonto vorkommt (derselbe Vergleich des Satzes wie in
         ``resolve_revenue_coa``), bei Gleichstand das mit der kleinsten Kontonummer. Gibt es
-        keinen Treffer: ``None``. Rein lesend."""
-        revenue = {row[0]: row[1] for row in self.get_revenue_coas()}
+        keinen Treffer: ``None``. Ein Skonto-Konto (``SKONTO_ACCOUNT_NUMBERS``) wird nie vorgeschlagen –
+        es ist eine Erlösschmälerung, kein Erlöskonto für eine Zahlung (wie bei ``_learned_revenue_row``). Rein lesend."""
+        revenue = {row[0]: row[1] for row in self.get_revenue_coas() if row[1] not in SKONTO_ACCOUNT_NUMBERS}
         if not revenue:
             return None
         key = self._revenue_rate_key(tax_rate)
@@ -1086,7 +1287,7 @@ class InvoicePaymentsMixin:
         return min(counts, key=lambda row: (-row[1], revenue[row[0]]))[0]
 
     # ── Zuordnen ─────────────────────────────────────────────────────────────
-    def assign_invoice_payment(self, invoice_id, booking_id, amount=None, revenue_coa_id=None):
+    def assign_invoice_payment(self, invoice_id, booking_id, amount=None, revenue_coa_id=None, skonto=False):
         """Eine Bankbewegung (ganz oder teilweise) einer Rechnung als Zahlung zuordnen.
 
         Der Betrag ist min(Rest der Rechnung, freier Rest der Bewegung, ``amount``);
@@ -1122,6 +1323,14 @@ class InvoicePaymentsMixin:
         keines hinterlegt ist (z. B. 5 %, 16 % ohne Historie), wählt der Nutzer es:
         ``revenue_coa_id`` muss dann ein Erlöskonto sein (``get_revenue_coas``), sonst lehnt die
         Zuordnung ab. Ist eines hinterlegt, wird ``revenue_coa_id`` ignoriert. Geraten wird nie.
+
+        **``skonto=True``: die Zahlung schließt die Rechnung mit Skonto.** Der Rest der Rechnung nach dieser Zahlung (Rest vor ihr minus ihr Betrag) wird als Skonto ausgebucht –
+        gebucht wird der tatsächliche Rest, nie mehr als das Skonto, das die Rechnung vorsieht (``Invoices.SkontoDays``/``SkontoPercent``: Prozent vom Brutto, auf den Cent); die
+        Frist wird nicht geprüft. ``InvoicePayments.Amount`` bleibt das Geld, ``SkontoAmount`` ist der Rest; ``AmountDue`` wird 0, die Rechnung „bezahlt“. Die Sätze sind „Bank an
+        Debitoren“ und „Wartekonto an Erlöskonto“ (ohne Forderung „Erlöskonto an Bank“) über Betrag plus Skonto – dieser mit dem Rest der Rechnungssteuer, wie jede schließende Zahlung –
+        und zuletzt „Skonto-Konto an Bank“ mit dem negativen Skonto und seiner Steuer (``payment_rows``; das Skonto-Konto: ``SKONTO_ACCOUNTS``). Abgelehnt wird – nichts geschrieben,
+        kein Konto angelegt, auch kein Skonto-Konto –, wenn die Rechnung kein Skonto vorsieht, mehrere Steuersätze oder einen Satz aus den Stammdaten trägt, ihr Kopfsatz kein Skonto-Konto
+        hat (nur 19 %, 7 %, 0 % und § 19), nach der Zahlung kein Rest bleibt oder der Rest größer ist als das Skonto (feste Sätze ``SKONTO_*``).
 
         Returns ``PaymentAssignment(ok, message, payment_id, revenue_coa_id)``; ``message`` ist
         bei einer Ablehnung ein Klartext für die Oberfläche, ``revenue_coa_id`` das Erlöskonto,
@@ -1162,7 +1371,9 @@ class InvoicePaymentsMixin:
             conn.close()
         if free <= 0:
             return _refused(NOTHING_TO_ASSIGN_MESSAGE)
-        error, ctx = self._payment_prerequisites(invoice_id, booking[4], revenue_coa_id, on=booking[1])
+        # Mit Skonto prüfen die Vorbedingungen zuerst dessen Regeln – vor allem, was ein Konto anlegt – und lösen am Ende das Skonto-Konto auf
+        error, ctx = self._payment_prerequisites(invoice_id, booking[4], revenue_coa_id, on=booking[1],
+                                                 skonto=(free, requested) if skonto else None)
         if error:
             return _refused(error)
 
@@ -1182,7 +1393,11 @@ class InvoicePaymentsMixin:
         (``_payment_prerequisites``), bei einem Beleg mit Steuersatz je Position dazu ``mixed`` (``_assign_mixed``). Bei einem Beleg ohne
         Steuerausweis, dessen Erlöskonto am Datum der Bankbewegung hängt (``uses_small_business_rule``), dazu ``revenue_date_number``: das Kleinunternehmer-Konto (4185 oder
         4184), für das die Vorbereitung aufgelöst hat – gehört das Datum der Bewegung in der Transaktion zu einem anderen, lehnt der Baustein mit dem „geändert“-Satz ab (ein
-        Kontext ohne den Schlüssel, etwa von Hand gebaut, bindet nichts).
+        Kontext ohne den Schlüssel, etwa von Hand gebaut, bindet nichts). **Mit Skonto** (``ctx['skonto']`` = ``{'coa': Skonto-Konto (COA-ID), 'rate_key': 19/7/0}``, aus
+        ``_payment_prerequisites``): Die Zahlung schließt die Rechnung, der Rest nach ihr (Rest der Rechnung minus Betrag der Zahlung) ist das Skonto – er wird in
+        ``InvoicePayments.SkontoAmount`` geschrieben und in den Sätzen ausgebucht (``payment_rows(skonto=…)``); die Steuer der Zahlung ist wie bei jedem schließenden Teil der Rest der
+        Rechnungssteuer. Die Regeln (``skonto_terms``, Rest > 0 und höchstens das Skonto der Rechnung) gelten am frisch gelesenen Stand wie in der Vorprüfung; ein Kontext ohne den
+        Schlüssel bucht wie immer.
         ``allow_cancelled``: Auch eine stornierte Rechnung (mit positivem Betrag, keine
         Stornorechnung) nimmt die Zuordnung an – nur für den Rest, der beim Umzug an der stornierten Rechnung bleibt.
 
@@ -1226,7 +1441,7 @@ class InvoicePaymentsMixin:
         if (bank_amount or 0) <= 0:
             return _refused(INCOMING_ONLY_MESSAGE)
 
-        paid = conn.execute('SELECT COALESCE(SUM(Amount), 0) FROM InvoicePayments '
+        paid = conn.execute(f'SELECT COALESCE(SUM({settled_sql()}), 0) FROM InvoicePayments '
                             'WHERE InvoiceID = ?', (invoice_id,)).fetchone()[0]
         due = gross - paid
         free = self._booking_free_minor(conn, booking_id, ctx['bank_coa_ids'])
@@ -1236,14 +1451,25 @@ class InvoicePaymentsMixin:
         if ctx.get('mixed'):
             return self._assign_mixed(tx, invoice_id, booking_id, number, customer_id, bank, alloc, ctx)
 
+        # Mit Skonto (``ctx['skonto']``): Dieselben Regeln wie in der Vorprüfung, am frisch gelesenen Stand – weicht etwas ab (die Bedingungen, der Satz, der Rest nach dieser
+        # Zahlung), lehnt der Baustein mit dem „geändert“-Satz ab, nichts geschrieben. Der Rest ist das Skonto: Die Zahlung schließt die Rechnung
+        skonto_ctx, skonto_minor = ctx.get('skonto'), None
+        if skonto_ctx is not None:
+            error, state = self._skonto_state(conn, invoice_id, due, alloc)
+            if error is not None or state.rate_key != skonto_ctx['rate_key']:
+                return _refused(PAYMENT_CHANGED_MESSAGE)
+            skonto_minor = state.amount
+
         tax_total = tax_total or 0
         # Der schließende Teil bekommt den Rest der Rechnungssteuer, jeder andere den anteiligen Betrag
-        if alloc == due:
+        if skonto_minor or alloc == due:
             tax_part = self._remaining_tax(conn, invoice_id, number, gross, tax_total)
         else:
             tax_part = self._prorated_tax(tax_total, alloc, gross)
         tax_rate = self._booking_tax_rate(rate)
         tax_value = tax_part if tax_rate else None
+        skonto = (SkontoPart(skonto_ctx['coa'], skonto_minor, tax_rate, skonto_tax(skonto_minor, state.rate_key) if tax_rate else None)
+                  if skonto_minor else None)
 
         debtor_side, waiting_side = self._receivable_sides(conn, number)
 
@@ -1252,8 +1478,8 @@ class InvoicePaymentsMixin:
         rows = payment_rows(number=number, customer_id=customer_id, bank_id=booking_id, bank_date=bank_date,
                             bank_tax_date=bank_tax_date, recipient=recipient, currency=currency, amount=alloc,
                             tax_rate=tax_rate, tax_value=tax_value, bank_coa=ctx['bank_coa'],
-                            revenue_coa=ctx['revenue_coa'], debtor_side=debtor_side, waiting_side=waiting_side)
-        payment_id = self._write_assignment(tx, invoice_id, booking_id, alloc, bank_date, rows)
+                            revenue_coa=ctx['revenue_coa'], debtor_side=debtor_side, waiting_side=waiting_side, skonto=skonto)
+        payment_id = self._write_assignment(tx, invoice_id, booking_id, alloc, bank_date, rows, skonto_minor=skonto_minor)
         if payment_id is None:
             return _refused('Buchung ist bereits mit dieser Rechnung verknüpft')
         return PaymentAssignment(True, None, payment_id, ctx['revenue_coa'])
@@ -1300,24 +1526,28 @@ class InvoicePaymentsMixin:
             return _refused('Buchung ist bereits mit dieser Rechnung verknüpft')
         return PaymentAssignment(True, None, payment_id, None)
 
-    def _write_assignment(self, tx, invoice_id, booking_id, alloc, bank_date, rows, description='Link invoice to booking'):
+    def _write_assignment(self, tx, invoice_id, booking_id, alloc, bank_date, rows, description='Link invoice to booking', skonto_minor=None):
         """Eine Zuordnung in der Transaktion ``tx`` schreiben: die ``InvoicePayments``-Zeile über ``alloc`` und die Buchungssätze ``rows``
         (``payment_rows``), dann die Rechnung neu rechnen – die EINE Schreibstelle für den Beleg mit einem Satz und den mit Steuersatz je Position
         (eine Zahlung, und mit negativem ``alloc`` und ``description`` die Erstattung einer Stornorechnung: ``_refund_mixed``).
+        ``skonto_minor``: das Skonto, das die Zuordnung ausbucht (Minor Units, > 0), sonst ``None`` – dann ist die Anweisung (und der Eintrag im Replay-Log) Zeichen für Zeichen
+        die von immer; mit Skonto steht ``SkontoAmount`` in der Zeile.
         Die Einträge fürs Replay-Log kommen in ``tx.log`` (geschrieben erst nach dem Commit). Returns die ID der Zuordnung, ``None``, wenn es das Paar
         (Rechnung, Bewegung) schon gibt (der eindeutige Index) – dann ist nichts geschrieben."""
         conn = tx.conn
+        if skonto_minor:
+            sql = 'INSERT INTO InvoicePayments (InvoiceID, BookingID, Amount, PaymentDate, SkontoAmount) VALUES (?, ?, ?, ?, ?)'
+            params = (invoice_id, booking_id, alloc, bank_date, skonto_minor)
+        else:
+            sql = 'INSERT INTO InvoicePayments (InvoiceID, BookingID, Amount, PaymentDate) VALUES (?, ?, ?, ?)'
+            params = (invoice_id, booking_id, alloc, bank_date)
         try:
-            cursor = conn.execute(
-                'INSERT INTO InvoicePayments (InvoiceID, BookingID, Amount, PaymentDate) '
-                'VALUES (?, ?, ?, ?)', (invoice_id, booking_id, alloc, bank_date))
+            cursor = conn.execute(sql, params)
         except sqlite3.IntegrityError:
             # der eindeutige Index auf (Rechnung, Bewegung) – dasselbe wie die Prüfung am Anfang von ``_assign_in_tx``
             return None
         payment_id = cursor.lastrowid
-        tx.log.append(('INSERT INTO InvoicePayments (InvoiceID, BookingID, Amount, '
-                       'PaymentDate) VALUES (?, ?, ?, ?)',
-                       (invoice_id, booking_id, alloc, bank_date), description))
+        tx.log.append((sql, params, description))
         for row in rows:
             params = tuple(row.values[column] for column in PAYMENT_ROW_COLUMNS)
             conn.execute(_PAYMENT_ROW_INSERT, params)
@@ -2257,13 +2487,17 @@ class InvoicePaymentsMixin:
                                  Sätze der App (Marke, Text) und bankwirksame Erlössätze mit
                                  einer Rechnungsnummer als Beleg-Nr., zu denen es für das Paar
                                  (Rechnung, Bewegung) keine Zuordnung gibt;
-        * ``transfer_mismatch``  zugeordneter Betrag ≠ auf das Erlöskonto umgebuchter;
+        * ``transfer_mismatch``  zugeordneter Betrag ≠ auf das Erlöskonto umgebuchter (zugeordnet ist, was die
+                                 Zuordnungen an der Rechnung erledigen: das Geld und das Skonto, ``settled_sql``);
         * ``payment_on_entry``   Zuordnung hängt an einem Buchungssatz, nicht an einer
                                  Bankbewegung;
         * ``duplicate_payment``  dasselbe Paar (Rechnung, Bewegung) mehrfach zugeordnet;
         * ``outgoing_payment``   Zuordnung auf einen Ausgang;
         * ``status_unsent``      Forderung gebucht, Status aber Entwurf/abgeschlossen;
-        * ``amount_due_mismatch`` offener Rest passt nicht zu den Zuordnungen;
+        * ``amount_due_mismatch`` offener Rest passt nicht zu den Zuordnungen (Geld plus Skonto);
+        * ``skonto_mismatch``    eine Zuordnung trägt ein anderes Skonto (``InvoicePayments.SkontoAmount``, NULL zählt 0), als
+                                 ihre markierten Sätze auf den Skonto-Konten buchen (Summe = −Skonto) – etwa weil ein Satz von Hand
+                                 geändert oder gelöscht wurde;
         * ``storno_counter_mismatch`` bei einer Rechnung mit Stornorechnung steht nur eine der beiden
                                  Buchungen („Forderung“ der Rechnung, Gegenbuchung der Stornorechnung);
         * ``legacy_cancelled_open`` eine von Hand stornierte Rechnung ohne Stornorechnung, deren
@@ -2417,10 +2651,11 @@ class InvoicePaymentsMixin:
                     f'keine Zuordnung zur Rechnung.')
 
         # Zugeordnet (Bankbewegungen ohne Sätze des Imports) gegen umgebucht (Sätze „Wartekonto
-        # an Erlöskonto“ der App/des Altbestands), je Rechnung vorab zusammengefasst
+        # an Erlöskonto“ der App/des Altbestands), je Rechnung vorab zusammengefasst. Zugeordnet
+        # ist, was die Zuordnungen an der Rechnung erledigen: das Geld und das Skonto (``settled_sql``)
         marks = ','.join('?' * len(waiting))
         for inv, number, paid, moved in conn.execute(
-                "WITH paid AS (SELECT ip.InvoiceID AS InvoiceID, SUM(ip.Amount) AS Total "
+                f"WITH paid AS (SELECT ip.InvoiceID AS InvoiceID, SUM({settled_sql('ip')}) AS Total "
                 "FROM InvoicePayments ip JOIN Bookings b ON b.ID = ip.BookingID "
                 f"WHERE b.BookingType = 'bank' AND NOT {has_source_group} "
                 "GROUP BY ip.InvoiceID), "
@@ -2476,7 +2711,7 @@ class InvoicePaymentsMixin:
 
         for inv, number, gross, due, paid, kind in conn.execute(
                 "SELECT i.ID, i.InvoiceNumber, i.SumGross, i.AmountDue, "
-                "COALESCE((SELECT SUM(Amount) FROM InvoicePayments WHERE InvoiceID = i.ID), 0), "
+                f"COALESCE((SELECT SUM({settled_sql()}) FROM InvoicePayments WHERE InvoiceID = i.ID), 0), "
                 "i.InvoiceKind "
                 f"FROM Invoices i WHERE {is_invoice}{only} ORDER BY i.InvoiceNumber",
                 only_params):
@@ -2486,6 +2721,22 @@ class InvoicePaymentsMixin:
                 add('amount_due_mismatch', inv, number,
                     f'Offen sind {euro(due)}, nach den Zuordnungen müssten es '
                     f'{euro((gross or 0) - paid)} sein.')
+
+        # Skonto: Jede Zuordnung trägt genau so viel Skonto, wie ihre Skonto-Sätze buchen – die markierten Sätze (wie ``_payment_children``) unter ihrer Bewegung, die auf einem
+        # Skonto-Konto (``SKONTO_ACCOUNTS``) stehen, ergeben in der Summe −``SkontoAmount`` (NULL zählt 0). Das fängt eine Zuordnung mit Skonto, deren Sätze von Hand geändert oder
+        # gelöscht wurden, und Skonto-Sätze ohne Skonto an der Zuordnung. Eine Abfrage für alle Zuordnungen (die Sätze eines Paares über den Index auf ``ParentBooking_ID``)
+        skonto_numbers = sorted(SKONTO_ACCOUNT_NUMBERS)
+        for inv, number, pay_id, skonto_minor, booked in conn.execute(
+                "SELECT i.ID, i.InvoiceNumber, ip.ID, COALESCE(ip.SkontoAmount, 0), COALESCE(SUM(k.Amount), 0) "
+                "FROM InvoicePayments ip JOIN Invoices i ON i.ID = ip.InvoiceID "
+                "LEFT JOIN Bookings k ON k.ParentBooking_ID = ip.BookingID AND k.DocumentNumber = i.InvoiceNumber AND k.Status = ? "
+                "AND (k.SourceGroup IS NULL OR k.SourceGroup = '') "
+                f"AND k.COA_ID IN (SELECT ID FROM ChartOfAccounts WHERE AccountNumber IN ({','.join('?' * len(skonto_numbers))})) "
+                f"WHERE {is_invoice}{only} GROUP BY ip.ID "
+                "HAVING COALESCE(SUM(k.Amount), 0) <> -COALESCE(ip.SkontoAmount, 0) ORDER BY i.InvoiceNumber, ip.ID",
+                [PAYMENT_MARK, *skonto_numbers, *only_params]):
+            add('skonto_mismatch', inv, number,
+                f'Zuordnung #{pay_id} trägt Skonto {euro(skonto_minor)}, gebucht sind {euro(-booked)}.')
 
         # Storno-Paare: Die Forderung der Rechnung und die Gegenbuchung der Stornorechnung gehören zusammen
         pair_only = ' AND (o.ID = ? OR s.ID = ?)' if invoice_id is not None else ''
