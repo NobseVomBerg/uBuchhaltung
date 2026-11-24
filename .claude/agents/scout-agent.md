@@ -23,7 +23,8 @@ Installieren der Abhängigkeiten für einen Prüflauf (unten).
   Modul steckt: Modul-Landkarte in `.claude/skills/db-navigate/SKILL.md`
 - `money.py` — Geldbeträge als ganzzahlige Minor Units (SCALE 4), einzige
   Umrechnungsstelle Euro ↔ intern
-- `importers/` — Kontoauszug-Parser (`camt.py`, `vbr.py`, `dkb.py`),
+- `importers/` — Kontoauszug-Parser (`camt.py`, `vbr.py`, `dkb.py`, `dkb_csv.py`;
+  Hilfen `pdftext.py`, `plausibility.py`, `safe_xml.py`),
   gemeinsames Modell `BankStatement` in `base.py`; `importers/wiso_fdb/`
   liest die WISO-Firebird-Datenbank ohne Treiber
 - `export/` — PDF/A (`pdfa.py`), E-Rechnung (`einvoice_model.py`,
