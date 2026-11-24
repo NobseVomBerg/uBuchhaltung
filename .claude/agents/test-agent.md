@@ -63,6 +63,8 @@ Test nie für repariert oder ergänzt, ohne einen grünen Lauf vor dir zu haben.
 - Stil der Suite übernehmen: direkte `assert`s, ein Verhalten pro Test,
   Fixtures innerhalb einer Datei wiederverwenden.
 - Keine Commits — das macht der Hauptthread.
+- Die Regeln des Bereichs stehen in `docs/regeln/` (Tabelle in `CLAUDE.md`); ein Test
+  hält fest, was dort steht, und weicht es nicht auf.
 - Ist eine Reparatur außerhalb des Auftrags oder sieht ein Fehler nach einem
   echten Produktfehler statt einem Testfehler aus, sag das, statt die
   Prüfung aufzuweichen, damit sie durchläuft.

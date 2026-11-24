@@ -22,7 +22,8 @@ gib sie zurück, statt die fehlende Design-Arbeit selbst zu improvisieren.
 - Halte dich an die Dateiliste und die vorgesehenen Änderungen des Plans.
   Passt etwas im Plan nicht zum tatsächlichen Code, halte an und melde die
   Abweichung, statt still eine eigene Lösung zu wählen.
-- Konventionen aus `CLAUDE.md` und `AGENTS.md`, vor allem:
+- Konventionen aus `CLAUDE.md`, `AGENTS.md` und der Regeldatei des Bereichs in
+  `docs/regeln/` (Tabelle in `CLAUDE.md`; nennt der Auftrag keine, selbst nachsehen), vor allem:
   - Geschäftslogik ins `db/`-Package (Domänen-Mixins; Modul-Landkarte in
     `.claude/skills/db-navigate/SKILL.md`), Seiten in `server/pages_*.py`,
     Routen in `server/app.py`
@@ -34,7 +35,7 @@ gib sie zurück, statt die fehlende Design-Arbeit selbst zu improvisieren.
   - Testdaten anonym (`tests/check_anonymized.py` läuft als Hook nach
     jedem Write/Edit)
 - Versions- und Doku-Pflichten aus `CLAUDE.md` gelten: PATCH-Sprung in
-  `version.py` je App-Änderung, `SCHEMA_VERSION` +1 bei Schemaänderung,
+  `version.py` je App-Änderung, `SCHEMA_STEP` +1 bei Schemaänderung,
   CSS-Änderung braucht einen Versionssprung, Doku-Pflege laut `AGENTS.md`.
   Sagt der Plan dazu nichts, weise im Bericht darauf hin, statt es
   stillschweigend wegzulassen.

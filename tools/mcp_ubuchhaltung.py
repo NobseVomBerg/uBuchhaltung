@@ -209,7 +209,7 @@ def _keys(*names, period=False):
 # das Werkzeug liest nur Anzeigeseiten. /receipts/file fehlt aus demselben Grund: Es liefert die Datei eines Belegs.
 # /receipts/search und /transactions/search fehlen bewusst: JSON-Suchen der Seiten, keine Anzeigeseiten; dasselbe liefert die
 # SQL-Abfrage. Aus demselben Grund fehlt die JSON-Route der Vorschläge zu einem Beleg (seit 2.6.0), und die POST-Route, die die
-# Datei eines Belegs liest und die Lesung speichert, ist keine Anzeigeseite (CLAUDE.md, Abschnitt „Belegerkennung“).
+# Datei eines Belegs liest und die Lesung speichert, ist keine Anzeigeseite (docs/regeln/belege.md, „Belegerkennung“).
 # /bwa/pdf, /euer/pdf, /susa/pdf und /liquiditaet/pdf fehlen bewusst: Sie liefern Dokumente, keine Anzeigeseiten (die Seiten /bwa, /euer,
 # /susa und /liquiditaet schreiben nichts in den Bestand – das Cookie des Zeitraums setzen sie wie jede Seite mit period=True –, Tests in
 # tests/test_bwa.py, tests/test_euer_view.py, tests/test_susa.py und tests/test_liquidity.py).

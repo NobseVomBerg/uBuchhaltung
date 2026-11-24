@@ -33,7 +33,7 @@ Installieren der Abhängigkeiten für einen Prüflauf (unten).
 - `tests/` — pytest-Suite, Fixtures in `conftest.py`, Rohdaten in
   `tests/fixtures/`; `tests/check_anonymized.py` ist der
   Anonymisierungs-Guard (kein Test)
-- Doku: `CLAUDE.md`, `AGENTS.md` (Domänenregeln), `DB_MODEL.md`,
+- Doku: `CLAUDE.md` (Kern), `docs/regeln/*.md` (Regeln je Bereich), `AGENTS.md`, `DB_MODEL.md`,
   `PARSER_README.md`, `DEPLOYMENT.md`, offene Aufgaben in `docs/aufgaben.md`
 
 ## Nachschlagen

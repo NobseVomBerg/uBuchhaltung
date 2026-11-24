@@ -44,7 +44,7 @@ Bei Änderungen an Import, Matching oder Dashboard-EÜR immer mitpflegen:
 
 Offene Aufgaben stehen in `docs/aufgaben.md` – Erledigtes dort löschen.
 
-Verbindliche Projektregeln (Versionierung, Commit-Format, Sicherheitsregeln) stehen in `CLAUDE.md`;
+Verbindliche Projektregeln stehen in `CLAUDE.md` (Kern) und `docs/regeln/` (je Bereich);
 Betriebs- und Konfigurationsänderungen in `DEPLOYMENT.md` mitpflegen.
 
 ## Nicht-Ziele

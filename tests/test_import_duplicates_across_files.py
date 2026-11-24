@@ -656,7 +656,7 @@ def test_incomplete_transaction_in_a_file_without_account_is_flagged_too(db_two_
 
 @pytest.mark.parametrize("mode", MODES)
 def test_known_limits_are_pinned(db_two_accounts, pending_factory, mode):
-    """Grenzen ohne Bankreferenz im Datenmodell (CLAUDE.md, README): Eine CAMT-Sammelbuchung wird in
+    """Grenzen ohne Bankreferenz im Datenmodell (docs/regeln/import.md, README): Eine CAMT-Sammelbuchung wird in
     Einzelumsätze zerlegt, die PDF zeigt eine Summenzeile – die Beträge passen nicht zusammen, beides
     wird angelegt. Und zwei verschiedene Auszüge desselben Tags mit je einem echten, gleichen Umsatz
     behalten nur einen davon (Maximum statt Summe). Fällt einer dieser Fälle anders aus, hat sich die

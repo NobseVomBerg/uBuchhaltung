@@ -123,7 +123,5 @@ anderer Rahmen beim Anlegen eines Kontos ist bisher nur formal. Reihenfolge der 
 - DATEV-Export, Überträge zwischen eigenen Konten: Die Erkennung beim Export zählt und rät im Zweifel nicht (Grenzen in `DB_MODEL.md`: Laufzeit über 14 Tage, Serien mit einer Lücke, Stückelung, Konten mit gleicher SKR-Nummer) – sauberer wäre, die beiden Bankbewegungen eines Übertrags ausdrücklich zu verknüpfen
 - DATEV-Export: Ein Betrag, der in der Datenbank als Text steht (nur über die SQL-Konsole möglich), lässt die Split-Prüfung mit einer technischen Meldung scheitern
 - `pdfplumber` ist derzeit Pflicht: Die PDF-Parser (seit 2.6.0 auch `receipt_reading/pdf_text.py`) importieren es beim Start, ohne das Paket startet die App nicht – Import verzögern, damit CAMT-Import und alles andere ohne es laufen
-- Hinweisdateien für Entwicklungswerkzeuge (`CLAUDE.md`, `AGENTS.md`) auf Doppelungen prüfen und kürzen
 - Einheiten auf Artikel-Listen/-Stammdaten prüfen (lesbar statt UN/ECE-Code)
 - Rechnung speichern scheiterte einmal im Docker-Mehrbenutzerbetrieb mit „FOREIGN KEY constraint failed“ (DB danach sauber, gleicher Request lokal ok, nicht mehr reproduzierbar) – ab 2.0.1 nennt die Meldung den Verweis; bei Wiederauftreten Meldung und `docker logs` auswerten
-- PDF-Kopf ans Formular angleichen: „Rechnungsdatum“ (heute „Datum:“), Leistungsdatum direkt darunter – Wertspalte für das längere Label verschieben, Golden-Dateien neu erzeugen

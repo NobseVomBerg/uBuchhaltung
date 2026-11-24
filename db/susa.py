@@ -17,7 +17,7 @@ unbekannter Lesart, ein nicht lesbarer Betrag, ein Datum, das kein Kalendertag i
 einem Steuerbetrag), steht nur in den Hinweisen (``SusaNotice``) – nichts fällt still weg. Zwei Hinweise nennen Sätze, die gebucht sind, aber den
 Abgleich mit den Bankbewegungen verschieben (``CHILD_OTHER_PERIOD``, ``CHILD_OTHER_ACCOUNT``).
 
-Die Regeln hier nicht still ändern: Sie sind in ``CLAUDE.md`` und ``DB_MODEL.md`` beschrieben und durch ``tests/test_susa.py`` festgehalten.
+Die Regeln hier nicht still ändern: Sie sind in ``docs/regeln/auswertungen.md`` und ``DB_MODEL.md`` beschrieben und durch ``tests/test_susa.py`` festgehalten.
 """
 from __future__ import annotations
 
