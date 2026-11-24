@@ -492,8 +492,8 @@ class SchemaMixin:
                 LegalForm    TEXT,
                 TaxID        TEXT,
                 BuyerRouteID TEXT,
-                -- DATEV-Vorlauf der eigenen Firma (2.3.0, Schema 2003; Reihenfolge wie das ALTER TABLE der
-                -- Migration): Beraternummer 4–7, Mandantennummer 1–5 Ziffern; NULL = nicht eingetragen
+                -- DATEV-Vorlauf der eigenen Firma (Reihenfolge wie das ALTER TABLE der Migration):
+                -- Beraternummer 1001–9999999, Mandantennummer 1–99999, ohne führende Null; NULL = nicht eingetragen
                 DatevConsultantNo TEXT,
                 DatevClientNo     TEXT,
                 FOREIGN KEY (ContactID) REFERENCES Contacts(ID) ON DELETE CASCADE
@@ -806,9 +806,9 @@ class SchemaMixin:
     def _create_extended_schema(self):
         """Legt die übrigen Tabellen, Indizes und Seed-Daten an.
 
-        Keine Migrationen: Bei Schema-Änderungen wird die DB gelöscht und neu
-        aufgesetzt (kein produktiver Bestand). Alle Spalten gehören direkt in
-        die jeweilige CREATE-TABLE-Definition.
+        Eine frische Datenbank bekommt hier alle Spalten in ihrer
+        CREATE-TABLE-Definition; ein bestehender Bestand bekommt neue Spalten
+        über ``_run_migrations`` (gleiche Spaltenreihenfolge wie hier).
         """
         conn = self._get_connection()
         cursor = conn.cursor()
