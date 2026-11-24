@@ -135,6 +135,8 @@ NOT_THE_DOCUMENT_RATE = {
     ('db/invoice_payments.py', '_same_payment_row'): 'Bookings.TaxRate: Vergleich eines gespeicherten Zahlungssatzes mit dem erwarteten',
     ('db/invoice_payments.py', 'payment_rows'): ('Bookings.TaxRate des Zahlungssatzes; der Satz der Rechnung kommt als Parameter tax_rate von '
                                                  '_assign_in_tx und den anderen Aufrufern – dort sind die Lesestellen'),
+    ('db/invoice_payments.py', 'skonto_reversal_rows'): ('Bookings.TaxRate des Rücknahmesatzes beim Stornieren; der Satz kommt als SkontoReversal.rate aus dem Skonto-Satz der Zahlung '
+                                                         '(wie gespeichert), nie aus dem Kopf der Rechnung'),
     ('db/invoice_payments.py', 'suggest_revenue_coa'): 'Bookings.TaxRate: Vorauswahl des Erlöskontos aus den Buchungen',
     ('db/invoice_repair.py', '_rebuild_plan'): 'Bookings.TaxRate: die neuen Buchungssätze im Plan von „Zuordnung neu aufbauen“',
     ('db/reporting.py', 'get_susa'): 'Bookings.TaxRate: Gruppierung der Sätze der Summen- und Saldenliste',

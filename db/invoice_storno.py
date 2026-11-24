@@ -23,6 +23,14 @@ Zahlungen bleiben an der stornierten Rechnung; ihr Betrag ist das
 seit 2.2.3: eine ausgehende Bankbewegung, zugeordnet an der Stornorechnung). Der Stornorechnung lässt sich sonst keine Zahlung
 zuordnen.
 
+**Ein Skonto, das eine Zahlung der Rechnung ausgebucht hat (seit 2.9.0, ``InvoicePayments.SkontoAmount``), nimmt das Stornieren zurück**
+(``InvoicePaymentsMixin._reverse_skonto_in``, in derselben Transaktion, nach der Gegenbuchung der Forderung): Die Rücknahme sind weitere markierte Sätze
+unter der Bankbewegung der Zahlung, mit Datum und Steuerdatum des späteren von Stornodatum und Datum der Bankbewegung; danach ist ``SkontoAmount`` NULL,
+und die stornierte Rechnung sieht buchhalterisch aus wie eine Teilzahlung über das Geld, das geflossen ist – dieses Geld ist das Guthaben, die Erstattung
+braucht keine eigene Regel. Ist die Skonto-Buchung nicht mehr, wie die App sie geschrieben hat (``InvoicePaymentsMixin._skonto_reversals``), lehnt das
+Stornieren mit ``SKONTO_STORNO_EDITED`` ab (409, ``_storno_blocker``, vor allem, was ein Konto anlegt oder eine Nummer verbraucht). Eine Rechnung ohne Skonto
+storniert, wie sie es immer tat.
+
 Eine von Hand stornierte Rechnung ohne Stornorechnung (Altbestand) bekommt sie nachträglich: Es entsteht dieselbe
 Stornorechnung, die Rechnung bleibt „storniert“ (ihr Status und ihr Protokoll ändern sich nicht), und steht ihre
 Forderung noch in den Büchern, folgt die Gegenbuchung dazu.
@@ -121,8 +129,11 @@ class InvoiceStornoMixin:
         storniert), eine Rechnung mit Stornorechnung (409); ein Beleg mit Steuersatz je Position, dessen Positionen nicht zu seinen
         Summen passen oder dessen Satz ein Brutto unter 0 trägt (``MixedNotBookable``: ``MIXED_GROUPS_MISMATCH`` bzw.
         ``MIXED_GROUP_NOT_POSITIVE``, 409); ein Stornodatum vor dem
-        Rechnungsdatum (400); ein Nummernkreis ohne brauchbare Nummer (409); ein Fehler beim Speichern (409) – zeigt dabei ein
-        Verweis der Rechnung ins Leere (``ForeignKeyError``), steht er im Klartext in der Meldung.
+        Rechnungsdatum (400); eine Rechnung, deren Skonto-Buchung einer Zahlung geändert wurde (``SKONTO_STORNO_EDITED``, 409); ein Nummernkreis ohne brauchbare Nummer (409); ein Fehler
+        beim Speichern (409) – zeigt dabei ein Verweis der Rechnung ins Leere (``ForeignKeyError``), steht er im Klartext in der Meldung.
+
+        Hat eine Zahlung der Rechnung ein Skonto ausgebucht, nimmt die Transaktion es zurück (``InvoicePaymentsMixin._reverse_skonto_in``, siehe Modul); das gilt auch für die
+        nachträgliche Stornorechnung und für „Stornieren und neu ausstellen“.
 
         Eine Rechnung, die schon „storniert“ ist, aber keine Stornorechnung hat (von Hand storniert, Altbestand), bekommt
         sie nachträglich: Status und Protokoll der Rechnung bleiben, wie sie sind; die Gegenbuchung gibt es nur, wenn die
@@ -229,6 +240,12 @@ class InvoiceStornoMixin:
                         # Summen – nur nach einem Eingriff an der App vorbei. Nichts bleibt stehen: kein Beleg, keine Nummer verbraucht.
                         print(f'Stornierung der Rechnung {invoice_id}: {exc}')
                         raise _Refusal(MIXED_GROUPS_MISMATCH, 409) from None
+
+                # Ein Skonto, das eine Zahlung der Rechnung ausgebucht hat, geht mit der Stornierung zurück: Das Guthaben des Kunden ist das Geld, das geflossen ist. Ohne Skonto – der
+                # Normalfall – liest der Baustein nur und schreibt nichts. Die Prüfung stand schon in ``_storno_blocker``; eine Ablehnung hier (derselbe Stand) rollt alles zurück
+                refusal = self._reverse_skonto_in(tx, invoice_id, row['InvoiceNumber'], storno_date)
+                if refusal:
+                    raise _Refusal(refusal, 409)
 
                 self._recalc_invoice(conn, invoice_id, adjust_status=False)
                 self._recalc_invoice(conn, storno_id, adjust_status=False)
@@ -346,6 +363,11 @@ class InvoiceStornoMixin:
             return _already_message(existing[1]), 409
         if storno_date < str(row['InvoiceDate'] or '')[:10]:
             return STORNO_DATE_BEFORE_MESSAGE, 400
+        # Das Skonto einer Zahlung geht beim Stornieren zurück (``_reverse_skonto_in``): Ist seine Buchung nicht mehr, wie die App sie geschrieben hat, weiß die Rücknahme nicht, was sie
+        # aufheben soll – dann wird abgelehnt, bevor ein Konto entsteht oder eine Nummer verbraucht wird (der Nutzer entfernt die Zahlung und ordnet sie neu zu)
+        error, _reversals = self._skonto_reversals(conn, row['ID'], row['InvoiceNumber'])
+        if error is not None:
+            return error, 409
         return None
 
     @staticmethod

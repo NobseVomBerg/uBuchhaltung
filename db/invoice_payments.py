@@ -22,6 +22,11 @@ Abschnitt „Skonto bei der Zahlungszuordnung“ unten): ``InvoicePayments.Amoun
 ausgebuchte Rest, und ein dritter markierter Satz „Skonto-Konto an Bank“ trägt ihn. Was eine Zuordnung an der Rechnung erledigt, ist Geld
 plus Skonto (``settled_sql``) – der offene Betrag, der Status und die Prüfliste zählen so; alles, was das Geld selbst meint (freier Rest
 einer Bewegung, Guthaben, Erstattung), liest weiter ``Amount``.
+
+**Das Stornieren der Rechnung nimmt das Skonto zurück** (``_reverse_skonto_in``, aus der Transaktion von ``Database.cancel_invoice``; ``db/invoice_storno.py``): Der Kunde
+hat das Skonto gezogen, weil er die Rechnung bezahlte – mit dem Storno gilt sie nicht mehr, und das Guthaben, das bleibt (und erstattet wird), ist das Geld, das
+geflossen ist. Die Rücknahme sind drei weitere markierte Sätze unter derselben Bankbewegung (``skonto_reversal_rows``; ohne Forderung zwei), danach ist ``SkontoAmount`` NULL
+– die stornierte Rechnung sieht buchhalterisch aus wie eine Teilzahlung über das Geld. Die Erstattung (``assign_storno_refund``) braucht dafür keine eigene Regel.
 """
 import datetime
 import re
@@ -256,7 +261,8 @@ SKONTO_TAX_ENTRY = 'Skonto lässt sich bei einer Rechnung mit Steuersatz aus den
 SKONTO_RATE = 'Skonto lässt sich für den Steuersatz dieser Rechnung noch nicht ausbuchen.'
 SKONTO_NO_REST = 'Nach dieser Zahlung bleibt kein Rest – es gibt kein Skonto auszubuchen.'
 SKONTO_TOO_LARGE = 'Der Rest nach dieser Zahlung ({rest}) ist größer als das Skonto der Rechnung ({skonto}).'
-# Die beiden folgenden gehören zur Erstattung und zum Stornieren einer Rechnung, die ein Skonto trägt (spätere Etappen: die Route, die Rücknahme beim Stornieren)
+# ``SKONTO_REFUND`` lehnt die Route ab, die eine Zahlung einer Stornorechnung mit Skonto zuordnen will (spätere Etappe); ``SKONTO_STORNO_EDITED`` lehnt das Stornieren einer Rechnung ab, deren
+# Skonto-Buchung einer Zahlung nicht mehr ist, wie die App sie geschrieben hat (``InvoicePaymentsMixin._skonto_reversals``, ``Database.cancel_invoice``: 409, nichts geschrieben, keine Nummer verbraucht)
 SKONTO_REFUND = 'Skonto gibt es nur bei einer Zahlung, nicht bei einer Erstattung.'
 SKONTO_STORNO_EDITED = ('Die Skonto-Buchung einer Zahlung dieser Rechnung wurde geändert – bitte die Zahlung erst entfernen und neu '
                         'zuordnen.')
@@ -475,6 +481,48 @@ def payment_rows(*, number, customer_id, bank_id, bank_date, bank_tax_date, reci
     return rows
 
 
+# Das Skonto einer Zuordnung, das das Stornieren der Rechnung zurücknimmt (``InvoicePaymentsMixin._skonto_reversals``): die Bankbewegung (ID, Datum, Empfänger, Währung), das Skonto
+# (Minor Units, > 0), Satz und Steuer des Skonto-Satzes wie gespeichert (die Steuer negativ; beides ``None`` ohne Steuer), das Skonto-Konto samt Gegenkonto des Skonto-Satzes und die Konten der
+# übrigen Sätze der Zahlung – Bankkonto und Erlöskonto, mit Forderung dazu Debitoren- und Wartekonto (sonst ``None``); alles COA-IDs
+SkontoReversal = namedtuple('SkontoReversal', 'bank_id bank_date recipient currency skonto rate tax skonto_coa skonto_counter bank_coa revenue_coa debtor_side waiting_side')
+# Ein markierter Satz unter der Bankbewegung, wie ``_skonto_reversals`` ihn liest: ID, Form, Konto, Gegenkonto, Betrag, Satz und Steuer – roh wie gespeichert
+_Kid = namedtuple('_Kid', 'id form coa counter amount rate tax')
+
+
+def skonto_reversal_rows(*, number, customer_id, day, reversal):
+    """Die Buchungssätze, die das Stornieren für das Skonto einer Zahlung schreibt – die Gegenstücke zu denen, die ``payment_rows(skonto=…)`` dafür geschrieben hat; die EINE Stelle, die
+    ihre Werte festlegt (``InvoicePaymentsMixin._reverse_skonto_in`` schreibt sie, ``_skonto_booked`` erkennt sie an ihrem Konto wieder).
+
+    ``number``: die Nummer der **stornierten** Rechnung – mit ihr und der Marke ``PAYMENT_MARK`` gehören die Sätze zur Zuordnung, und mit ihr gehen sie, wenn die Zahlung entfernt wird.
+    ``customer_id``: ihr Kunde, ``day``: Datum und Steuerdatum der Sätze (``InvoicePaymentsMixin._reverse_skonto_in``: das spätere von Stornodatum und Datum der Bankbewegung),
+    ``reversal``: :class:`SkontoReversal`. Empfänger und Währung sind die der Bankbewegung.
+
+    Mit Forderung (``reversal.debtor_side``): „Bank an Debitoren“ (``liquid_first``) und „Wartekonto an Erlöskonto“ (``transfer``) mit dem negativen Skonto – dieser mit der Steuer des
+    Skonto-Satzes, wie gespeichert (negativ) –, zuletzt „Skonto-Konto an Bank“ (``purpose_first``) mit dem positiven Skonto und der positiven Steuer. Ohne Forderung: „Erlöskonto an Bank“
+    (``purpose_first``) mit dem negativen Skonto und seiner Steuer, dann derselbe Skonto-Satz. Jeder Satz hebt auf, was sein Gegenstück gebucht hat: Der Skonto-Satz der Zahlung und der der
+    Rücknahme ergeben 0 (das Skonto-Konto steht nach dem Stornieren auf 0), die Debitoren stehen nach dem Stornieren mit dem Geld, das geflossen ist, im Haben (10000 steht nie im Soll ohne
+    Zahlungskonto: keine Forderung im Sinn von ``receivable_condition``), das Wartekonto ebenso – die Rechnung sieht aus wie eine Teilzahlung über das Geld. Die Bankseite der drei Sätze
+    ist 0."""
+    text = f'Skonto-Rücknahme zu Re. {number}'
+    skonto, tax = reversal.skonto, reversal.tax
+
+    def row(coa_id, counter_coa_id, form, description, amount, row_tax):
+        return PaymentRow({
+            'DateBooking': day, 'DateTax': day, 'RecipientClient': reversal.recipient or '',
+            'Contact_ID': customer_id, 'COA_ID': coa_id, 'CounterCOA_ID': counter_coa_id, 'Amount': amount,
+            'Currency': reversal.currency or 'EUR', 'TaxRate': reversal.rate if row_tax is not None else None,
+            'TaxAmount': row_tax, 'Text': text, 'DocumentNumber': number,
+            'ParentBooking_ID': reversal.bank_id, 'Status': PAYMENT_MARK, 'EntryForm': form}, description)
+
+    if reversal.debtor_side is not None:
+        rows = [row(reversal.bank_coa, reversal.debtor_side, FORM_LIQUID_FIRST, 'Discount reversal child (bank to debtor)', -skonto, None),
+                row(reversal.waiting_side, reversal.revenue_coa, FORM_TRANSFER, 'Discount reversal child (open item to revenue)', -skonto, tax)]
+    else:
+        rows = [row(reversal.revenue_coa, reversal.bank_coa, FORM_PURPOSE_FIRST, 'Discount reversal child (revenue to bank)', -skonto, tax)]
+    rows.append(row(reversal.skonto_coa, reversal.skonto_counter, FORM_PURPOSE_FIRST, 'Discount reversal child (discount to bank)', skonto, None if tax is None else -tax))
+    return rows
+
+
 # Warum eine Zuordnung beim Umzug auf die Ersatzrechnung an der stornierten Rechnung bleibt: Kennung → Klartext. In dieser
 # Reihenfolge nennt der Hinweis die vorkommenden Gründe, je Grund einmal.
 MOVE_SKIP_REASONS = {
@@ -483,6 +531,7 @@ MOVE_SKIP_REASONS = {
     'no_skr': 'das Bankkonto hat keine SKR-Nummer',
     'overbooked': 'die Bankbewegung ist überbucht',
     'edited': 'die Buchungssätze der Zahlung wurden von Hand geändert oder ergänzt oder tragen einen Beleg',
+    'skonto': 'die Zahlung wurde mit Skonto gebucht',
     'tax_date': ('die Buchungssätze der Zahlung tragen ein anderes Steuerdatum als die Bankbewegung '
                  '(z. B. nach einem DATEV-Export)'),
     'revenue_account': 'das Erlöskonto der Zahlung ist nicht das für Steuersatz und Zahlungsdatum hinterlegte',
@@ -1574,6 +1623,10 @@ class InvoicePaymentsMixin:
         Hat die Stornorechnung eine Gegenbuchung (``_receivable_sides``), ``Bank an Debitoren`` (ohne Steuer) und
         ``Wartekonto an Erlöskonto`` (mit Steuer), sonst der Einzelsatz ``Erlöskonto an Bank``.
 
+        **Eine Rechnung, die mit Skonto bezahlt war** (2.9.0), braucht keine eigene Regel: Das Stornieren hat das Skonto zurückgenommen (``_reverse_skonto_in``), die stornierte Rechnung sieht aus wie eine Teilzahlung
+        über das Geld – ihr Guthaben ist das Geld (``Amount``), und die Steuer der Zahlungen ist die Summe der gebuchten Steuer ihrer markierten Sätze, die des Skonto-Satzes und der Rücknahme mit
+        (19,00 − 0,38 − 0,38 + 0,38 = 18,62 im Beispiel mit 119,00 € und 116,62 € gezahlt). Erstattet der Kunde das ganze Guthaben, stehen alle Konten der Rechnung danach auf 0.
+
         Die Steuer nimmt zurück, was die Zahlungen an der stornierten Rechnung gebucht haben (``_allocations_tax``): Gleicht
         die Erstattung das Guthaben ganz aus, ist es der Rest – die Steuer der Zahlungen abzüglich der früherer Erstattungen –,
         sonst der anteilige Betrag (Cent, halb auf; nie mehr als der Rest). Die Summe über alle Erstattungen ist so genau die
@@ -1897,17 +1950,135 @@ class InvoicePaymentsMixin:
         finally:
             conn.close()
 
+    # ── Skonto beim Stornieren zurücknehmen ──────────────────────────────────
+    def _skonto_reversals(self, conn, invoice_id, number):
+        """Was das Stornieren der Rechnung an ihrem Skonto zurückzunehmen hat – nur lesend, in der Verbindung oder Transaktion von ``conn``: ``(Fehlertext, None)`` oder
+        ``(None, [SkontoReversal, …])``, eine je Bankbewegung, deren Zuordnung ein Skonto trägt (``InvoicePayments.SkontoAmount`` ≠ 0; NULL und 0 heißen keines). Ohne Skonto – der
+        Normalfall – ist die Liste leer, und es war eine Abfrage.
+
+        **Geprüft wird, dass die Skonto-Buchung noch ist, wie die App sie geschrieben hat** – sonst weiß die Rücknahme nicht, was sie aufheben soll: ``SKONTO_STORNO_EDITED``, wenn das Skonto
+        keine ganze Zahl über 0 ist, die Zuordnung an keiner Bankbewegung hängt, unter der Bewegung (markierte Sätze der Zuordnung, ``_payment_children``) nicht genau EIN Satz auf
+        einem Skonto-Konto (``SKONTO_ACCOUNT_NUMBERS``, ``purpose_first``) mit dem Betrag −Skonto steht – ein gelöschter, geänderter oder doppelter – oder die übrigen Sätze nicht
+        „Bank an Debitoren“ und „Wartekonto an Erlöskonto“ (mit Forderung, in dieser Reihenfolge) bzw. der Einzelsatz „Erlöskonto an Bank“ sind. Ein Konto, das einem Satz fehlt,
+        gilt ebenso als geändert. Die Konten der Rücknahme sind die dieser Sätze; Satz und Steuer die des Skonto-Satzes, wie gespeichert (nichts wird nachgerechnet).
+
+        Die EINE Prüfung: ``_storno_blocker`` fragt sie vor allem, was ein Konto anlegt oder eine Nummer verbraucht (Vorprüfung und Transaktion), ``_reverse_skonto_in`` liest den Plan, den es
+        schreibt, aus derselben Antwort."""
+        skonto_rows = conn.execute('SELECT BookingID, SkontoAmount FROM InvoicePayments WHERE InvoiceID = ? AND COALESCE(SkontoAmount, 0) <> 0 ORDER BY ID', (invoice_id,)).fetchall()
+        if not skonto_rows:
+            return None, []
+        skonto_of = {}
+        for booking_id, value in skonto_rows:
+            if type(value) is not int or value < 0:
+                return SKONTO_STORNO_EDITED, None
+            skonto_of[booking_id] = skonto_of.get(booking_id, 0) + value
+        numbers = sorted(SKONTO_ACCOUNT_NUMBERS)
+        discount_coas = {row[0] for row in conn.execute(f"SELECT ID FROM ChartOfAccounts WHERE AccountNumber IN ({','.join('?' * len(numbers))})", numbers)}
+        reversals = []
+        for booking_id, skonto in skonto_of.items():
+            bank = conn.execute('SELECT BookingType, DateBooking, RecipientClient, Currency FROM Bookings WHERE ID = ?', (booking_id,)).fetchone()
+            ids = self._payment_children(conn, booking_id, number)
+            if bank is None or bank[0] != 'bank' or not ids:
+                return SKONTO_STORNO_EDITED, None
+            kids = [_Kid(*row) for row in conn.execute(
+                'SELECT ID, EntryForm, COA_ID, CounterCOA_ID, Amount, TaxRate, TaxAmount FROM Bookings '
+                f"WHERE ID IN ({','.join('?' * len(ids))}) ORDER BY ID", ids)]
+            found = [kid for kid in kids if kid.form == FORM_PURPOSE_FIRST and kid.coa in discount_coas]
+            if len(found) != 1:
+                return SKONTO_STORNO_EDITED, None
+            discount = found[0]
+            others = [kid for kid in kids if kid is not discount]
+            if type(discount.amount) is not int or discount.amount != -skonto or not (discount.tax is None or type(discount.tax) is int):
+                return SKONTO_STORNO_EDITED, None
+            forms = [kid.form for kid in others]
+            if forms == [FORM_LIQUID_FIRST, FORM_TRANSFER]:                 # mit Forderung: Bank an Debitoren, Wartekonto an Erlöskonto
+                bank_coa, debtor_side, waiting_side, revenue_coa = others[0].coa, others[0].counter, others[1].coa, others[1].counter
+            elif forms == [FORM_PURPOSE_FIRST]:                              # ohne Forderung: Erlöskonto an Bank
+                revenue_coa, bank_coa, debtor_side, waiting_side = others[0].coa, others[0].counter, None, None
+            else:
+                return SKONTO_STORNO_EDITED, None
+            if None in (discount.counter, bank_coa, revenue_coa) or (forms[0] == FORM_LIQUID_FIRST and None in (debtor_side, waiting_side)):
+                return SKONTO_STORNO_EDITED, None
+            reversals.append(SkontoReversal(booking_id, bank[1], bank[2], bank[3], skonto, discount.rate, discount.tax, discount.coa, discount.counter,
+                                            bank_coa, revenue_coa, debtor_side, waiting_side))
+        return None, reversals
+
+    def _reverse_skonto_in(self, tx, invoice_id, number, storno_date):
+        """Das Skonto, das Zahlungen der Rechnung ausgebucht haben, zurücknehmen – in der Transaktion ``tx`` von ``Database.cancel_invoice`` (``BEGIN IMMEDIATE``; der Baustein committet nie), nach der
+        Gegenbuchung der Forderung und vor der Neuberechnung der Rechnung. ``number``: die Nummer der stornierten Rechnung, ``storno_date``: das Stornodatum (ISO-Datum).
+
+        Je Bankbewegung mit Skonto (``_skonto_reversals``: dieselbe Prüfung wie vor der Transaktion) schreibt er die Sätze der Rücknahme (``skonto_reversal_rows``: markiert, mit der Nummer
+        der stornierten Rechnung unter der Bewegung der Zahlung – so gehen sie mit, wenn die Zahlung entfernt wird –, Datum und Steuerdatum das **spätere von Stornodatum und Datum der
+        Bankbewegung**: eine Rücknahme vor der Zahlung gäbe es nie) und setzt ``InvoicePayments.SkontoAmount`` auf NULL. Danach gilt die Forderung wieder als offen, wenn das Geld sie
+        nicht mehr ausgleicht (``_reopen_uncovered_receivables``: Stufe 7 des Abgleichs hatte sie auf ``resolved`` gesetzt). Die Einträge fürs Replay-Log kommen in ``tx.log`` (geschrieben
+        erst nach dem Commit).
+
+        Returns ``None`` – auch ohne Skonto, dann ist nichts geschrieben – oder den Klartext der Ablehnung (``SKONTO_STORNO_EDITED``; nichts geschrieben): Der Aufrufer rollt zurück."""
+        conn = tx.conn
+        error, reversals = self._skonto_reversals(conn, invoice_id, number)
+        if error is not None:
+            return error
+        if not reversals:
+            return None
+        customer_id = conn.execute('SELECT CustomerId FROM Invoices WHERE ID = ?', (invoice_id,)).fetchone()[0]
+        for reversal in reversals:
+            day = storno_date
+            if isinstance(reversal.bank_date, str) and _ISO_DAY.fullmatch(reversal.bank_date):
+                day = max(storno_date, reversal.bank_date)
+            for row in skonto_reversal_rows(number=number, customer_id=customer_id, day=day, reversal=reversal):
+                params = tuple(row.values[column] for column in PAYMENT_ROW_COLUMNS)
+                conn.execute(_PAYMENT_ROW_INSERT, params)
+                tx.log.append((_PAYMENT_ROW_INSERT, params, row.description))
+            sql = 'UPDATE InvoicePayments SET SkontoAmount = NULL WHERE InvoiceID = ? AND BookingID = ?'
+            conn.execute(sql, (invoice_id, reversal.bank_id))
+            tx.log.append((sql, (invoice_id, reversal.bank_id), 'Cancel invoice: take back the discount of the payment'))
+        self._reopen_uncovered_receivables(conn, number)
+        return None
+
+    @staticmethod
+    def _skonto_booked(conn, invoice_id, number, bank_id=None):
+        """Trägt die Rechnung eine Zahlung mit Skonto – an dieser Bankbewegung (``bank_id``) oder, ohne sie, an einer ihrer Bewegungen? Ja, wenn eine Zuordnung ein Skonto trägt
+        (``InvoicePayments.SkontoAmount`` ≠ 0) ODER unter der Bewegung ein markierter Satz mit der Nummer der Rechnung auf einem Skonto-Konto steht (``SKONTO_ACCOUNT_NUMBERS``). Das
+        zweite fängt, was nach dem Stornieren bleibt: ``SkontoAmount`` ist dort NULL (``_reverse_skonto_in``), der Skonto-Satz der Zahlung und der der Rücknahme stehen noch da. Der Umzug der
+        Zahlungen (``_movable_payment``, Grund ``skonto``) und der Neuaufbau (``Database.rebuild_invoice_payments``) fragen es: Sie schrieben die Sätze neu, ohne das Skonto zu kennen.
+        Rein lesend, in der Verbindung oder Transaktion von ``conn``."""
+        by_bank, params = (' AND BookingID = ?', (bank_id,)) if bank_id is not None else ('', ())
+        if conn.execute(f'SELECT 1 FROM InvoicePayments WHERE InvoiceID = ? AND COALESCE(SkontoAmount, 0) <> 0{by_bank} LIMIT 1', (invoice_id, *params)).fetchone():
+            return True
+        numbers = sorted(SKONTO_ACCOUNT_NUMBERS)
+        parent, params = (' AND k.ParentBooking_ID = ?', (bank_id,)) if bank_id is not None else (
+            ' AND k.ParentBooking_ID IN (SELECT BookingID FROM InvoicePayments WHERE InvoiceID = ?)', (invoice_id,))
+        return conn.execute(
+            'SELECT 1 FROM Bookings k JOIN ChartOfAccounts c ON c.ID = k.COA_ID WHERE k.Status = ? AND k.DocumentNumber = ? '
+            f"AND (k.SourceGroup IS NULL OR k.SourceGroup = '') AND c.AccountNumber IN ({','.join('?' * len(numbers))}){parent} LIMIT 1",
+            (PAYMENT_MARK, number, *numbers, *params)).fetchone() is not None
+
     # ── Entfernen ────────────────────────────────────────────────────────────
+    def _reopen_uncovered_receivables(self, conn, number):
+        """Die Forderung einer Rechnung gilt wieder als offen, wenn die Sätze „… an Debitoren“ unter ihren Bankbewegungen sie nicht (mehr) ausgleichen (Stufe 7 des Auto-Abgleichs hatte sie auf
+        'resolved' gesetzt, siehe ``money.is_covered``) – in der Transaktion von ``conn``. Trägt die Rechnungsnummer mehrere Forderungszeilen, zählt ihre Summe, und alle aufgelösten gehen
+        gemeinsam zurück (``_standalone_receivable_rows``: nur, was ``receivable_condition`` eine Forderung nennt, mit allen Debitorenkonten). Gerechnet wird wie in Stufe 7
+        (``matching.receivables_covered``): Ein Betrag, der keine Zahl ist, entscheidet nichts – die Zeilen bleiben, wie sie sind, und der Aufrufer scheitert nicht. Der Baustein von
+        ``_after_payment_removed`` (das Entfernen einer Zahlung) und ``_reverse_skonto_in`` (das Stornieren einer Rechnung mit Skonto: 116,62 € „an Debitoren“ decken 119,00 € nicht)."""
+        debtor_ids = sorted(self._debtor_coa_ids(conn))
+        if not debtor_ids:
+            return
+        standalone = self._standalone_receivable_rows(conn.cursor(), number)
+        # Ohne aufgelöste Zeile gibt es nichts zurückzunehmen: dann wird auch kein Betrag gelesen (wie bisher – ein Betrag,
+        # der keine Zahl ist, darf das Entfernen einer Zahlung nicht scheitern lassen)
+        if any(status == 'resolved' for _id, _amount, status in standalone):
+            covered = receivables_covered([amount for _id, amount, _status in standalone],
+                                          self._debtor_settled_amounts(conn.cursor(), number, debtor_ids))
+            if covered is False:                 # None: nicht entscheidbar – dann bleibt alles, wie es ist
+                for booking_id, _amount, status in standalone:
+                    if status == 'resolved':
+                        conn.execute('UPDATE Bookings SET Status = NULL WHERE ID = ?', (booking_id,))
+
     def _after_payment_removed(self, conn, invoice_id):
         """Nach dem Entfernen von Zahlungen, in der Transaktion von ``conn``:
 
         * Die Forderung gilt wieder als offen, wenn die übrigen Sätze „… an Debitoren“ sie nicht
-          mehr ausgleichen (Stufe 7 des Auto-Abgleichs hatte sie auf 'resolved' gesetzt, siehe
-          ``money.is_covered``). Trägt die Rechnungsnummer mehrere Forderungszeilen, zählt ihre
-          Summe, und alle aufgelösten gehen gemeinsam zurück (``_standalone_receivable_rows``: nur, was
-          ``receivable_condition`` eine Forderung nennt, mit allen Debitorenkonten). Gerechnet wird wie in
-          Stufe 7 (``matching.receivables_covered``): Ein Betrag, der keine Zahl ist, entscheidet nichts –
-          die Zeilen bleiben, wie sie sind, und das Entfernen scheitert nicht.
+          mehr ausgleichen (``_reopen_uncovered_receivables``).
         * AmountDue und Status der Rechnung werden neu gerechnet.
         * Ist keine Zahlung mehr übrig und der Status der Rechnung kein Forderungsstatus
           (storniert, Entwurf, abgeschlossen), geht auch die Forderungsbuchung – so wie beim
@@ -1921,18 +2092,7 @@ class InvoicePaymentsMixin:
         if row is None:
             return
         number = row[0]
-        debtor_ids = sorted(self._debtor_coa_ids(conn))
-        if debtor_ids:
-            standalone = self._standalone_receivable_rows(conn.cursor(), number)
-            # Ohne aufgelöste Zeile gibt es nichts zurückzunehmen: dann wird auch kein Betrag gelesen (wie bisher – ein Betrag,
-            # der keine Zahl ist, darf das Entfernen einer Zahlung nicht scheitern lassen)
-            if any(status == 'resolved' for _id, _amount, status in standalone):
-                covered = receivables_covered([amount for _id, amount, _status in standalone],
-                                              self._debtor_settled_amounts(conn.cursor(), number, debtor_ids))
-                if covered is False:                 # None: nicht entscheidbar – dann bleibt alles, wie es ist
-                    for booking_id, _amount, status in standalone:
-                        if status == 'resolved':
-                            conn.execute('UPDATE Bookings SET Status = NULL WHERE ID = ?', (booking_id,))
+        self._reopen_uncovered_receivables(conn, number)
         self._recalc_invoice(conn, invoice_id)
 
         status = conn.execute('SELECT Status FROM Invoices WHERE ID = ?', (invoice_id,)).fetchone()[0]
@@ -2233,8 +2393,8 @@ class InvoicePaymentsMixin:
         """Lässt sich die Zuordnung (stornierte Rechnung ``old``, Bankbewegung ``bank_id``) über ``amount`` umziehen? Nur, was
         die App genau so geschrieben hat, wie ``_assign_in_tx`` es schreiben würde, und was sich eindeutig neu schreiben lässt:
         eine Bankbewegung mit Zahlungseingang, deren Konto eine SKR-Nummer hat (``bank_coas``) und die nicht überbucht ist;
-        keine Sätze mit Quellklammer (WISO) darunter; genau eine Zuordnung zum Paar und keine der neuen Rechnung zur selben
-        Bewegung; und markierte Sätze, die unverändert sind (``_revenue_coa_if_as_written``).
+        keine Sätze mit Quellklammer (WISO) darunter; keine Zahlung mit Skonto (``_skonto_booked``, Grund ``skonto``: auch nicht nach seiner Rücknahme beim Stornieren); genau eine
+        Zuordnung zum Paar und keine der neuen Rechnung zur selben Bewegung; und markierte Sätze, die unverändert sind (``_revenue_coa_if_as_written``).
 
         ``old``: die stornierte Rechnung (``_Replaced``). Returns ``((Account_ID der Bewegung, Erlöskonto der bisherigen
         Sätze, Datum der Bewegung), None)``, sonst ``(None, Grund)`` – der Grund ist ein Schlüssel von ``MOVE_SKIP_REASONS``."""
@@ -2255,6 +2415,10 @@ class InvoicePaymentsMixin:
             unmarked = conn.execute('SELECT 1 FROM Bookings WHERE ParentBooking_ID = ? AND DocumentNumber = ? LIMIT 1',
                                     (bank_id, old.number)).fetchone()
             return None, 'unmarked' if unmarked else 'import'
+        if self._skonto_booked(conn, old.id, old.number, bank_id):
+            # Der Umzug entfernt die Sätze und schreibt Geld und Rest neu – ein Skonto kennt er nicht (``payment_rows`` ohne ``skonto``): Die Zahlung bleibt als Guthaben an der stornierten Rechnung.
+            # Nach dem Stornieren ist ``SkontoAmount`` NULL; die Skonto-Sätze der Zahlung und ihrer Rücknahme stehen noch da, daran erkennt es ``_skonto_booked``
+            return None, 'skonto'
         if (conn.execute('SELECT COUNT(*) FROM InvoicePayments WHERE InvoiceID = ? AND BookingID = ?',
                          (old.id, bank_id)).fetchone()[0] != 1
                 or conn.execute('SELECT 1 FROM InvoicePayments WHERE InvoiceID = ? AND BookingID = ?',
