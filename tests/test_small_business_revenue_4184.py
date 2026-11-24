@@ -42,7 +42,7 @@ from db.invoice_payments import (MIXED_REVENUE_MESSAGE, PAYMENT_CHANGED_MESSAGE,
 from db.invoice_repair import REBUILD_SKIP_REASONS
 from db.matching import FORM_PURPOSE_FIRST
 from db.reporting import euer_section
-from server.handlers import handle_add_transaction, handle_datev_export, link_booking_to_invoice_capped
+from server.handlers import BOOKING_DATE_INVALID, handle_add_transaction, handle_datev_export, link_booking_to_invoice_capped
 from server.pages_dashboard import PageDashboard
 from server.pages_invoice import PageInvoice
 from server.pages_transactions import PageTransactions
@@ -316,7 +316,7 @@ def test_the_mask_checks_the_date_of_the_new_movement_before_it_creates_it(db, a
     drop_small_business_accounts(db)
     before = all_rows(db)
     status, message = handle_add_transaction(db, _post(invoice_id=invoice, account=acct, amount='100.00', date=''))
-    assert (status, message) == (400, REVENUE_DATE_UNREADABLE)
+    assert (status, message) == (400, BOOKING_DATE_INVALID)          # seit 2.9.1 lehnt die Maske ein unlesbares Datum selbst ab, noch vor der Zahlung
     assert all_rows(db) == before
 
 
