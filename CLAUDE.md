@@ -35,13 +35,16 @@ kein „seit Version …“, kein „bis x.y war …“ – das steht im `git lo
 
 - **Fable** ist der Hauptthread (Effort `high`, `xhigh` für schwieriges Coding oder Architektur, `max` nur ausnahmsweise):
   Anfrage verstehen, Architektur, unklare Entscheidungen, Planung, Review.
-- **Opus**: Plan-Agent, urteilslastige general-purpose-Aufgaben, `financial-security-reviewer`.
+- **Opus**: Plan-Agent, urteilslastige general-purpose-Aufgaben, `financial-security-reviewer`, `tax-researcher`.
 - **Sonnet**: die Coding-Agents in `.claude/agents/` – `test-agent` (pytest schreiben, starten, reparieren) und
   `implementer-agent` (einen fertig entschiedenen Plan umsetzen).
 - **Haiku**: nur der `scout-agent` – Nachschlagen (wo definiert/benutzt, Doku, Log, Git-Historie) und reine Prüfläufe
   (Anonymisierungs-Guard, pytest, CI-Status), die berichten statt reparieren. Statt des eingebauten Explore.
 - Nach Änderungen an Geldrechnung, SQL-Abfragen oder Exporten (DATEV, XRechnung/ZUGFeRD, PDF) prüft der
   `financial-security-reviewer`.
+- Fachliche Steuer- und Buchungsfragen (Konto, Steuerschlüssel, Satz, Sonderfall) klärt VOR dem Planen der
+  `tax-researcher`: Er recherchiert mit Quellen und trennt Belegtes von Modellwissen. Sein Bericht ist Grundlage einer
+  Entscheidung des Owners, keine Steuerberatung, und geht nicht ungeprüft in öffentliche Texte.
 - Kein Subagent auf Fable: eingebaute Agents nie ohne Modell aufrufen (Plan → `opus`, general-purpose → `sonnet`, bei
   urteilslastiger Arbeit `opus`), Workflow-`agent()` ebenso mit `opts.model`; nie `model: "fable"`; Haiku nur über den
   scout-agent und nie für Code.
