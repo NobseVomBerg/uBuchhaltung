@@ -126,7 +126,7 @@ def test_a_fresh_and_a_migrated_database_have_the_same_columns_tables_and_indexe
     Database(db_name=fresh)
     _reopen(stock)
 
-    assert _names(stock)[NEW_AT] == NEW_COLUMNS and len(_names(stock)) == 56
+    assert _names(stock)[NEW_AT] == NEW_COLUMNS and len(_names(stock)) == 59       # seit 2.10.0 drei Spalten am Ende (test_schema_2010.py)
     for table in ['Invoices', *NEW_TABLES]:
         assert _info(stock, table) == _info(fresh, table), table                # Name, Typ, NOT NULL, Vorgabe, PK
     assert _tables(stock) == _tables(fresh)
@@ -177,7 +177,8 @@ def test_existing_rows_stay_untouched_and_the_new_values_are_empty(stock):
 
     after = _contents(stock)
     assert [row[:50] for row in after['Invoices']] == before_invoices           # jede Spalte jeder Zeile
-    assert all(row[50:] == (None,) * 6 for row in after['Invoices'])            # die fünf neuen Spalten und, seit 2.7.0, MixedTaxRates
+    assert all(row[50:56] == (None,) * 6 for row in after['Invoices'])          # die fünf neuen Spalten und, seit 2.7.0, MixedTaxRates
+    assert all(row[56:] == (None,) * 3 for row in after['Invoices'])            # seit 2.10.0 drei Spalten am Ende, leer (test_schema_2010.py)
     for table, rows in before_rest.items():
         if table in _ADDED_BY_2005:                                             # Schema 2005: am Ende, überall 1
             values = _ADDED_BY_2005[table]

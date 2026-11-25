@@ -17,8 +17,8 @@ Statusgruppen:
   schon einmal versendet war (``was_sent_before``).
 * **gesperrt** (``sent``, ``overdue``, ``partial_payment``, ``partial``, ``paid``): Finanzangaben –
   Nummer, Rechnungsdatum, Kunde, eigene Firma, Positionen, Steuer, Summen, Fälligkeit, Skonto,
-  Bank und Käufer-USt-IdNr. – sind gesperrt. Weiter änderbar bleiben Zahlungshinweis, Anschrift des
-  Kunden, Bestellnummer, Leitweg-ID und Leistungsdatum – aber nur als Berichtigung, mit neuer Fassung
+  Bank, Zahlungsart und Käufer-USt-IdNr. – sind gesperrt. Weiter änderbar bleiben Zahlungshinweis, Anschrift des
+  Kunden, Bestellnummer, Leitweg-ID, Leistungsdatum und Leistungszeitraum – aber nur als Berichtigung, mit neuer Fassung
   und Protokoll.
 * **abgeschlossen** (``cancelled``): nichts mehr änderbar.
 * Eine **Stornorechnung** (``InvoiceKind = 'storno'``) ist ganz gesperrt, was auch ihr Status sagt: wie eine
@@ -97,6 +97,7 @@ FIELDS = (
     ('skonto_percent', 'SkontoPercent', LOCKED_INPUT, 'Skonto'),
     ('tax_rate', 'TaxRate', LOCKED_INPUT, 'Steuersatz'),
     ('currency', 'Currency', LOCKED_INPUT, 'Währung'),
+    ('payment_means', 'PaymentMeans', LOCKED_INPUT, 'Zahlungsart'),
     ('seller_name', 'SellerName', LOCKED_DERIVED, None),
     ('seller_company', 'SellerCompany', LOCKED_DERIVED, None),
     ('seller_street', 'SellerStreet', LOCKED_DERIVED, None),
@@ -121,6 +122,7 @@ FIELDS = (
     ('buyer_reference', 'BuyerReference', OPEN_INPUT, 'Leitweg-ID'),
     ('buyer_route_id', 'BuyerRouteID', OPEN_INPUT, 'Leitweg-ID'),
     ('delivery_date', 'DeliveryDate', OPEN_INPUT, 'Leistungsdatum'),
+    ('service_date_end', 'ServiceDateEnd', OPEN_INPUT, 'Leistungszeitraum'),
     ('buyer_name', 'BuyerName', OPEN_DERIVED, None),
     ('buyer_company', 'BuyerCompany', OPEN_DERIVED, None),
     ('buyer_street', 'BuyerStreet', OPEN_DERIVED, None),
@@ -165,6 +167,10 @@ REOPEN_FOREIGN_MESSAGE = ('Die Forderungsbuchung dieser Rechnung stammt nicht au
                           'nicht auf Entwurf zurückholen.')
 REOPEN_PAYMENT_MESSAGE = ('Zu dieser Rechnung gibt es Zahlungsbuchungen – sie lässt sich nicht auf Entwurf '
                           'zurückholen. Erst die Zuordnung entfernen.')
+# Keine Ablehnung, sondern eine Rückfrage (409 mit ``confirm == 'exported'``): Die Forderung, die das Zurückholen entfernt, stand schon in einem DATEV-Stapel (``BookingExports``) –
+# dort bleibt sie stehen. Erst mit ``confirm_exported`` geschieht es
+REOPEN_EXPORTED_QUESTION = ('Die Forderung dieser Rechnung stand schon in einem DATEV-Export. Beim Zurückholen wird sie entfernt – im exportierten Stapel '
+                            'bleibt sie stehen. Trotzdem zurückholen?')
 ARCHIVE_FAILED_MESSAGE = ('Die versendeten Dokumente (PDF/XML) ließen sich nicht in den Ordner „Fassungen“ '
                           'verschieben – der Status wurde nicht geändert.')
 
@@ -189,11 +195,13 @@ class DocumentNotFound(LookupError):
 
 
 class _Refusal(Exception):
-    """Der Statuswechsel wird abgelehnt: ``str(exc)`` ist der Klartext, ``code`` der Statuscode."""
+    """Der Statuswechsel wird abgelehnt: ``str(exc)`` ist der Klartext, ``code`` der Statuscode. ``confirm`` (``None``: eine gewöhnliche Ablehnung) macht daraus eine Rückfrage:
+    die Art der Bestätigung, die den Wechsel erlaubt (``'exported'``)."""
 
-    def __init__(self, message, code):
+    def __init__(self, message, code, confirm=None):
         super().__init__(message)
         self.code = code
+        self.confirm = confirm
 
 
 class InvoiceLocked(Exception):
@@ -279,12 +287,20 @@ def _currency(value):
     return _text(value) or 'EUR'
 
 
+def _means(value):
+    """Zahlungsart: NULL, leer und ``'58'`` sind dieselbe Überweisung (das Formular schickt die Überweisung leer, die Datenbank hält sie als NULL); ein
+    Code bleibt er selbst, und jeder unlesbare Wert steht für sich – gleich nur sich selbst, nie einem lesbaren."""
+    from .invoices import payment_means_code            # ``invoices`` liest dieses Modul schon beim Laden
+    code = payment_means_code(None if value == '' else value)
+    return code if code is not None else ('?', _text(value))
+
+
 _NORMALIZE = {
     'invoice_number': _text, 'invoice_date': _date, 'own_company_id': _id, 'customer_id': _id,
     'bank_account_id': _id, 'payment_due_date': _date, 'skonto_days': _number,
     'skonto_percent': _number, 'tax_rate': _rate, 'currency': _currency,
     'payment_terms': _text, 'order_number': _text, 'buyer_reference': _text,
-    'buyer_route_id': _text, 'delivery_date': _date,
+    'buyer_route_id': _text, 'delivery_date': _date, 'service_date_end': _date, 'payment_means': _means,
 }
 
 
@@ -355,7 +371,7 @@ def _items_differ(stored_rows, items):
 
 def changed_open_fields(row, changes):
     """Von den Angaben in ``changes`` die änderbaren (Zahlungshinweis, Bestellnummer, Leitweg-ID,
-    Leistungsdatum, Anschrift), deren Wert vom gespeicherten abweicht. Verglichen wird genau
+    Leistungsdatum, Leistungszeitraum, Anschrift), deren Wert vom gespeicherten abweicht. Verglichen wird genau
     (leer und ``None`` sind dasselbe): Ein unverändertes Speichern schreibt keine Spalte – auch
     nicht den Leerwert an die Stelle von ``NULL`` –, eine Änderung nur am Zeilenumbruch aber schon."""
     def text(value):
@@ -445,9 +461,19 @@ TRANSITIONS = {
 Verdict = namedtuple('Verdict', 'kind message code')
 # ``archived``: wie viele versendete Dokumente (PDF/XML) das Zurückholen in „Fassungen“ abgelegt hat;
 # ``moved``: wie viel von den Zahlungen der stornierten Rechnung das Versenden einer Ersatzrechnung auf sie übertragen hat
-# (Minor Units), ``payment_hint``: der Hinweis dazu für den Nutzer (``None``, wenn es nichts zu sagen gab)
-StatusChange = namedtuple('StatusChange', 'ok message code old new kind archived moved payment_hint',
-                          defaults=(0, 0, None))
+# (Minor Units), ``payment_hint``: der Hinweis dazu für den Nutzer (``None``, wenn es nichts zu sagen gab);
+# ``confirm``: bei einer Rückfrage statt einer Ablehnung die Art der Bestätigung (``'exported'``), sonst ``None``
+class StatusChange(namedtuple('StatusChange', 'ok message code old new kind archived moved payment_hint confirm',
+                              defaults=(0, 0, None, None))):
+    __slots__ = ()
+
+    def _asdict(self):
+        """Wie das benannte Tupel, aber ``confirm`` steht nur da, wo es gesetzt ist: Die Form jedes Ergebnisses, das keine Rückfrage ist, bleibt, wie sie war – die Schnappschüsse
+        (``tests/single_rate_golden_2_6_6.json``) zeichnen sie so auf."""
+        fields = super()._asdict()
+        if fields['confirm'] is None:
+            del fields['confirm']
+        return fields
 
 
 def _quoted(status):
@@ -627,7 +653,7 @@ class InvoiceLockMixin:
         if cursor.rowcount != 1:
             raise InvoiceLocked(CHANGED_MESSAGE)
 
-    def set_invoice_status(self, invoice_id, new_status, user_name=None):
+    def set_invoice_status(self, invoice_id, new_status, user_name=None, confirm_exported=False):
         """Den Status einer Rechnung setzen – nach der Übergangstabelle (``TRANSITIONS``), in EINER
         Transaktion: Prüfen, Status, Forderungsbuchung und (beim Zurückholen) das Ablegen der
         versendeten Dokumente gelingen gemeinsam oder gar nicht.
@@ -652,7 +678,11 @@ class InvoiceLockMixin:
           zieht nichts um, und der Hinweis ist ``MOVE_MIXED_HINT`` (nach einer Erstattung dazu, was erstattet ist; ist alles erstattet, sagt es der Hinweis
           wie bei einem Beleg mit einem Satz);
         * ``reopen``: die Forderung wird entfernt – aber nur eine, die die App selbst gebucht hat und
-          die an nichts hängt, sonst wird das Zurückholen mit Klartext abgelehnt (nichts geändert).
+          die an nichts hängt, sonst wird das Zurückholen mit Klartext abgelehnt (nichts geändert). Stand
+          die Forderung schon in einem DATEV-Export (``BookingExports``), fragt es zuerst nach: 409 mit
+          ``REOPEN_EXPORTED_QUESTION`` und ``StatusChange.confirm == 'exported'``, nichts geändert – erst
+          mit ``confirm_exported=True`` geschieht es (die Rückfrage kommt nach den Ablehnungen, nie
+          davor; wo es keinen Export gab, entfällt sie).
           PDF und XML wandern nach ``invoices/<Jahr>/Fassungen/<ID>/`` (``archive_sent_documents``) und
           werden in ``InvoiceDocumentVersions`` festgehalten, ihre Pfade werden geleert, die Fassung
           zählt um eins hoch (nur, wenn eine Datei abgelegt wurde); scheitert das Verschieben, bleibt
@@ -707,6 +737,9 @@ class InvoiceLockMixin:
                     blocker = self._reopen_blocker(conn, row)
                     if blocker:
                         raise _Refusal(blocker, 409)
+                    removable, _ = self._receivable_removal(conn, row['InvoiceNumber'])
+                    if removable and not confirm_exported and self.exported_booking_ids(conn, removable):
+                        raise _Refusal(REOPEN_EXPORTED_QUESTION, 409, confirm='exported')
                 if kind in ('send', 'revive'):
                     if entry_blocker:
                         raise _Refusal(entry_blocker, 409)       # ein Erlöskonto der Stammdaten fehlt: nichts geschrieben, kein Konto angelegt
@@ -763,7 +796,7 @@ class InvoiceLockMixin:
                 self._log_invoice_change(conn, invoice_id, row['InvoiceNumber'], user_name, 'status',
                                          'Status', old, new, version)
         except _Refusal as refusal:
-            return StatusChange(False, str(refusal), refusal.code, old, new, None)
+            return StatusChange(False, str(refusal), refusal.code, old, new, None, confirm=refusal.confirm)
         except BaseException:
             # Auch ein scheiternder Commit: die Dokumente liegen wieder dort, wo die Rechnung sie sucht
             self._restore_archived(archived)

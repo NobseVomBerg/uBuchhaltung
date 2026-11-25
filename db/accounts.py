@@ -27,6 +27,9 @@ DEFAULT_CASH_ACCOUNT = 1600
 
 BUSINESS_ONLY_ERROR = 'Das Kennzeichen „reines Geschäftskonto“ ist 0 oder 1.'
 
+# So viele IDs gehen in EINE Anweisung (SQLite begrenzt die Zahl der Variablen je Anweisung)
+_ID_BLOCK = 500
+
 #: Welche Zeilen von ``Bookings`` der Export des Buchungsstapels für einen Zeitraum liest – und mit ihm die Summen- und Saldenliste
 #: (``Database.get_susa``): alle Zeilen außer den Bankbewegungen, deren Datum als Text zwischen den beiden Grenzen liegt (beide gehören
 #: dazu). ``{a}`` ist der Tabellenalias mit Punkt (``'e.'``) oder leer. Zwei Parameter: von, bis.
@@ -375,6 +378,41 @@ class AccountsMixin:
         )
         conn.commit()
         conn.close()
+    def mark_datev_export(self, booking_ids: list, date_tax: str):
+        """Die Sätze eines DATEV-Stapels als exportiert vermerken – in EINER Transaktion (``BEGIN IMMEDIATE``).
+
+        Setzt wie ``update_bookings_date_tax_batch`` das Steuerdatum (``date_tax``, ``'YYYY-MM-DD'``) und legt für jeden Satz, der noch keine Zeile hat, eine in ``BookingExports`` an
+        (``ExportedAt`` = jetzt, UTC): Nur der erste Export zählt, ein zweiter ändert den Zeitpunkt nie. Eine ID ohne Buchung wird übergangen, wie beim UPDATE. Die IDs gehen in
+        Blöcken zu 500 an die Datenbank; scheitert ein Schritt, ist nichts geändert. Das Replay-Log folgt nach dem Commit.
+
+        Args:
+            booking_ids: Liste von Booking-IDs (nur die Sätze, die im Stapel standen)
+            date_tax:    'YYYY-MM-DD'
+        """
+        ids = list(booking_ids)
+        if not ids:
+            return
+        with self.transaction() as tx:
+            tx.conn.execute('BEGIN IMMEDIATE')
+            for start in range(0, len(ids), _ID_BLOCK):
+                block = ids[start:start + _ID_BLOCK]
+                marks = ','.join('?' * len(block))
+                for sql, params, description in (
+                        (f'UPDATE Bookings SET DateTax=? WHERE ID IN ({marks})', (date_tax, *block), 'DATEV export: set tax date'),
+                        ('INSERT OR IGNORE INTO BookingExports (Booking_ID, ExportedAt) SELECT ID, CURRENT_TIMESTAMP FROM Bookings '
+                         f'WHERE ID IN ({marks})', tuple(block), 'DATEV export: mark as exported')):
+                    tx.conn.execute(sql, params)
+                    tx.log.append((sql, params, description))
+    @staticmethod
+    def exported_booking_ids(conn, ids):
+        """Welche der Buchungen ``ids`` in einem DATEV-Stapel standen (eine Zeile in ``BookingExports`` haben), als Menge. Rein lesend, in der Transaktion von ``conn``."""
+        ids = list(ids)
+        found = set()
+        for start in range(0, len(ids), _ID_BLOCK):
+            block = ids[start:start + _ID_BLOCK]
+            found.update(row[0] for row in conn.execute(
+                f"SELECT Booking_ID FROM BookingExports WHERE Booking_ID IN ({','.join('?' * len(block))})", block))
+        return found
     def get_account_id_by_skr(self, skr_number: int):
         """Account-ID anhand der SKRAccount-Nummer nachschlagen.
 

@@ -617,6 +617,13 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
     id_display = (f'<tr><td>ID:</td><td style="color: #666;">{transaction_id}'
                   f'<input type="hidden" name="transaction_id" value="{transaction_id}"></td></tr>'
                   if edit_trans else '')
+    # Zusatzfelder einer Bankbewegung aus CAMT: nur zum Lesen (kein Eingabefeld, das Speichern fasst sie nicht an), nur die mit einem Wert
+    bank_details = db.get_bank_details(transaction_id) if is_bank_form else None
+    detail_rows = ''.join(
+        f'<tr><td>{label}</td><td class="muted">{_html.escape(value, quote=True)}</td></tr>'
+        for label, value in (('Valuta:', bank_details.value_date), ('Bankreferenz:', bank_details.bank_ref),
+                             ('End-to-End-Referenz:', bank_details.end_to_end_id), ('Mandatsreferenz:', bank_details.mandate_ref),
+                             ('Gläubiger-ID:', bank_details.creditor_id)) if value) if bank_details else ''
 
     s+= f'''
     <div class="grid2Cols gridMain">
@@ -626,7 +633,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
         {prefill_note}{payment_row_note}
         <form method="POST" action="/transactions/add">
                 <table class="form-table">
-                    {id_display}
+                    {id_display}{detail_rows}
                     <tr><td>Buchungsdatum:</td><td><input type="date" name="date" value="{edit_trans[1] if edit_trans else ""}" required></td></tr>
                     <tr><td>Steuerdatum:</td><td><input type="date" name="date_tax" value="{edit_trans[2] if edit_trans and edit_trans[2] else ""}"></td></tr>
                     <tr><td>Empfänger/Auftragg.:</td><td><input type="text" name="recipient" value="{edit_recipient}" size="40"></td></tr>
@@ -1245,11 +1252,12 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
         }
 
         // Befund-Schlüssel der Plausibilitätsprüfung (importers/plausibility.py);
-        // incomplete kommt aus der Vorschau (server/import_preview.py)
+        // incomplete und ref_differs kommen aus der Vorschau (server/import_preview.py)
         var WARN_LABELS = {
             amount: 'Betrag?', date: 'Datum?', daterange: 'Datum weit weg?',
             empty: 'leer', boiler: 'Kopf-/Fußzeile?', huge: 'Betrag zu groß?',
-            incomplete: 'ohne Datum/Betrag – wird nicht importiert'
+            incomplete: 'ohne Datum/Betrag – wird nicht importiert',
+            ref_differs: 'gleiches Datum und gleicher Betrag, aber andere Bankreferenz als die vorhandene Bewegung'
         };
 
         // Befunde, die den ganzen Beleg betreffen (BankStatement.warnings)
@@ -1351,9 +1359,13 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             const fileNo = Number(f.file_index);
             const rows = f.transactions || [];
             const chosenAtStart = rows.filter(t => t.importable).length;
+            // Verdächtige Duplikate (andere Bankreferenz, ``forceable``) lassen sich doch importieren: ein Kästchen je Zeile, nie vorab angehakt – mit ihnen steht die Liste offen, auch ohne Auswahl.
+            const hasForce = rows.some(t => t.forceable);
+            const forceCell = t => hasForce ? '<td>' + (t.forceable ? '<label><input type="checkbox" class="forceBox" data-idx="' + fileNo +
+                 '" data-i="' + Number(t.index) + '"> trotzdem importieren</label>' : '') + '</td>' : '';
             h += '<button type="button" class="coloredButton btn-sm bg-gray btnToggleDet" data-target="' + detId + '">' +
                  (f.selectable ? 'Umsätze auswählen' : 'Alle Einzelbuchungen') + '</button>';
-            h += '<div id="' + detId + '"' + (f.selectable ? '' : ' style="display:none"') + '>';
+            h += '<div id="' + detId + '"' + (hasForce ? '' : (f.selectable ? '' : ' style="display:none"')) + '>';
             if (f.selectable) {
                 h += '<div class="rowWithObjects"><input type="search" class="selSearch" data-idx="' + fileNo +
                      '" placeholder="Suchen in Datum, Empfänger, Zweck, Betrag" aria-label="Umsätze durchsuchen">' +
@@ -1364,18 +1376,18 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                 h += '<div class="muted hint">Einzelne Umsätze auswählen: in den Stammdaten des Bankkontos den Haken „Reines Geschäftskonto“ entfernen.</div>';
             }
             h += '<table' + (f.selectable ? ' class="selTable"' : '') + '><tr>' + (f.selectable ? '<th class="selCell"></th>' : '') +
-                 '<th>Datum</th><th>Empfänger</th><th>Zweck</th><th>Betrag</th></tr>';
+                 '<th>Datum</th><th>Empfänger</th><th>Zweck</th><th>Betrag</th>' + (hasForce ? '<th></th>' : '') + '</tr>';
             rows.forEach(t => {
                 if (f.selectable) {
                     const hay = [t.date, t.recipient, t.reference, amountSearchText(t.amount)].join(' ').toLowerCase();
                     h += '<tr class="selRow' + (t.importable ? '' : ' row-open') + '" data-hay="' + esc(hay) + '"><td class="selCell">' +
                          '<input type="checkbox" class="selBox" data-idx="' + fileNo + '" data-i="' + Number(t.index) + '"' +
                          (t.importable ? ' checked' : ' disabled') + '></td><td>' + esc(t.date) + '</td><td>' + esc(t.recipient) +
-                         '</td><td>' + esc(t.reference) + '</td><td>' + fmtAmount(t.amount) + '</td></tr>';
+                         '</td><td>' + esc(t.reference) + '</td><td>' + fmtAmount(t.amount) + '</td>' + forceCell(t) + '</tr>';
                 } else {
                     const cls = t.dup ? ' class="row-open"' : '';
                     h += '<tr' + cls + '><td>' + esc(clip(t.date,10)) + '</td><td>' + esc(clip(t.recipient,30)) +
-                         '</td><td>' + esc(clip(t.reference,40)) + '</td><td>' + fmtAmount(t.amount) + '</td></tr>';
+                         '</td><td>' + esc(clip(t.reference,40)) + '</td><td>' + fmtAmount(t.amount) + '</td>' + forceCell(t) + '</tr>';
                 }
             });
             h += '</table></div>';
@@ -1384,7 +1396,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                 h += '<div class="errorColor">Import nicht möglich – Bankkonto zu dieser IBAN anlegen.</div>';
             } else {
                 h += '<div><button type="button" class="coloredButton btn-sm bg-green btnImportBeleg" id="btnimp-' + fileNo +
-                     '" data-idx="' + f.file_index + '">Importieren (' +
+                     '" data-idx="' + f.file_index + '"' + (hasForce && !f.selectable ? ' data-new="' + Number(f.new_count) + '"' : '') + '>Importieren (' +
                      (f.selectable ? chosenAtStart + ' ausgewählt' : f.new_count + ' neu') + ')</button></div>';
             }
             h += '</div>';
@@ -1406,6 +1418,8 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
         document.addEventListener('change', function(e) {
             const box = e.target.closest ? e.target.closest('.selBox') : null;
             if (box) updateSelection(box.dataset.idx);
+            const forceBox = e.target.closest ? e.target.closest('.forceBox') : null;
+            if (forceBox) updateForce(forceBox.dataset.idx);
         });
         document.addEventListener('input', function(e) {
             const search = e.target.closest ? e.target.closest('.selSearch') : null;
@@ -1426,10 +1440,25 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             if (!boxes.length) return;
             let n = 0, m = 0;
             boxes.forEach(b => { if (!b.disabled) { m++; if (b.checked) n++; } });
+            const forced = forceOf(idx).length;
             const count = document.getElementById('selcount-' + idx);
             if (count) count.textContent = n + ' von ' + m + ' ausgewählt';
             const btn = document.getElementById('btnimp-' + idx);
-            if (btn) { btn.textContent = 'Importieren (' + n + ' ausgewählt)'; btn.disabled = importBusy || n === 0; }
+            if (btn) { btn.textContent = 'Importieren (' + n + ' ausgewählt' + (forced ? ', ' + forced + ' trotzdem' : '') + ')'; btn.disabled = importBusy || n + forced === 0; }
+        }
+        // Verdächtige Duplikate (andere Bankreferenz): die Positionen, deren Kästchen „trotzdem importieren“ angehakt ist – das Feld ``force`` des Imports
+        function forceOf(idx) {
+            const chosen = [];
+            document.querySelectorAll('#det-' + idx + ' .forceBox').forEach(b => { if (b.checked) chosen.push(Number(b.dataset.i)); });
+            return chosen;
+        }
+        // Eine Karte ohne Auswahl, aber mit verdächtigen Zeilen: Der Knopf nennt die angehakten (die Zahl der neuen steht am Knopf)
+        function updateForce(idx) {
+            if (document.querySelectorAll('#det-' + idx + ' .selBox').length) { updateSelection(idx); return; }
+            const btn = document.getElementById('btnimp-' + idx);
+            if (!btn || btn.dataset.new === undefined) return;
+            const forced = forceOf(idx).length;
+            btn.textContent = 'Importieren (' + btn.dataset.new + ' neu' + (forced ? ', ' + forced + ' trotzdem' : '') + ')';
         }
         function setSelection(idx, checked) {
             document.querySelectorAll('#det-' + idx + ' .selRow:not(.selHidden) .selBox:not(:disabled)')
@@ -1459,6 +1488,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             body.append('import_id', currentImportId);
             if (params.file_index !== undefined) body.append('file_index', params.file_index);
             if (params.selection && Object.keys(params.selection).length) body.append('selection', JSON.stringify(params.selection));
+            if (params.force && Object.keys(params.force).length) body.append('force', JSON.stringify(params.force));
             return fetch('/confirm_transactions', { method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: body }).then(r => r.json());
         }
 
@@ -1466,11 +1496,13 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             if (importBusy) return;
             setImportBusy(true);
             const chosen = selectionOf(idx);
-            postImport({ file_index: idx, selection: chosen === null ? null : { [idx]: chosen } }).then(data => {
+            const forced = forceOf(idx);
+            postImport({ file_index: idx, selection: chosen === null ? null : { [idx]: chosen }, force: forced.length ? { [idx]: forced } : null }).then(data => {
                 if (!data.ok) { appMsg('Fehler: ' + (data.error || 'Import fehlgeschlagen'), 'error'); return; }
                 const res = (data.results || [])[0] || {};
                 if (res.account_found === false) { appMsg(res.error || 'Konto nicht gefunden', 'error'); return; }
                 appMsg(res.inserted + ' neu importiert'
+                       + (res.forced ? ' (davon ' + res.forced + ' trotzdem importiert)' : '')
                        + (res.skipped ? ', ' + res.skipped + ' Duplikate übersprungen'
                             + (res.skipped_upload ? ' (davon ' + res.skipped_upload + ' aus anderer Datei dieses Uploads)' : '') : '')
                        + (res.text_updated ? ', ' + res.text_updated + ' Texte vervollständigt' : '')
@@ -1487,15 +1519,18 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             if (importBusy) return;
             setImportBusy(true);
             const selection = {};
+            const force = {};
             document.querySelectorAll('.btnImportBeleg').forEach(b => {
                 const chosen = selectionOf(b.dataset.idx);
                 if (chosen !== null) selection[b.dataset.idx] = chosen;
+                const forced = forceOf(b.dataset.idx);
+                if (forced.length) force[b.dataset.idx] = forced;
             });
-            postImport({ selection: selection }).then(data => {
+            postImport({ selection: selection, force: force }).then(data => {
                 if (!data.ok) { appMsg('Fehler: ' + (data.error || 'Import fehlgeschlagen'), 'error'); return; }
-                let ins = 0, skip = 0, skipUp = 0, invalid = 0, failed = 0, txtUpd = 0, unsel = 0;
-                (data.results || []).forEach(r => { ins += r.inserted || 0; skip += r.skipped || 0; skipUp += r.skipped_upload || 0; invalid += r.skipped_invalid || 0; unsel += r.skipped_unselected || 0; txtUpd += r.text_updated || 0; if (r.account_found === false) failed++; });
-                appMsg(ins + ' neu importiert' + (skip ? ', ' + skip + ' Duplikate'
+                let ins = 0, skip = 0, skipUp = 0, invalid = 0, failed = 0, txtUpd = 0, unsel = 0, forcedCount = 0;
+                (data.results || []).forEach(r => { ins += r.inserted || 0; skip += r.skipped || 0; skipUp += r.skipped_upload || 0; invalid += r.skipped_invalid || 0; unsel += r.skipped_unselected || 0; txtUpd += r.text_updated || 0; forcedCount += r.forced || 0; if (r.account_found === false) failed++; });
+                appMsg(ins + ' neu importiert' + (forcedCount ? ' (davon ' + forcedCount + ' trotzdem importiert)' : '') + (skip ? ', ' + skip + ' Duplikate'
                             + (skipUp ? ' (davon ' + skipUp + ' aus anderer Datei dieses Uploads)' : '') : '')
                        + (txtUpd ? ', ' + txtUpd + ' Texte vervollständigt' : '')
                        + (invalid ? ', ' + invalid + ' ohne Datum/Betrag nicht importiert' : '')

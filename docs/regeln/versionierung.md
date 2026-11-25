@@ -26,3 +26,8 @@ Alle laufen nach der Sicherung und in EINER Transaktion; frische und migrierte D
   `InvoiceItems` +`TaxRateBp` (11), `TaxExemptReason` (12), `RevenueCoaId` (13, ohne Fremdschlüssel), Index `idx_invoiceitems_invoice` (`_ensure_tax_rates_schema`, Schritt in `_run_migrations`). Bestand ohne Momentaufnahme.
   Vorbelegung (19 % und 7 %) genau einmal beim Anlegen der Tabelle (oder beim nächsten Versuch, wenn der erste nach dem Anlegen abbrach). `tests/test_tax_rates_schema_2008.py`, `tests/entry_form_world.to_state_2007`
 - 2009 (`SKONTO_SCHEMA`): `InvoicePayments.SkontoAmount` (Minor Units, NULL = kein Skonto). `tests/test_skonto_schema_2009.py`, `tests/entry_form_world.to_state_2008`
+- 2010 (`DETAILS_SCHEMA`): `Invoices` +`ServiceDateEnd` (Ende des Leistungszeitraums, NULL = nur das Leistungsdatum), `PaymentMeans` (Zahlungsart nach UNTDID 4461, NULL = Überweisung),
+  `QuoteStatusBefore` (Status des Angebots vor der Umwandlung, NULL = `accepted`) als `InvoiceCol` 56–58, in dieser Reihenfolge am Ende (`_run_migrations`); neu `BankTransactionDetails` (Zusatzfelder
+  einer Bankbewegung) und `BookingExports` (der Satz stand in einem DATEV-Stapel), beide mit Fremdschlüssel auf `Bookings` und `ON DELETE CASCADE` (`BOOKING_REFERENCES` nennt sie), dazu
+  `idx_bookings_sourcegroup` (`_ensure_details_schema`, in der Transaktion der Umstellung). `Bookings` bleibt bei 24 Spalten. `tests/test_schema_2010.py`, `tests/entry_form_world.to_state_2009` –
+  jeder ältere Stand beginnt damit, sonst wanderten die neuen Spalten in die Mitte von `Invoices`.

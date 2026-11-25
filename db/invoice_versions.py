@@ -4,7 +4,7 @@
 """Database-Mixin: Fassungen und Protokoll einer Rechnung (seit 2.2.0, Schema 2002).
 
 Eine versendete Rechnung hat Finanzangaben, die sich nicht mehr ändern (``db/invoice_lock.py``).
-Zahlungshinweis, Anschrift, Bestellnummer, Leitweg-ID und Leistungsdatum bleiben änderbar – als
+Zahlungshinweis, Anschrift, Bestellnummer, Leitweg-ID, Leistungsdatum und Leistungszeitraum bleiben änderbar – als
 **Berichtigung** (``correct_invoice``): Das Dokument, das der Kunde bekommen hat (PDF, XML), wandert
 unverändert nach ``invoices/<Jahr>/Fassungen/<ID>/`` und wird in ``InvoiceDocumentVersions`` festgehalten
 (Fassung, Pfad, SHA-256), jedes geänderte Feld steht mit altem und neuem Wert im Protokoll
@@ -57,15 +57,15 @@ ADDRESS_COLUMNS = ('BuyerName', 'BuyerCompany', 'BuyerStreet', 'BuyerPostalCode'
 #: Bezeichnung einer Protokollzeile in der Oberfläche
 PROTOCOL_LABELS = {
     'PaymentTerms': 'Zahlungshinweis', 'OrderNumber': 'Bestellnummer', 'BuyerRouteID': 'Leitweg-ID',
-    'DeliveryDate': 'Leistungsdatum', 'Status': 'Status',
+    'DeliveryDate': 'Leistungsdatum', 'ServiceDateEnd': 'Leistungszeitraum (bis)', 'Status': 'Status',
     'BuyerName': 'Anschrift: Name', 'BuyerCompany': 'Anschrift: Firma', 'BuyerStreet': 'Anschrift: Straße',
     'BuyerPostalCode': 'Anschrift: PLZ', 'BuyerCity': 'Anschrift: Ort', 'BuyerCountry': 'Anschrift: Land',
 }
 _NOTICE_LABELS = {'PaymentTerms': 'Zahlungshinweis', 'OrderNumber': 'Bestellnummer',
                   'BuyerRouteID': 'Leitweg-ID', 'BuyerReference': 'Leitweg-ID',
-                  'DeliveryDate': 'Leistungsdatum', **{column: 'Anschrift' for column in ADDRESS_COLUMNS}}
+                  'DeliveryDate': 'Leistungsdatum', 'ServiceDateEnd': 'Leistungszeitraum', **{column: 'Anschrift' for column in ADDRESS_COLUMNS}}
 #: Reihenfolge der geänderten Angaben im Hinweis
-_NOTICE_ORDER = ('Leistungsdatum', 'Anschrift', 'Zahlungshinweis', 'Bestellnummer', 'Leitweg-ID')
+_NOTICE_ORDER = ('Leistungsdatum', 'Leistungszeitraum', 'Anschrift', 'Zahlungshinweis', 'Bestellnummer', 'Leitweg-ID')
 
 #: Aus diesen Status ist eine Rechnung hervorgegangen, wenn sie versendet war (Altwert ``partial`` eingeschlossen)
 _SENT_STATUSES = tuple(sorted(FROZEN_STATUSES))
@@ -181,6 +181,14 @@ class InvoiceVersionsMixin:
         Leistungsdatum, auch ein leeres (Import), ist kein Verstoß. Das wird vor dem Verschieben der Dokumente
         geprüft.
 
+        Ändert sich das Leistungsdatum oder das Ende des Leistungszeitraums, gilt ``normalize_service_end`` für das Paar aus dem
+        neuen (sonst dem gespeicherten) Beginn und Ende: ein Ende, das kein Datum ist oder vor dem Beginn liegt, ein Zeitraum
+        ohne Beginn – auch ein Beginn hinter einem gespeicherten Ende – ist ein :class:`CorrectionInvalid`, vor dem Verschieben.
+        Ein unlesbares gespeichertes Ende (kein ISO-Datum) gilt dabei als „kein Zeitraum“, solange die Berichtigung das Ende nicht selbst
+        nennt – abgelehnt wird nur ein Ende, das der Nutzer schickt. Ein Ende am Beginn ist kein Zeitraum und steht danach als NULL da – auch
+        wenn die Berichtigung nur das Leistungsdatum auf das gespeicherte Ende setzt (die Änderung steht im Protokoll); ist es das, was gespeichert ist,
+        ändert sich nichts.
+
         Scheitert das Verschieben, das Festhalten der Fassung oder das Speichern, liegen die Dokumente wieder dort,
         wo sie waren, und nichts ist geändert. Raises :class:`InvoiceLocked` (mit Klartext) bei einer gesperrten
         Angabe, einer stornierten Rechnung oder Stornorechnung (beide ganz gesperrt), einer veralteten Fassung
@@ -222,6 +230,25 @@ class InvoiceVersionsMixin:
                     return Correction(False, version, 0)
                 if 'delivery_date' in open_data and not is_iso_date(open_data['delivery_date']):
                     raise CorrectionInvalid(DELIVERY_DATE_MESSAGE)
+                if 'delivery_date' in open_data or 'service_date_end' in open_data:
+                    from .invoices import normalize_service_end        # ``invoices`` liest dieses Modul schon beim Laden
+                    # ein unlesbares gespeichertes Ende (nur die SQL-Konsole schreibt so etwas) gilt als „kein Zeitraum“, solange diese Berichtigung es nicht selbst
+                    # nennt: Das Leistungsdatum lässt sich berichtigen; abgelehnt wird nur ein Ende, das der Nutzer schickt
+                    stored_end = row['ServiceDateEnd'] if is_iso_date(row['ServiceDateEnd']) else None
+                    try:
+                        end = normalize_service_end(open_data.get('delivery_date', row['DeliveryDate']),
+                                                    open_data.get('service_date_end', stored_end))
+                    except ValueError as invalid:
+                        raise CorrectionInvalid(str(invalid)) from None
+                    if 'service_date_end' in open_data:
+                        if _as_text(row['ServiceDateEnd']) == _as_text(end):
+                            del open_data['service_date_end']                    # ein Ende am Beginn: nichts ändert sich
+                            if not open_data:
+                                return Correction(False, version, 0)
+                        else:
+                            open_data['service_date_end'] = end                  # leer und „am Beginn“ stehen als NULL da
+                    elif end != stored_end:
+                        open_data['service_date_end'] = end                      # der neue Beginn liegt auf dem gespeicherten Ende: kein Zeitraum mehr, NULL (mit Protokollzeile)
                 if _as_int(expected_version) != version:
                     raise InvoiceLocked(CHANGED_MESSAGE)
                 new_version = version + 1

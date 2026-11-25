@@ -296,9 +296,29 @@ def add_roundtrip_rows(db):
                 conn.commit()
 
 
+def to_state_2009(db_path):
+    """Die Datenbank in den Stand zurückversetzen, den 2.9.x geschrieben hat: der Index ``idx_bookings_sourcegroup``, die Tabellen
+    ``BookingExports`` und ``BankTransactionDetails`` und die Spalten ``QuoteStatusBefore``, ``PaymentMeans`` und ``ServiceDateEnd`` an
+    ``Invoices`` entfernt, ``PRAGMA user_version`` = 2009. Wiederholbar: Was schon fehlt, wird übersprungen. (Die Spalten von ``Invoices`` gehen in
+    umgekehrter Reihenfolge, wie sie angefügt wurden.)"""
+    with closing(sqlite3.connect(db_path)) as conn:
+        conn.execute('DROP INDEX IF EXISTS idx_bookings_sourcegroup')
+        conn.execute('DROP TABLE IF EXISTS BookingExports')
+        conn.execute('DROP TABLE IF EXISTS BankTransactionDetails')
+        present = {row[1] for row in conn.execute('PRAGMA table_info(Invoices)')}
+        for column in ('QuoteStatusBefore', 'PaymentMeans', 'ServiceDateEnd'):
+            if column in present:
+                conn.execute(f'ALTER TABLE Invoices DROP COLUMN {column}')
+        conn.execute('PRAGMA user_version = 2009')
+        conn.commit()
+
+
 def to_state_2008(db_path):
-    """Die Datenbank in den Stand zurückversetzen, den 2.8.x geschrieben hat: die Spalte ``SkontoAmount`` an ``InvoicePayments``
-    entfernt, ``PRAGMA user_version`` = 2008. Wiederholbar: Was schon fehlt, wird übersprungen."""
+    """Die Datenbank in den Stand zurückversetzen, den 2.8.x geschrieben hat: zusätzlich zu 2.9.x (``to_state_2009``) die Spalte ``SkontoAmount``
+    an ``InvoicePayments`` entfernt, ``PRAGMA user_version`` = 2008. Wiederholbar: Was schon fehlt, wird übersprungen. (Jeder ältere Stand beginnt
+    mit ``to_state_2009``: Sonst wanderten die Spalten von 2.10.x bei der Umstellung in die Mitte von ``Invoices``, sobald ein älterer Stand Spalten
+    davor entfernt.)"""
+    to_state_2009(db_path)
     with closing(sqlite3.connect(db_path)) as conn:
         if 'SkontoAmount' in {row[1] for row in conn.execute('PRAGMA table_info(InvoicePayments)')}:
             conn.execute('ALTER TABLE InvoicePayments DROP COLUMN SkontoAmount')

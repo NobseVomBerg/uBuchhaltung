@@ -17,15 +17,17 @@ from db.matching import (
 from db.invoice_payments import PAYMENT_MARK, BankChangeRefused, PaymentRemovalRefused
 
 # Alle Verweise auf ``Bookings.ID`` im Schema als (Tabelle, Spalte) – das, was ``_delete_booking_rows`` mit einer Buchung
-# wegräumt (BookingDocuments, InvoicePayments), umbiegt (Assets, AssetDepreciations) oder woran es sonst scheiterte (eine
-# Kindbuchung, ``ParentBooking_ID``). ``_booking_attachments_exist`` fragt danach; ``tests/test_invoice_reissue.py`` hält
-# die Liste gegen das Schema.
+# wegräumt (BookingDocuments, InvoicePayments), umbiegt (Assets, AssetDepreciations), was mit ihr per ``ON DELETE CASCADE``
+# geht (BankTransactionDetails, BookingExports) oder woran es sonst scheiterte (eine Kindbuchung, ``ParentBooking_ID``).
+# ``_booking_attachments_exist`` fragt danach; ``tests/test_invoice_reissue.py`` hält die Liste gegen das Schema.
 BOOKING_REFERENCES = (
     ('BookingDocuments', 'Booking_ID'),
     ('InvoicePayments', 'BookingID'),
     ('Assets', 'Booking_ID'),
     ('AssetDepreciations', 'Booking_ID'),
     ('Bookings', 'ParentBooking_ID'),
+    ('BankTransactionDetails', 'Booking_ID'),
+    ('BookingExports', 'Booking_ID'),
 )
 
 RELATION_TYPES = ('receipt', 'invoice', 'contract', 'other')        # Positivliste für BookingDocuments.RelationType
@@ -45,6 +47,15 @@ class LinkResult(NamedTuple):
     document_number: str     # die Beleg-Nr. der Buchung nach dem Verknüpfen ('' = keine)
     number_in_use: bool      # nicht übernommen, weil eine andere Buchung diese oder eine ähnliche Nummer trägt
     has_entries: bool        # die Buchung ist eine Bankbewegung mit Buchungssätzen (sie erben die Nummer nicht)
+
+
+class BankDetails(NamedTuple):
+    """Die Zusatzfelder einer Bankbewegung aus ihrem CAMT-Auszug (``BankTransactionDetails``), gelesen von ``get_bank_details``; ``''`` = nicht vorhanden oder nicht lesbar."""
+    value_date: str          # Valuta, ISO
+    end_to_end_id: str       # End-to-End-Referenz
+    mandate_ref: str         # Mandatsreferenz
+    creditor_id: str         # Gläubiger-ID
+    bank_ref: str            # Bankreferenz (``Ntry/AcctSvcrRef``)
 
 
 # Bedingung 6 der Übernahme (``link_receipt_to_booking``): Trägt eine ANDERE Buchung diese oder eine ähnliche Nummer? Ähnlich heißt: die
@@ -300,7 +311,7 @@ class BookingsMixin:
                        document_number=None, date_tax=None,
                        counter_coa_id=None, log_description=None,
                        booking_type='entry', parent_booking_id=None,
-                       auto_mirror=False, entry_form=None, tx=None):
+                       auto_mirror=False, entry_form=None, tx=None, bank_details=None):
         """Insert a new booking into Bookings table
         
         Args:
@@ -330,6 +341,10 @@ class BookingsMixin:
                 Eine Bankzeile hat keine Form.
             tx: optionale :class:`db.core.Transaction` – dann wird darin geschrieben und erst mit
                 ihr committet (der Eintrag im Replay-Log folgt nach dem Commit)
+            bank_details: die Zusatzfelder einer Bankbewegung aus CAMT als Dict (``value_date``, ``end_to_end_id``, ``mandate_ref``,
+                ``creditor_id``, ``bank_ref``). Nur bei ``booking_type='bank'`` und nur, wenn nach ``clean_value_date``/``clean_bank_text``
+                mindestens ein Wert bleibt, entsteht eine Zeile in ``BankTransactionDetails`` – in derselben Verbindung vor dem Commit
+                (leere Werte als NULL); sie kommt wie der Satz ins Replay-Log.
         
         Returns:
             int: ID of inserted booking
@@ -359,16 +374,31 @@ class BookingsMixin:
 
         cursor.execute(sql_template, params)
         last_id = cursor.lastrowid
+        details_sql = details_params = None
+        if booking_type == 'bank' and bank_details:
+            from importers.base import clean_bank_text, clean_value_date
+            values = (clean_value_date(bank_details.get('value_date')), clean_bank_text(bank_details.get('end_to_end_id')),
+                      clean_bank_text(bank_details.get('mandate_ref')), clean_bank_text(bank_details.get('creditor_id')),
+                      clean_bank_text(bank_details.get('bank_ref')))
+            if any(values):
+                details_sql = ('INSERT INTO BankTransactionDetails (Booking_ID, ValueDate, EndToEndId, MandateRef, CreditorId, BankRef) '
+                               'VALUES (?, ?, ?, ?, ?, ?)')
+                details_params = (last_id, *(value or None for value in values))
+                cursor.execute(details_sql, details_params)
         if not tx:
             conn.commit()
             conn.close()
         
         # Optional SQL logging
         if log_description:
-            if tx:
-                tx.log.append((sql_template, params, log_description))
-            else:
-                self._log_sql(sql_template, params, log_description)
+            entries = [(sql_template, params, log_description)]
+            if details_sql:
+                entries.append((details_sql, details_params, 'Insert bank transaction details'))
+            for entry in entries:
+                if tx:
+                    tx.log.append(entry)
+                else:
+                    self._log_sql(*entry)
         
         return last_id
     def backfill_booking_fields(self, booking_id, coa_id=None, tax_rate=None,
@@ -437,6 +467,35 @@ class BookingsMixin:
         count = cursor.fetchone()[0]
         conn.close()
         return count
+    def bank_stock(self, date, amount, account_id):
+        """Der Bestand, den ``check_booking_exists`` zählt – dieselbe Bedingung (Datum, Betrag, Konto), mit der Bankreferenz je Zeile: ``[(Buchungs-ID, Bankreferenz)]``, nach ID, ``''`` =
+        keine (oder nicht lesbar: ``clean_bank_text``). Die Länge der Liste ist genau die Zahl, die ``check_booking_exists`` liefert; dieses bleibt unverändert (auch für ``db/wiso_import.py``)."""
+        from importers.base import clean_bank_text
+        conn = self._get_connection()
+        try:
+            rows = conn.execute('''
+                SELECT b.ID, d.BankRef FROM Bookings b
+                LEFT JOIN BankTransactionDetails d ON d.Booking_ID = b.ID
+                WHERE b.DateBooking=? AND b.Amount=? AND b.Account_ID=?
+                ORDER BY b.ID
+            ''', (date, to_minor(amount or 0), account_id)).fetchall()
+        finally:
+            conn.close()
+        return [(booking_id, clean_bank_text(bank_ref)) for booking_id, bank_ref in rows]
+    def get_bank_details(self, booking_id):
+        """Die Zusatzfelder der Bankbewegung ``booking_id`` aus ihrem CAMT-Auszug als :class:`BankDetails` – oder ``None``, wenn es keine Zeile gibt oder nichts davon lesbar ist. Jeder Wert geht
+        erneut durch ``clean_value_date`` bzw. ``clean_bank_text`` (die SQL-Konsole kann alles schreiben): Unlesbares wird ``''``. Rein lesend."""
+        from importers.base import clean_bank_text, clean_value_date
+        conn = self._get_connection()
+        try:
+            row = conn.execute('SELECT ValueDate, EndToEndId, MandateRef, CreditorId, BankRef FROM BankTransactionDetails WHERE Booking_ID = ?',
+                               (booking_id,)).fetchone()
+        finally:
+            conn.close()
+        if row is None:
+            return None
+        details = BankDetails(clean_value_date(row[0]), *(clean_bank_text(value) for value in row[1:]))
+        return details if any(details) else None
     def find_history_suggestion(self, recipient, exclude_booking_id=None):
         """Zuletzt kontierte Buchung mit ähnlichem Empfänger (todo #1).
 

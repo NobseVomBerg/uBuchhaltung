@@ -301,6 +301,9 @@ COLUMN_OF = {
     'SENT_AT': 'SentAt',
     'DOCUMENT_VERSION': 'DocumentVersion',
     'MIXED_TAX_RATES': 'MixedTaxRates',            # ab 2.7.0 (Schema 2007), Index 55
+    'SERVICE_DATE_END': 'ServiceDateEnd',          # ab 2.10.0 (Schema 2010), Index 56–58
+    'PAYMENT_MEANS': 'PaymentMeans',
+    'QUOTE_STATUS_BEFORE': 'QuoteStatusBefore',
 }
 
 

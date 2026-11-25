@@ -11,7 +11,7 @@ import traceback
 from typing import NamedTuple, Optional
 from urllib.parse import quote
 from db import Database
-from db.invoices import InvoiceCol, is_storno_row
+from db.invoices import PAYMENT_MEANS, PAYMENT_MEANS_DEFAULT, SERVICE_PERIOD_MESSAGE, InvoiceCol, is_storno_row, payment_means_code
 from db.invoice_lock import (CLOSED, EDITABLE, LOCKED_STATUSES, NUMBER_KEPT_MESSAGE, STATUS_LABELS,
                              STORNO_LABEL, STORNO_LOCKED_MESSAGE, allowed_targets, as_document_version,
                              buyer_snapshot, canonical_status, status_group)
@@ -1676,10 +1676,12 @@ def _invoice_form_html(db: Database, invoice_id=None, copy_from=None):
 const einvoiceSendQuestion = {script_json(einvoice_question)};
 function setInvoiceStatus(invId) {{
   var ns = document.getElementById('statusChangeSelect').value;
-  var change = function() {{
+  var change = function(confirmed) {{
     fetch('/invoice/status', {{method: 'POST', headers: {{'Content-Type': 'application/json'}},
-      body: JSON.stringify({{invoice_id: invId, status: ns}})}}).then(r => r.json())
+      body: JSON.stringify({{invoice_id: invId, status: ns, confirm_exported: confirmed === true}})}}).then(r => r.json())
     .then(data => {{
+      // Das Zurückholen einer Rechnung, deren Forderung schon in einem DATEV-Export stand, ist eine Rückfrage, kein Fehler
+      if (!data.success && data.confirm === 'exported') {{ appConfirm(data.error, function() {{ change(true); }}); return; }}
       if (!data.success) {{ showMessage('Fehler: ' + (data.error || '?'), 'error'); return; }}
       // "Versendet" erzeugt das PDF automatisch (todo #2) - Hinweis, falls das
       // nicht geklappt hat; sonst direkt neu laden.
@@ -1725,6 +1727,11 @@ function copyInvoiceAsNew(invId) {{
     _dd = existing_invoice[25] if existing_invoice and len(existing_invoice) > 25 and existing_invoice[25] else ''
     s += ('<tr><td title="Datum der Lieferung/Leistung bzw. Leistungszeitraum (Pflichtangabe nach § 14 UStG)">Leistungsdatum:</td>'
           f'<td><input type="date" id="delivery_date" required value="{_html.escape(str(_dd))}" style="width: 150px;"{closed_attr}></td></tr>')
+    # Ende des Leistungszeitraums (leer = nur das Leistungsdatum); bei einer versendeten Rechnung wie das Leistungsdatum änderbar (Berichtigung)
+    _de = (existing_invoice[InvoiceCol.SERVICE_DATE_END]
+           if existing_invoice and len(existing_invoice) > InvoiceCol.SERVICE_DATE_END and existing_invoice[InvoiceCol.SERVICE_DATE_END] else '')
+    s += ('<tr><td title="Ende des Leistungszeitraums – leer, wenn die Leistung an einem Tag erbracht wurde">bis:</td>'
+          f'<td><input type="date" id="service_date_end" value="{_html.escape(str(_de))}"{closed_attr}></td></tr>')
     s += f'<tr><td>Rechnungs-Nr.:</td><td><input type="text" id="invoice_number" value="{_html.escape(invoice_number)}" style="width: 150px;"{number_attr}></td></tr>'
     if number_kept:
         s += f'<tr class="no-pdf"><td colspan="2" class="hint">{_html.escape(NUMBER_KEPT_MESSAGE)}</td></tr>'
@@ -1935,6 +1942,18 @@ function copyInvoiceAsNew(invId) {{
     else:
         s += '                        <em>Kontaktdaten fehlen</em>'
     
+    # Zahlungsart: vorgewählt nach der gespeicherten (NULL = Überweisung); ein gespeicherter Wert, der keine Zahlungsart ist, erscheint als eigene gewählte Option
+    # mit dem Wert „?“ – nichts wird still zur Überweisung, und der Server lehnt „?“ beim Speichern ab, bis neu gewählt ist
+    stored_means = (existing_invoice[InvoiceCol.PAYMENT_MEANS]
+                    if existing_invoice and len(existing_invoice) > InvoiceCol.PAYMENT_MEANS else None)
+    chosen_means = payment_means_code(stored_means)
+    means_options = ''.join(
+        f'<option value="{"" if code == PAYMENT_MEANS_DEFAULT else code}"{" selected" if code == chosen_means else ""}>{_html.escape(label)}</option>'
+        for code, label in PAYMENT_MEANS.items())
+    if chosen_means is None:
+        means_options += '<option value="?" selected>(gespeicherter Wert nicht lesbar)</option>'
+    means_html = (f'<div class="no-pdf">Zahlungsart: <select id="payment_means" class="no-pdf"{lock_attr}>{means_options}</select></div>')
+
     s += '''                        </div>
                     </td>
                     <td class="footer-col-right">
@@ -1954,6 +1973,7 @@ function copyInvoiceAsNew(invId) {{
                         <div id="bank_details" style="margin-top: 5px;">
                             
                         </div>
+                        ''' + means_html + '''
                     </td>
                 </tr>
             </table>
@@ -2146,7 +2166,8 @@ function copyInvoiceAsNew(invId) {{
             paymentTerms: document.getElementById('payment_terms').value,
             orderNumber: document.getElementById('order_number').value,
             buyerReference: document.getElementById('buyer_route_id').value,
-            deliveryDate: document.getElementById('delivery_date').value
+            deliveryDate: document.getElementById('delivery_date').value,
+            serviceDateEnd: document.getElementById('service_date_end').value
         };
         
         // Kontakt- und Bankdaten stammen aus den Stammdaten und kommen als DOM-Knoten
@@ -2555,7 +2576,8 @@ function copyInvoiceAsNew(invId) {{
                     paymentTerms: document.getElementById('payment_terms').value,
                     orderNumber: document.getElementById('order_number').value || null,
                     buyerReference: document.getElementById('buyer_route_id').value || null,
-                    deliveryDate: document.getElementById('delivery_date').value || null
+                    deliveryDate: document.getElementById('delivery_date').value || null,
+                    serviceDateEnd: document.getElementById('service_date_end').value || null
                 };
                 const changes = {invoiceId: parseInt(invoiceId),
                                  documentVersion: parseInt(document.getElementById('document_version').value)};
@@ -2572,6 +2594,13 @@ function copyInvoiceAsNew(invId) {{
                 if ('deliveryDate' in changes && !changes.deliveryDate) {
                     showMessage(__DELIVERY_DATE_MESSAGE__, 'error');
                     document.getElementById('delivery_date').focus();
+                    return;
+                }
+                // Das Ende des Leistungszeitraums liegt nicht vor dem Leistungsdatum (ein Ende am Beginn ist kein Zeitraum); geprüft nur, wenn eines von beiden geändert ist
+                if (('serviceDateEnd' in changes || 'deliveryDate' in changes) && current.serviceDateEnd && current.deliveryDate
+                        && current.serviceDateEnd < current.deliveryDate) {
+                    showMessage(__SERVICE_PERIOD_MESSAGE__, 'error');
+                    document.getElementById('service_date_end').focus();
                     return;
                 }
                 showConfirm(__CORRECT_QUESTION__, function() { sendInvoice(changes, isEdit, invoiceId); });
@@ -2609,6 +2638,13 @@ function copyInvoiceAsNew(invId) {{
             if (!document.getElementById('delivery_date').value) {
                 showMessage('Bitte geben Sie das Leistungsdatum an (Pflichtangabe nach § 14 UStG).', 'error');
                 document.getElementById('delivery_date').focus();
+                return;
+            }
+            // Das Ende des Leistungszeitraums liegt nicht vor dem Leistungsdatum (der Server prüft es ebenso)
+            const serviceDateEnd = document.getElementById('service_date_end').value;
+            if (serviceDateEnd && serviceDateEnd < document.getElementById('delivery_date').value) {
+                showMessage(__SERVICE_PERIOD_MESSAGE__, 'error');
+                document.getElementById('service_date_end').focus();
                 return;
             }
 
@@ -2695,6 +2731,11 @@ function copyInvoiceAsNew(invId) {{
                 discountDays: parseInt(document.getElementById('discount_days').value) || null
             };
             
+            // Leistungszeitraum und Zahlungsart gehen nur mit, wenn gesetzt (kein Ende bzw. Überweisung heißt: nichts schicken – der Server liest fehlend wie leer);
+            // so bleibt der Payload ohne sie, wie er war
+            if (serviceDateEnd) invoiceData.serviceDateEnd = serviceDateEnd;
+            if (document.getElementById('payment_means').value) invoiceData.paymentMeans = document.getElementById('payment_means').value;
+
             if (mixed) invoiceData.taxMode = 'mixed';
 
             // Add invoice ID if editing
@@ -2805,7 +2846,8 @@ function copyInvoiceAsNew(invId) {{
         }
     </script>
     '''.replace('__CORRECT_QUESTION__', script_json(CORRECT_QUESTION)
-                ).replace('__DELIVERY_DATE_MESSAGE__', script_json(DELIVERY_DATE_MESSAGE))
+                ).replace('__DELIVERY_DATE_MESSAGE__', script_json(DELIVERY_DATE_MESSAGE)
+                ).replace('__SERVICE_PERIOD_MESSAGE__', script_json(SERVICE_PERIOD_MESSAGE))
 
     # Einer Stornorechnung lassen sich keine Zahlungen zuordnen: statt des Kastens ein Hinweis – solange das Guthaben des
     # Kunden aber offen ist oder es Erstattungen gibt, der Kasten „Erstattung“

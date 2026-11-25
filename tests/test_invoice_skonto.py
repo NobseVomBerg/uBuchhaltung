@@ -492,11 +492,12 @@ def test_the_form_warns_when_the_payment_text_says_without_deduction(world):    
     assert "addEventListener('input', updateSkontoHint)" in html
 
 
-def test_the_form_does_not_offer_the_payment_means_fields_any_more(world):                               # noqa: F811
-    """Die Zahlungsart (Code und Text) hatte nie eine Spalte: Der Server las sie nicht, das XML sagt fest 58."""
+def test_the_form_does_not_offer_the_old_payment_means_fields(world):                               # noqa: F811
+    """Die frühere Zahlungsart (Code und Text) hatte nie eine Spalte: Der Server las sie nicht, das XML sagte fest 58. Seit 2.10.0 gibt es die Zahlungsart wirklich
+    (``Invoices.PaymentMeans``, die Auswahl ``payment_means``: ``test_payment_means.py``) – die alten Felder bleiben weg."""
     html = PageInvoice(world.db, {}, make_invoice(world, 'draft'))
     new_form = PageInvoice(world.db, {}, None)
 
     for page in (html, new_form):
         assert 'payment_means_code' not in page and 'payment_means_text' not in page
-        assert 'paymentMeans' not in page and 'Zahlungsart' not in page
+        assert page.count('id="payment_means"') == 1

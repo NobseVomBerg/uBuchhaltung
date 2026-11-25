@@ -24,7 +24,7 @@ from export.pdf_quote import generate_quote_pdf
 from tests.document_helpers import add_contacts, add_document, set_column
 
 USER = 'anna'
-LABELS = ('Rechnungsdatum:', 'Leistungsdatum:', 'Rechnungs-Nr.:', 'Kunden-Nr.:', 'Angebots-Nr.:', 'Datum:', 'gültig bis:',
+LABELS = ('Rechnungsdatum:', 'Leistungsdatum:', 'Leistungszeitraum:', 'Rechnungs-Nr.:', 'Kunden-Nr.:', 'Angebots-Nr.:', 'Datum:', 'gültig bis:',
           'Fassung:')
 
 
@@ -38,7 +38,8 @@ def world(tmp_db, monkeypatch, tmp_path):
 
 def header_rows(pdf):
     """Die Zeilen des Kopfblocks von oben nach unten: ``(Bezeichnung, Wert, rechter Rand der Bezeichnung, linker Rand des
-    Werts)`` – alles rechts von der Bezeichnungsspalte, oberhalb des Titels."""
+    Werts)`` – alles rechts von der Bezeichnungsspalte, oberhalb des Titels. Eine Zeile ohne Bezeichnung (die zweite Zeile eines
+    Leistungszeitraums: „bis …“) hat den Rand 0."""
     with pdfplumber.open(io.BytesIO(pdf)) as document:
         page = document.pages[0]
         words = [w for w in page.extract_words() if w['x0'] >= pdf_document.META_LABEL_X - 1 and w['top'] < 150]
@@ -50,7 +51,7 @@ def header_rows(pdf):
         label = [w for w in lines[top] if w['x0'] < pdf_document.META_VALUE_X - 1]
         value = [w for w in lines[top] if w['x0'] >= pdf_document.META_VALUE_X - 1]
         rows.append((' '.join(w['text'] for w in label), ' '.join(w['text'] for w in value),
-                     max(w['x1'] for w in label), min(w['x0'] for w in value)))
+                     max((w['x1'] for w in label), default=0), min(w['x0'] for w in value)))
     return rows
 
 
@@ -90,7 +91,8 @@ def test_the_forms_name_the_rows_in_the_same_order_as_the_pdf(world):
         table = html.split('class="invoice-meta-table"')[1].split('</table>')[0]
         return [label.replace('&uuml;', 'ü') for label in re.findall(r'<tr><td[^>]*>([^<]+)</td>', table)]
 
-    assert form_labels(PageInvoice(world.db)) == ['Rechnungsdatum:', 'Leistungsdatum:', 'Rechnungs-Nr.:', 'Kunden-Nr.:']
+    # „bis:“ ist das Ende des Leistungszeitraums; das PDF nennt es nur, wenn es eines gibt („Leistungszeitraum:“ mit dem Beginn, darunter „bis …“)
+    assert form_labels(PageInvoice(world.db)) == ['Rechnungsdatum:', 'Leistungsdatum:', 'bis:', 'Rechnungs-Nr.:', 'Kunden-Nr.:']
     assert form_labels(PageQuote(world.db)) == ['Datum:', 'gültig bis:', 'Angebots-Nr.:', 'Kunden-Nr.:']
 
 

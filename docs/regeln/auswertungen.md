@@ -5,6 +5,11 @@
 - Nachbildung des WISO-Stapels (an einem Bestand gemessen, keine Zusicherung, dass die Kanzlei ihn annimmt). Die BU-Schlüssel sind nicht
   gegen einen echten Stapel geprüft (`docs/aufgaben.md`) – nicht als richtig voraussetzen.
 - Soll/Haben-Kennzeichen bezieht sich auf das Feld „Konto“ und folgt der Form (`soll_side`).
+- **Merkmal „exportiert“** (`BookingExports`): `handle_datev_export` ruft `Database.mark_datev_export` – setzt wie bisher das Steuerdatum auf heute und legt
+  für jeden Satz **im Stapel** (nicht die weggelassenen und nicht die außerhalb des Zeitraums) eine Zeile an, in EINER Transaktion. Nur der erste Export zählt:
+  `ExportedAt` ändert ein späterer nie. Der Stapel selbst bleibt unverändert (`tests/test_datev_export_marks.py`). Das Merkmal wirkt heute so: Das Zurückholen
+  einer Rechnung fragt nach (`rechnungen.md`), und ein exportierter Zahlungssatz zieht beim Umzug der Zahlungen nicht um (`_booking_attachments_exist`,
+  `BOOKING_REFERENCES`; der Hinweis nennt den Grund `exported`). Der Stempel `DateTax` bleibt; Wirkungen und Ablösung des Stempels: `docs/aufgaben.md`.
 - **BU-Schlüssel als Daten am Satz** (`Bookings.DatevKey`, ganze Zahl 1–9999, Spalte 23; nur die Importe schreiben ihn): Der Export gibt
   ihn unverändert aus (auch 490/100/121 ohne Satz); alles andere (0, über 9999, Text) gilt als keiner. Er fällt (NULL), wenn sich Konto,
   Gegenkonto oder Steuersatz ändern: `update_booking_fields`/`update_booking` über EINE Stelle (`_datev_key_stale`, im selben UPDATE),
@@ -18,7 +23,7 @@
     (16/5/19/7 %). Kein Satz, 0 % und jeder andere Satz → 0 (auch AfA); bei Umsatzsteuer steht der Satz in Spalte 40. Solche Zeilen zählt
     der Export (`export_to_datev(rates_without_key=…)`, `DatevStack.hint`; fester Hinweis `DATEV_RATE_NOTE` unter dem Formular).
 - **Rechnungskette** (Forderung, „Wartekonto an Erlöskonto“, Gegenbuchung einer Stornorechnung; `booking_kind`): kein Schlüssel, in Spalte 40
-  der Satz an jeder Umsatzsteuer-Zeile mit Satz über 0. Leistungsdatum (114) nur an der Forderung; Land (119) an der Kette (leer/D/Deutschland
+  der Satz an jeder Umsatzsteuer-Zeile mit Satz über 0. Leistungsdatum (114) nur an der Forderung – das Ende des Leistungszeitraums der Rechnung, sonst ihr Leistungsdatum (`get_datev_invoice_data`, `service_period`); Land (119) an der Kette (leer/D/Deutschland
   = DE, ohne Rechnung DE); Spalte 115 leer (`DateTax` setzt der Handler).
 - Belegfeld 1 ohne Leerzeichen, bis 36 Zeichen. Buchungstext (Spalte 13): Steuerzeichen vor dem Kürzen auf 60 Zeichen zu Leerzeichen.
 - Vorlauf: Berater- und Mandantennummer der eigenen Firma (`CompanyDetails.DatevConsultantNo`/`DatevClientNo`, ASCII-Ziffern ohne führende

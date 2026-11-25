@@ -49,6 +49,13 @@ _INVOICE_VERSION_COLUMNS = (
     ('DocumentVersion', 'INTEGER'),
 )
 
+#: Die Spalten, die Schema 2010 an ``Invoices`` anhängt (in dieser Reihenfolge; Index 56 bis 58)
+_DETAILS_INVOICE_COLUMNS = (
+    ('ServiceDateEnd', 'DATE'),
+    ('PaymentMeans', 'TEXT'),
+    ('QuoteStatusBefore', 'TEXT'),
+)
+
 #: Ab dieser Schema-Zahl (Version 2.3.0) trägt ein Buchungssatz den BU-Schlüssel, den seine Quelle mitgebracht
 #: hat (``Bookings.DatevKey``, NULL = keiner, der Export leitet ihn ab), und die eigene Firma Berater- und
 #: Mandantennummer für den Vorlauf des DATEV-Stapels (``CompanyDetails.DatevConsultantNo``/``DatevClientNo``).
@@ -104,6 +111,14 @@ TAX_RATES_SCHEMA = 2008
 #: Die Spalte steht nur an der Zuordnung, die die Rechnung mit Skonto schließt; ``Amount`` bleibt das Geld, das geflossen ist. Der Bestand behält überall
 #: NULL – nichts wird umgedeutet. Die Spalte fügt ``_run_migrations`` am Ende der Tabelle an, wie das CREATE TABLE der frischen Datenbank sie führt.
 SKONTO_SCHEMA = 2009
+
+#: Ab dieser Schema-Zahl (Version 2.10.0) trägt eine Rechnung das Ende ihres Leistungszeitraums (``Invoices.ServiceDateEnd``, NULL = nur das Leistungsdatum), ihre Zahlungsart
+#: (``PaymentMeans``, Code nach UNTDID 4461, NULL = Überweisung) und den Status ihres Angebots vor der Umwandlung (``QuoteStatusBefore``, NULL = ``accepted``); eine Bankbewegung kann
+#: die Zusatzfelder ihres CAMT-Auszugs führen (``BankTransactionDetails``), ein Buchungssatz das Merkmal „stand in einem DATEV-Stapel“ (``BookingExports``), und ``Bookings.SourceGroup``
+#: hat einen Index. ``Bookings`` bleibt bei seinen 24 Spalten. Der Bestand behält in den neuen Spalten überall NULL und bekommt keine Zeile in den neuen Tabellen – nichts wird
+#: umgedeutet. Die Spalten fügt ``_run_migrations`` am Ende von ``Invoices`` an, wie das CREATE TABLE der frischen Datenbank sie führt; die Tabellen und der Index entstehen in
+#: ``_ensure_details_schema`` (in der Transaktion der Umstellung).
+DETAILS_SCHEMA = 2010
 
 
 class SchemaMixin:
@@ -230,6 +245,12 @@ class SchemaMixin:
             # 2.9.0: Skonto an der Zahlungszuordnung. Die Spalte kommt ans Ende, wie im CREATE TABLE der frischen Datenbank; der Bestand behält überall
             # NULL (= kein Skonto: ``Amount`` ist die ganze Zahlung) – nichts wird umgedeutet.
             self._add_column_if_missing(cursor, 'InvoicePayments', 'SkontoAmount', 'INTEGER')
+        if from_version < DETAILS_SCHEMA:
+            # 2.10.0: Ende des Leistungszeitraums, Zahlungsart und Status des Angebots vor der Umwandlung. Die Spalten kommen in der Reihenfolge ans Ende (Index 56 bis 58), in der
+            # sie auch das CREATE TABLE der frischen Datenbank führt; der Bestand behält überall NULL (kein Zeitraum, Überweisung, Angebot ``accepted``) – nichts wird umgedeutet. Die
+            # Tabellen und der Index entstehen in ``_ensure_details_schema``.
+            for column, definition in _DETAILS_INVOICE_COLUMNS:
+                self._add_column_if_missing(cursor, 'Invoices', column, definition)
 
     def _correct_tax_keys(self, cursor):
         """Die Zeilen von ``TAX_KEY_CORRECTIONS`` in ``TaxKeys`` berichtigen (eine abweichende Zeile wird überschrieben,
@@ -761,6 +782,11 @@ class SchemaMixin:
                 -- Mehrere Steuersätze je Beleg (Schema 2007, Index 55; Reihenfolge wie die ALTER TABLE der Migration)
                 MixedTaxRates INTEGER,                         -- NULL = ein Satz für den ganzen Beleg (Bestand), 1 = Satz je Position (seit 2.7.0)
 
+                -- Bündel 2.10.0 (Schema 2010, Index 56-58; Reihenfolge wie die ALTER TABLE der Migration)
+                ServiceDateEnd DATE,                           -- Ende des Leistungszeitraums; NULL = nur das Leistungsdatum (Bestand)
+                PaymentMeans TEXT,                             -- Zahlungsart, Code nach UNTDID 4461 ('10', '48', '1'); NULL = Überweisung (58, Bestand)
+                QuoteStatusBefore TEXT,                        -- Rechnung aus einem Angebot: dessen Status vor der Umwandlung; NULL = 'accepted' (Bestand)
+
                 FOREIGN KEY (OwnCompanyId) REFERENCES Contacts(ID),
                 FOREIGN KEY (CustomerId) REFERENCES Contacts(ID),
                 FOREIGN KEY (BankAccountId) REFERENCES Accounts(ID),
@@ -930,6 +956,7 @@ class SchemaMixin:
             self._ensure_invoice_payment_index(cursor)
             self._ensure_document_readings_schema(cursor)
             self._ensure_tax_rates_schema(cursor)
+            self._ensure_details_schema(cursor)
 
             # Schema-Version in der DB hinterlegen (MAJOR × 1000 + SCHEMA_STEP, siehe
             # version.py). Bei jeder Schema-Änderung SCHEMA_STEP dort erhöhen.
@@ -1072,6 +1099,35 @@ class SchemaMixin:
                 cursor.execute("INSERT INTO TaxRates (Label, RateBp, Kind, Active, SortOrder) VALUES (?, ?, 'standard', 1, ?)",
                                (f'{pct_text(rate)} %', int(rate * 100), number * 10))
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_invoiceitems_invoice ON InvoiceItems(InvoiceId)")
+
+    def _ensure_details_schema(self, cursor):
+        """Die Zusatzfelder einer Bankbewegung, das Merkmal „exportiert“ und der Index auf ``Bookings.SourceGroup`` (2.10.0, Schema 2010). Läuft bei der Umstellung in deren
+        Transaktion (nach dem Anfügen der Spalten, auch von ``SourceGroup`` bei einer Datenbank aus 1.x), bei einer frischen Datenbank gleich beim Anlegen.
+
+        Beide Tabellen hängen mit ``ON DELETE CASCADE`` an ``Bookings`` (``PRAGMA foreign_keys = ON``, auch in der SQL-Konsole): Wird die Buchung gelöscht, bleibt nichts verwaist.
+        ``Bookings`` selbst bekommt keine Spalte – die Leser lesen es positionsbasiert (``SELECT *``), und die neuen Angaben gibt es nur für wenige Zeilen (die CAMT-Bankzeilen,
+        die exportierten Sätze). Der Bestand bekommt keine Zeile. Es gibt keine CHECK-Regeln: Was die Anwendung nicht lesen kann, liest sie als leer (``get_bank_details``).
+
+        Der Index steht hier und nicht bei den Indizes auf ``Bookings`` in ``_create_extended_schema``, damit er bei der Umstellung in deren Transaktion entsteht."""
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS BankTransactionDetails (
+                Booking_ID INTEGER PRIMARY KEY,                -- die Bankbewegung (Bookings.ID, BookingType 'bank')
+                ValueDate DATE,                                -- Valuta (CAMT Ntry/ValDt), ISO
+                EndToEndId TEXT,                               -- TxDtls/Refs/EndToEndId
+                MandateRef TEXT,                               -- TxDtls/Refs/MndtId
+                CreditorId TEXT,                               -- Gläubiger-ID (Cdtr …/PrvtId/Othr/Id mit SchmeNm/Prtry 'SEPA')
+                BankRef TEXT,                                  -- Ntry/AcctSvcrRef
+                FOREIGN KEY (Booking_ID) REFERENCES Bookings(ID) ON DELETE CASCADE
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS BookingExports (
+                Booking_ID INTEGER PRIMARY KEY,                -- ein Buchungssatz, der in einem DATEV-Stapel stand
+                ExportedAt DATETIME NOT NULL,                  -- erster Export (UTC, CURRENT_TIMESTAMP)
+                FOREIGN KEY (Booking_ID) REFERENCES Bookings(ID) ON DELETE CASCADE
+            )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_bookings_sourcegroup ON Bookings(SourceGroup)")
 
     def ensure_kasse_exists(self):
         """Ensure the default 'Kasse' account exists and cannot be deleted.
