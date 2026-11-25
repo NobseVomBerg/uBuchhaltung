@@ -1,8 +1,8 @@
 {
   "code": {
-    "code_lines": 45446,
+    "code_lines": 45658,
     "files": 130,
-    "lines": 67695
+    "lines": 68024
   },
   "data": {
     "files": 14,
@@ -10,11 +10,11 @@
     "non_blank_lines": 2296
   },
   "tests": {
-    "cases": 25719,
-    "code_lines": 112390,
-    "files": 296,
-    "functions": 9702,
-    "lines": 163711
+    "cases": 26000,
+    "code_lines": 113928,
+    "files": 300,
+    "functions": 9860,
+    "lines": 166100
   },
-  "version": "2.10.2"
+  "version": "2.10.3"
 }

@@ -6,7 +6,8 @@
 * ``skonto_tax``: die im Skonto enthaltene Steuer, EINMAL auf den Cent gerundet – mit dem Gegenbeispiel, an dem eine Doppelrundung (über die Minor Unit) einen Cent
   danebenläge, und einer Gegenrechnung mit Brüchen über viele Beträge.
 * ``skonto_rate_key``: welcher Kopfsatz ein Skonto-Konto hat (19, 7, 0 und § 19), welcher keines.
-* ``skonto_limit`` ist ``export.einvoice_model.skonto_amount``; ``skonto_terms`` und ``skonto_open_minor`` nennen die Ablehnungen in ihrer Reihenfolge.
+* ``skonto_limit`` ist ``export.einvoice_model.skonto_amount``; ``skonto_terms`` und ``skonto_open_minor`` nennen die Ablehnungen in ihrer Reihenfolge (mit den Sätzen der Gruppen eines Belegs
+  mit Steuersatz je Position: ``tests/test_skonto_mixed_pure.py``).
 * Die festen Sätze, die Konten (gegen die Seed-Datei gehalten) und ``settled_sql``.
 * ``payment_rows(skonto=…)``: dieselben Sätze wie immer, wenn es kein Skonto gibt; sonst drei (mit Forderung) bzw. zwei, der Skonto-Satz zuletzt.
 * ``_recalc_invoice`` rechnet mit Geld plus Skonto: eine Rechnung mit von Hand gesetztem Skonto ist „bezahlt“, der Rest 0.
@@ -23,8 +24,8 @@ from fractions import Fraction
 import pytest
 
 from db import invoice_payments as payments
-from db.invoice_payments import (PAYMENT_MARK, SKONTO_ACCOUNT_NUMBERS, SKONTO_ACCOUNTS, SKONTO_ALREADY, SKONTO_MIXED, SKONTO_NO_REST, SKONTO_NO_TERMS, SKONTO_NOT_CENTS,
-                                 SKONTO_RATE, SKONTO_REFUND, SKONTO_REMOVAL_REFUSED, SKONTO_STORNO_EDITED, SKONTO_TAX_ENTRY, SKONTO_TOO_LARGE, SkontoPart, payment_rows,
+from db.invoice_payments import (PAYMENT_MARK, SKONTO_ACCOUNT_NUMBERS, SKONTO_ACCOUNTS, SKONTO_ALREADY, SKONTO_NO_REST, SKONTO_NO_TERMS, SKONTO_NOT_CENTS,
+                                 SKONTO_RATE, SKONTO_REFUND, SKONTO_REMOVAL_REFUSED, SKONTO_REVENUE_DISCOUNT, SKONTO_STORNO_EDITED, SKONTO_TOO_LARGE, SkontoPart, payment_rows,
                                  settled_sql, skonto_limit, skonto_open_minor, skonto_rate_key, skonto_tax, skonto_terms, valid_skonto_sql)
 from export.einvoice_model import skonto_amount
 from money import fmt_eur, from_minor, round_minor, tax_from_gross
@@ -113,7 +114,7 @@ def test_skonto_limit_values():
 # ── skonto_terms ─────────────────────────────────────────────────────────────
 
 def _terms(**over):
-    values = dict(gross=1190000, days=14, percent=2.0, tax_rate=0.19, mixed=None, carries_entry=False)
+    values = dict(gross=1190000, days=14, percent=2.0, tax_rate=0.19, mixed=None)
     values.update(over)
     return skonto_terms(**values)
 
@@ -127,10 +128,9 @@ def test_skonto_terms_accepts_a_plain_invoice():
 
 
 @pytest.mark.parametrize('over, expected', [
-    pytest.param(dict(mixed=1), SKONTO_MIXED, id='Steuersatz je Position'),
-    pytest.param(dict(mixed=1, carries_entry=True, tax_rate=0.16, days=None, percent=None), SKONTO_MIXED, id='gemischt vor allem anderen'),
-    pytest.param(dict(carries_entry=True), SKONTO_TAX_ENTRY, id='Stammdaten'),
-    pytest.param(dict(carries_entry=True, tax_rate=0.16, days=None, percent=None), SKONTO_TAX_ENTRY, id='Stammdaten vor dem Satz'),
+    pytest.param(dict(revenue_on_discount=True), SKONTO_REVENUE_DISCOUNT, id='Erlöskonto der Stammdaten ist ein Skonto-Konto'),
+    pytest.param(dict(revenue_on_discount=True, tax_rate=0.16, days=None, percent=None), SKONTO_RATE, id='der Satz vor dem Erlöskonto'),
+    pytest.param(dict(revenue_on_discount=True, days=None, percent=None), SKONTO_REVENUE_DISCOUNT, id='das Erlöskonto vor den Bedingungen'),
     pytest.param(dict(tax_rate=0.16), SKONTO_RATE, id='16 %'),
     pytest.param(dict(tax_rate=0.05), SKONTO_RATE, id='5 %'),
     pytest.param(dict(tax_rate=0.16, days=None, percent=None), SKONTO_RATE, id='der Satz vor den Bedingungen'),
@@ -162,7 +162,7 @@ def test_skonto_terms_does_not_look_at_the_deadline():
 # ── skonto_open_minor ────────────────────────────────────────────────────────
 
 def _open(**over):
-    values = dict(open_minor=1190000, gross=1190000, days=14, percent=2.0, tax_rate=0.19, mixed=None, carries_entry=False)
+    values = dict(open_minor=1190000, gross=1190000, days=14, percent=2.0, tax_rate=0.19, mixed=None)
     values.update(over)
     return skonto_open_minor(**values)
 
@@ -174,7 +174,7 @@ def test_skonto_open_minor_is_the_open_amount_less_the_discount():
 
 
 @pytest.mark.parametrize('over', [
-    pytest.param(dict(mixed=1), id='gemischt'), pytest.param(dict(carries_entry=True), id='Stammdaten'),
+    pytest.param(dict(mixed=1), id='gemischt ohne lesbare Gruppen'), pytest.param(dict(revenue_on_discount=True), id='Erlöskonto der Stammdaten ist ein Skonto-Konto'),
     pytest.param(dict(tax_rate=0.16), id='16 %'), pytest.param(dict(days=None, percent=None), id='ohne Bedingungen'),
     pytest.param(dict(open_minor=23800), id='der offene Betrag ist nicht größer als das Skonto'),
     pytest.param(dict(open_minor=10000), id='der offene Betrag ist kleiner als das Skonto'),
@@ -206,8 +206,6 @@ def test_the_seed_file_stays_sorted_with_the_new_accounts():
 
 def test_the_fixed_sentences():
     assert SKONTO_NO_TERMS == 'Diese Rechnung sieht kein Skonto vor.'
-    assert SKONTO_MIXED == 'Skonto lässt sich bei einer Rechnung mit mehreren Steuersätzen noch nicht ausbuchen.'
-    assert SKONTO_TAX_ENTRY == 'Skonto lässt sich bei einer Rechnung mit Steuersatz aus den Stammdaten noch nicht ausbuchen.'
     assert SKONTO_RATE == 'Skonto lässt sich für den Steuersatz dieser Rechnung noch nicht ausbuchen.'
     assert SKONTO_NO_REST == 'Nach dieser Zahlung bleibt kein Rest – es gibt kein Skonto auszubuchen.'
     assert SKONTO_TOO_LARGE == 'Der Rest nach dieser Zahlung ({rest}) ist größer als das Skonto der Rechnung ({skonto}).'
@@ -219,7 +217,7 @@ def test_the_fixed_sentences():
 
 
 def test_the_sentences_are_short_and_carry_no_placeholder_but_their_own():
-    sentences = [SKONTO_NO_TERMS, SKONTO_MIXED, SKONTO_TAX_ENTRY, SKONTO_RATE, SKONTO_NO_REST, SKONTO_REFUND, SKONTO_STORNO_EDITED, SKONTO_NOT_CENTS, SKONTO_ALREADY]
+    sentences = [SKONTO_NO_TERMS, SKONTO_RATE, SKONTO_NO_REST, SKONTO_REFUND, SKONTO_STORNO_EDITED, SKONTO_NOT_CENTS, SKONTO_ALREADY]
     for text in sentences:
         assert text.endswith('.') and '{' not in text and '}' not in text and len(text) < 160, text
     assert SKONTO_REMOVAL_REFUSED.format(number='R26003') == 'An der Rechnung R26003 ist eine Zahlung mit Skonto gebucht – bitte zuerst diese Zahlung entfernen.'

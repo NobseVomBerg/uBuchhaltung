@@ -25,7 +25,8 @@ zuordnen.
 
 **Ein Skonto, das eine Zahlung der Rechnung ausgebucht hat (seit 2.9.0, ``InvoicePayments.SkontoAmount``), nimmt das Stornieren zurück**
 (``InvoicePaymentsMixin._reverse_skonto_in``, in derselben Transaktion, nach der Gegenbuchung der Forderung): Die Rücknahme sind weitere markierte Sätze
-unter der Bankbewegung der Zahlung, mit Datum und Steuerdatum des späteren von Stornodatum und Datum der Bankbewegung; danach ist ``SkontoAmount`` NULL,
+unter der Bankbewegung der Zahlung (bei einem Beleg mit Steuersatz je Position je Skonto-Satz drei bzw. zwei, in der Reihenfolge der Skonto-Sätze der Zahlung), mit Datum und Steuerdatum
+des späteren von Stornodatum und Datum der Bankbewegung; danach ist ``SkontoAmount`` NULL,
 und die stornierte Rechnung sieht buchhalterisch aus wie eine Teilzahlung über das Geld, das geflossen ist – dieses Geld ist das Guthaben, die Erstattung
 braucht keine eigene Regel. Ist die Skonto-Buchung nicht mehr, wie die App sie geschrieben hat (``InvoicePaymentsMixin._skonto_reversals``), lehnt das
 Stornieren mit ``SKONTO_STORNO_EDITED`` ab (409, ``_storno_blocker``, vor allem, was ein Konto anlegt oder eine Nummer verbraucht). Eine Rechnung ohne Skonto

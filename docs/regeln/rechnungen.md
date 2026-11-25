@@ -92,6 +92,7 @@
     Satzes (`_learned_revenue_coa`), nie aus dem Kopf.
   - Bankzeile bekommt nur Kunde und Beleg-Nr. (`_backfill_booking_skr`). Entfernen nimmt die ganze Zuordnung mit; Stufe 7 löst die
     Forderungszeilen gemeinsam (`zahlungen.md`).
+  - **Skonto:** je Satz – ein Satz „Skonto-Konto an Bank“ je Gruppe, auf die Skonto entfällt (`tax_groups.split_skonto`, nur 19 %, 7 % und steuerfrei), siehe `zahlungen.md`.
 - **Stornieren** (`cancel_invoice`): Vorprüfung liest die Gruppen (nicht buchbar: 409 `MIXED_GROUPS_MISMATCH`/`MIXED_GROUP_NOT_POSITIVE`
   vor dem Auflösen der Konten); die Transaktion vergleicht den Stand (`CHANGED_MESSAGE`). Stornorechnung: Kennzeichen, negierte
   Positionen und Summen, Gruppen = negierte (`round_minor`, halb von null weg). Gegenbuchung (nur bei stehenden Forderungen der App):
@@ -188,6 +189,8 @@
   - **Widersprüche der Momentaufnahme** (verschiedene Angaben in einer Gruppe, teils mit/teils ohne, halbe Angabe, `'E'` mit Satz ≠ 0,
     unlesbarer/unpassender Satz, Kopf passt nicht) lehnen Versenden, Zahlung, Stornieren vor dem ersten Schreiben ab
     (`TAX_ENTRY_CONTRADICTION`; `MIXED_GROUPS_MISMATCH` bleibt für „Positionen ≠ Summen“). Die **Erstattung prüft sie bewusst nicht**.
+  - **Skonto:** je Satz mit dem Skonto-Konto des Satzes (19 % → 4736, 7 % → 4731, steuerfrei → 4730; 5,5 % und jeder andere Satz lehnt ab); das Erlöskonto der Momentaufnahme gilt,
+    ist es selbst ein Skonto-Konto, lehnt die Zuordnung mit Skonto ab (`SKONTO_REVENUE_DISCOUNT`) – siehe `zahlungen.md`.
   - Umzug unterbleibt bei Stammdaten-Erlöskonto (`MOVE_ENTRY_HINT`); „Zuordnung neu aufbauen“ rechnet dann nur den offenen Betrag (Grund
     `tax_entry`) – Bedingungen beider Wege nicht lockern. Prüfliste `tax_entry_mismatch` (feste Sätze `TAX_ENTRY_FINDINGS`; `'E'` ohne
     Angaben ist kein Befund, die halbe Angabe schon). Meldungen „steuerfreie Leistungen“ (`rate_sentence`), Listen/PDF „steuerfrei“
@@ -200,8 +203,8 @@
 - **DATEV:** Satz außerhalb 19/16/7/5 % bekommt keinen BU-Schlüssel (0; bei Umsatzsteuer der Satz in Spalte 40); der Export zählt solche
   Zeilen (`export_to_datev(rates_without_key=…)`, `DatevStack.hint`), fester Hinweis `DATEV_RATE_NOTE`; der Stapel bleibt Byte für Byte
   gleich. Weitere Auswertungen: `auswertungen.md`.
-- **Bekannte Grenzen:** kein Wartekonto für weitere Sätze; ein Eintrag mit genau 100 % ist speicherbar, der Beleg aber nicht versendbar;
-  Reverse Charge, innergemeinschaftliche Lieferung, Ausfuhr fehlen (`docs/aufgaben.md`). Keine Steuerberatung in Texten.
+- **Bekannte Grenzen:** kein Wartekonto für weitere Sätze; kein Skonto-Konto für weitere Sätze (nur 19 %, 7 % und steuerfrei); ein Eintrag mit genau 100 % ist speicherbar, der Beleg aber nicht
+  versendbar; Reverse Charge, innergemeinschaftliche Lieferung, Ausfuhr fehlen (`docs/aufgaben.md`). Keine Steuerberatung in Texten.
 - Tests: `tests/test_tax_entries_pure.py`, `tests/test_tax_rates_schema_2008.py`, `tests/test_tax_rates_db.py`, `tests/test_tax_rates_page.py`,
   `tests/test_tax_entries_save.py`, `tests/test_tax_entries_mask.py`, `tests/test_tax_entries_storno.py`, `tests/test_tax_entries_bookings.py`, `tests/test_tax_entries_reports.py`, `tests/test_tax_entries_documents.py`, `tests/test_tax_entries_demo_samples.py`,
   `tests/test_tax_accounts_reports.py`, `tests/test_standard_accounts_purchase.py`.

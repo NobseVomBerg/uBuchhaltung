@@ -73,8 +73,10 @@
   prüft es nicht).
 - **Sätze eines Belegs** (`_rate_findings`, je Art eine Abfrage für alle Belege):
   - `rate_split_mismatch`: Beleg mit Steuersatz je Position, dessen Positionen nicht zu den Summen passen (`tax_groups.mixed_groups`), dessen
-    Forderungszeilen der App nicht genau die Satzgruppen buchen, oder der ganz bezahlt ist, ohne dass je Satz Betrag und Steuer umgebucht
-    wären (dieselben Sätze wie `_mixed_booked`).
+    Forderungszeilen der App nicht genau die Satzgruppen buchen, oder der ganz bezahlt ist (Geld plus Skonto), ohne dass je Satz Betrag und
+    Steuer umgebucht wären (dieselben Sätze wie `_mixed_booked`); mit Skonto erwartet sie je Satz Brutto und Steuer der Gruppe abzüglich
+    Anteil am Skonto und Steuer darin (`skonto_moved_by_rate`) – ein Skonto-Satz, den jemand zwischen den Sätzen verschoben hat (die Summe
+    bleibt, `skonto_mismatch` schweigt), fällt hier auf; lässt sich das Skonto nicht auf die Sätze verteilen, nennt es ein fester Satz.
   - `rate_refund_mismatch`: Storno-Paar mit Kennzeichen, Stand je Satz lesbar (`booked_by_rate`), und je Satz mehr erstattet als gezahlt bzw.
     Betrag/Steuer gehen nicht auf (`tax_groups.booked_fault` am Topf `refund_pool`). Ein Befund je Paar, an der stornierten Rechnung.
   - `unflagged_rate_mix`: Beleg OHNE Kennzeichen mit verschiedenen Sätzen in den Positionen (verglichen nach `rate_pct`; Position ohne Satz,
@@ -168,29 +170,56 @@
   `_assign_in_tx`, Prüfliste, Schritt D des Neuaufbaus).
 - **Sätze** (markiert, in dieser Reihenfolge; Beispiel 119,00 / gezahlt 116,62): „Bank an Debitoren“ 119,00 (nur mit Forderung),
   „Wartekonto an Erlöskonto“ bzw. ohne Forderung „Erlöskonto an Bank“ 119,00 mit Rest der Rechnungssteuer, zuletzt **„Skonto-Konto an Bank“**
-  (`purpose_first`) −2,38 mit −0,38 Steuer. Nie „Skonto an Debitoren“ (EÜR ohne Steuer, Summen- und Saldenliste unzerlegt). DATEV: zwei Bankzeilen.
+  (`purpose_first`) −2,38 mit −0,38 Steuer. Nie „Skonto an Debitoren“ (EÜR ohne Steuer, Summen- und Saldenliste unzerlegt). DATEV: zwei Bankzeilen
+  (bei mehreren Sätzen je Skonto-Satz eine).
+- **Beleg mit Steuersatz je Position** (`mixed_skonto_parts`, `payment_rows(skonto_parts=…)`): Die Zahlung, die ihn schließt, bucht jede Gruppe mit
+  ihrem ganzen Rest und dem Rest ihrer Steuer um („Bank an Debitoren“ über Geld plus Skonto, je Satz „Wartekonto an Erlöskonto“ bzw. „Erlöskonto an
+  Bank“) und danach je Satz, auf den Skonto entfällt, „Skonto-Konto an Bank“ – in der Reihenfolge der Gruppen (Satz absteigend). Beispiel 19 % × 100,00 und
+  7 % × 50,00, Skonto 3,45, gezahlt 169,05: 172,50 / 119,00 / 53,50 und −2,38 (−0,38) / −1,07 (−0,07). `SkontoAmount` ist die Summe über die Sätze.
+  - **Verteilung** (`tax_groups.split_skonto`, nur aus Gruppen und Skonto, nicht aus den Zahlungen davor – so rechnet die Prüfliste sie nach): im
+    Verhältnis zum Brutto der Gruppen auf den Cent, **genau ein halber Cent nach unten**; die Gruppe mit dem größten Brutto (Gleichstand: höherer Satz)
+    bekommt den Rest. Die Steuer je Gruppe ist `skonto_tax` (einmal auf den Cent gerundet); die Summe der Gruppen IST die Skonto-Steuer, einen
+    gesamt gerechneten Wert gibt es nicht (kann um einen Cent von „Belegsteuer × Skonto / Brutto“ abweichen).
+  - **Konten je Gruppe:** das Konto ihres Satzes (steuerfrei wie 0 %); der Kopfsatz des Belegs ist nur ein Platzhalter und bestimmt kein Konto. Angelegt werden nur die Konten der
+    Sätze des Belegs.
+  - **Ablehnungen** (feste Sätze, vor dem ersten Schreiben): Gruppe ohne Skonto-Konto (5,5 %, 16 % …) `SKONTO_GROUP_RATE` mit ihrem Satz; Positionen passen
+    nicht zu den Summen `MIXED_GROUPS_MISMATCH`, Widerspruch der Momentaufnahme `TAX_ENTRY_CONTRADICTION`; Vorzahlungen nicht je Satz lesbar
+    `MIXED_ALLOCATION_UNREADABLE`; die Aufteilung geht nicht auf (Anteil oder Steuer darin größer als der Rest der Gruppe, etwa nach Vorzahlungen, die nicht im
+    Verhältnis der Gruppen liefen) `SKONTO_MIXED_SPLIT`.
 - **Konten** (`SKONTO_ACCOUNTS`): 19 % → 4736, 7 % → 4731, 0 %/§ 19 → 4730 ohne Steuer (Standardkonten; fehlt eines, legt die erste Zuordnung
   es vor der Transaktion an – eine abgelehnte nichts). Ein Skonto-Konto lehrt nie ein Erlöskonto, der Skonto-Satz zählt nicht in
   `_allocations_tax` und steht nicht in `payment_revenue_choices` und der Wahl eines Stammdaten-Steuersatzes.
 - **Ein Skonto-Satz wird nie allein am Konto erkannt – maßgeblich ist `SkontoAmount`:** Ein Skonto-Konto kann auch Erlöskonto einer Zahlung
   sein; sein Erlössatz zählt dann in `_allocations_tax` und löst weder `skonto_mismatch` noch `SKONTO_STORNO_EDITED` aus. Ohne Wert in der
   Spalte erkennen Stornieren und `_skonto_booked` Skonto nur an einem Satz mit negativem Betrag. `tests/test_skonto_revenue_account.py`
+- **Ein Erlöskonto aus den Stammdaten (`InvoiceItems.RevenueCoaId`), das selbst ein Skonto-Konto ist, lehnt jede Zuordnung mit Skonto ab** (`SKONTO_REVENUE_DISCOUNT`, bei jedem Beleg):
+  Nur ohne so ein Konto ist in einer Zuordnung mit Skonto jeder `purpose_first`-Satz auf einem Skonto-Konto ein Skonto-Satz – die Erstattung (`_refund_revenue_coas_by_rate` lässt
+  ihn weg) und die Rücknahme beim Stornieren verlassen sich darauf.
 - **Regeln** (`skonto_terms`, `_skonto_state` – EINE Stelle für Vorprüfung und Transaktion): Skonto = Rest nach der Zahlung in ganzen Cent,
   höchstens `skonto_amount(Brutto, Prozent)`; Frist gezeigt, nie geprüft; je Rechnung höchstens EIN Skonto; Steuer = Skonto × Satz / (100 + Satz),
-  EINMAL auf den Cent gerundet (`skonto_tax`). Nur Rechnungen mit einem Satz (19 %, 7 %, 0 %, § 19); Beleg mit Steuersatz je Position,
-  Stammdaten-Satz oder anderem Kopfsatz lehnt mit festem Satz ab (`SKONTO_*`).
+  EINMAL auf den Cent gerundet (`skonto_tax`). Nur Rechnungen, deren Sätze ein Skonto-Konto haben: 19 %, 7 %, 0 % und § 19 (beim Beleg mit einem Satz sein Kopfsatz,
+  ein Satz aus den Stammdaten gilt wie jeder andere; beim Beleg mit Steuersatz je Position jede Gruppe – 19 %, 7 %, steuerfrei); jeder andere Satz lehnt mit festem
+  Satz ab (`SKONTO_RATE`, `SKONTO_GROUP_RATE`, `SKONTO_*`).
 - **Entfernen:** Die Zahlung mit Skonto geht auf jedem Weg samt Skonto-Sätzen; solange sie hängt, lässt sich keine ANDERE Zahlung der
   Rechnung entfernen (`SKONTO_REMOVAL_REFUSED`, in der einen Prüfung aller Entfernen-Wege, `_refund_removal_blocker`).
 - **Stornieren nimmt das Skonto zurück** (`_reverse_skonto_in`, in der Transaktion von `cancel_invoice`): drei markierte Sätze unter der
   Bewegung (ohne Forderung zwei), Beleg-Nr. der stornierten Rechnung, Datum = das spätere von Stornodatum und Bankbewegung, danach
   `SkontoAmount` NULL. Im Editor geänderte Skonto-Sätze: Ablehnung `SKONTO_STORNO_EDITED`. Folge: SuSa nennt `child_other_period` für die Monate
   zwischen Zahlung und Storno.
-- Umzug: Zahlung mit Skonto zieht nicht um (`MOVE_SKIP_REASONS['skonto']`); Neuaufbau rechnet nur den offenen Betrag (Grund `skonto`).
-- Prüfliste `skonto_mismatch` (Sätze passen nicht zu `SkontoAmount` oder ungültiger Wert). Vorschlagssignal „Betrag nach Skonto stimmt“ (freier
-  Betrag = offen − Skonto, 50 Punkte; braucht Namenswort oder Nummer).
+  - **Beleg mit Steuersatz je Position:** je Skonto-Satz drei (ohne Forderung zwei) Sätze, in der Reihenfolge der Skonto-Sätze der Zahlung; `SkontoAmount` wird einmal je
+    Bewegung NULL. Geändert (`_mixed_reversals`) ist die Buchung, wenn die Skonto-Sätze zusammen nicht −`SkontoAmount` ergeben, ein Skonto-Satz Betrag ≥ 0 oder eine
+    unlesbare Steuer trägt, zwei denselben Satz tragen oder zu einem nicht GENAU ein Satz „Wartekonto an Erlöskonto“ bzw. „Erlöskonto an Bank“ desselben Satzes gehört.
+    Der Topf je Satz für die Erstattung (`_mixed_booked`) ist das Geld je Satz, vor wie nach der Rücknahme; das Erlöskonto je Satz lässt die Skonto-Sätze weg.
+- Umzug: Zahlung mit Skonto zieht nicht um (`MOVE_SKIP_REASONS['skonto']`); bei Steuersatz je Position und Stammdaten-Erlöskonto kommt vorher ihr eigener Hinweis
+  (`MOVE_MIXED_HINT`, `MOVE_ENTRY_HINT`: nichts zieht um). Neuaufbau rechnet nur den offenen Betrag (Gründe `mixed`, `tax_entry`, `skonto`).
+- Prüfliste `skonto_mismatch` (Sätze passen nicht zu `SkontoAmount` oder ungültiger Wert), bei mehreren Sätzen dazu `rate_split_mismatch` (s. o.). Vorschlagssignal „Betrag nach Skonto
+  stimmt“ (freier Betrag = offen − Skonto, 50 Punkte; braucht Namenswort oder Nummer) – auch für Belege mit Steuersatz je Position und Sätzen aus den Stammdaten.
+  Bekannte Grenze: Häkchen und Vorschlag erscheinen auch dort, wo erst das Zuordnen ablehnt (Widerspruch der Momentaufnahme, Vorzahlungen, die sich nicht aufteilen lassen):
+  Der Klick lehnt mit festem Satz ab.
 - Oberfläche: Rechnungsseite (Häkchen „Rest … als Skonto ausbuchen“ je Kandidat, nur sichtbar, wenn der Rest passt), Buchungsmaske (Feld
   `skonto=1`, Vorprüfung vor dem Schreiben), Kasten der Zahlungseingänge („Mit Skonto zuordnen“). `POST /invoice/link-payment` liest `skonto`
-  streng als Wahrheitswert; an einer Stornorechnung 400 (`SKONTO_REFUND`). Keine Steuerberatung in Texten. `tests/test_skonto_*.py`
+  streng als Wahrheitswert; an einer Stornorechnung 400 (`SKONTO_REFUND`). Keine Steuerberatung in Texten. `tests/test_skonto_*.py` (mehrere Steuersätze:
+  `tests/test_skonto_mixed_pure.py`, `tests/test_skonto_mixed_booking.py`, `tests/test_skonto_mixed_storno.py`, `tests/test_skonto_mixed_reports.py`)
 
 ## Zahlungsvorschläge (`db/payment_matching.py` rein, `db/payment_suggestions.py` nur lesend)
 

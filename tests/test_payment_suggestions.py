@@ -23,7 +23,8 @@ Die Seite schlägt jetzt vor, was zusammengehört – **es wird nur vorgeschlage
 * der Fehlerweg: Schlägt die Zuordnung nach dem Speichern fehl, bleibt der Nutzer bei der Buchung (``/transactions/edit?id=…&err=…``);
 * die Rechnungsseite („Vorhandene Buchung verknüpfen“: Vorschläge zuerst, Begründung klein unter dem Auftraggeber, der Haken bei gleichem Betrag bleibt);
 * **Skonto (2.9.0, ganz unten):** Die Abfrage der offenen Rechnungen liest die Angaben, die über ein Skonto entscheiden (``skonto_open_minor``, ``skonto_limit_minor``); der Betrag nach Abzug
-  des Skontos ist mit dem Kunden ein Vorschlag (``suggestion.skonto``); eine Rechnung ohne Skonto, mit mehreren Sätzen, mit Stammdaten oder einem Satz ohne Skonto-Konto hat keines; kaputte Werte
+  des Skontos ist mit dem Kunden ein Vorschlag (``suggestion.skonto``); eine Rechnung ohne Skonto, mit einer Gruppe oder einem Kopfsatz ohne Skonto-Konto (nicht 19, 7 und 0 %), mit einem Erlöskonto der
+  Stammdaten, das selbst ein Skonto-Konto ist, oder mit Positionen, die nicht zu den Summen passen, hat keines (mehrere Sätze und Sätze aus den Stammdaten gehen); kaputte Werte
   sind kein Fehler; ``skonto_offer`` und ``skonto_limits`` lesen nur; die Abfrage wächst nicht schneller als die Zahl der Rechnungen. Die Oberfläche steht in ``tests/test_skonto_pages.py``.
 
 Alle Namen, Nummern und Beträge sind erfundene Testwerte; Daten stehen fest im Test (kein „heute“).
@@ -41,10 +42,11 @@ from html import unescape
 import pytest
 
 from db import Database
-from db.invoice_payments import PAYABLE_STATUSES, SKONTO_MIXED, SKONTO_NO_TERMS, SKONTO_RATE, SKONTO_TAX_ENTRY, STORNO_KIND
+from db.invoice_payments import (MIXED_GROUPS_MISMATCH, PAYABLE_STATUSES, SKONTO_ACCOUNT_NUMBERS, SKONTO_GROUP_RATE, SKONTO_NO_TERMS, SKONTO_RATE, SKONTO_REVENUE_DISCOUNT,
+                                 STORNO_KIND)
 from db.payment_matching import AMBIGUOUS_TEXT, MAX_SUGGESTIONS, REASON_AMOUNT, REASON_CUSTOMER, REASON_NUMBER
 from db.payment_suggestions import _OPEN_INVOICES, _UNBOOKED_MOVEMENTS, MAX_INVOICES, MAX_MOVEMENTS, PaymentOverview
-from money import fmt_eur
+from money import fmt_eur, from_minor, to_minor
 from server import handlers
 from server.handlers import PAYMENT_NOT_ASSIGNED, handle_add_transaction
 from server.pages import script_json
@@ -54,6 +56,7 @@ from tests.document_helpers import post_json, state, table_rows
 from tests.dom_helpers import Dom, app_msg_arguments, assert_same_structure
 from tests.entry_form_roundtrip import differences, open_form, snapshot
 from tests.http_client import get, own_origin
+from tax_groups import rate_groups
 
 NODE = shutil.which('node')
 NO_NODE = pytest.mark.skipif(NODE is None, reason='Node.js nicht installiert – nur die Läufe des Skripts entfallen')
@@ -1547,6 +1550,23 @@ def discount_world(db, **extra):
     return account, buyer, invoice_id
 
 
+def mixed_discount_world(db, parts=(('19', '100.00'), ('7', '50.00')), snapshots=None, **extra):
+    """Eine Rechnung R26001 mit Steuersatz je Position (``parts``: Satz in Prozent und Netto in Euro, Kennzeichen 1, Summen aus ``tax_groups.rate_groups`` wie beim Speichern der App), Skonto 2 % in
+    14 Tagen, versendet (ohne Forderung – hier geht es nur um die Angaben zum Skonto). ``snapshots``: ``{Position (1…): Spalten der Momentaufnahme}`` für ``insert_invoice_item``; ``extra`` ändert
+    die Rechnung. Standard: 19 % × 100,00 und 7 % × 50,00, brutto 172,50, Skonto 3,45 €."""
+    groups = rate_groups([(Decimal(rate), to_minor(Decimal(net))) for rate, net in parts])
+    net, tax = sum(group.net for group in groups), sum(group.tax for group in groups)
+    account, buyer = bank_account(db), customer(db)
+    gross = from_minor(net + tax)
+    data = {**TERMS, 'sum_net': from_minor(net), 'tax_amount': from_minor(tax), 'sum_gross': gross, 'amount_due': gross, 'mixed_tax_rates': 1, **extra}
+    invoice_id = add_invoice(db, 'R26001', float(gross), customer_id=buyer, status='draft', **data)
+    for position, (rate, net_euro) in enumerate(parts, 1):
+        db.insert_invoice_item({'invoice_id': invoice_id, 'position': position, 'description': 'Anstrich', 'quantity': 1, 'unit': 'Stk.', 'price_per_unit': float(net_euro),
+                                'total_net': float(net_euro), 'tax_category': 'S', 'tax_rate': float(rate), **((snapshots or {}).get(position) or {})})
+    run_sql(db, "UPDATE Invoices SET Status = 'sent' WHERE ID = ?", invoice_id)
+    return account, buyer, invoice_id
+
+
 def test_an_open_invoice_with_discount_terms_has_the_open_amount_after_the_discount(tmp_db):
     account, _buyer, _invoice = discount_world(tmp_db)
     row = open_rows(tmp_db)['R26001']
@@ -1577,7 +1597,7 @@ def test_the_amount_after_the_discount_alone_is_no_suggestion_and_the_full_amoun
 @pytest.mark.parametrize('extra', [
     {'skonto_days': None, 'skonto_percent': None}, {'skonto_days': 14, 'skonto_percent': None}, {'skonto_days': 400},
     {'mixed_tax_rates': 1}, {'tax_rate': 0.16}, {'tax_rate': 0.055},
-], ids=['ohne-Bedingungen', 'nur-Tage', 'Frist-zu-lang', 'Satz-je-Position', '16-Prozent', '5,5-Prozent'])
+], ids=['ohne-Bedingungen', 'nur-Tage', 'Frist-zu-lang', 'Satz-je-Position-ohne-Positionen', '16-Prozent', '5,5-Prozent'])
 def test_an_invoice_that_allows_no_discount_has_no_skonto_value_and_no_skonto_suggestion(tmp_db, extra):
     account, _buyer, _invoice = discount_world(tmp_db, **extra)
     row = open_rows(tmp_db)['R26001']
@@ -1586,17 +1606,35 @@ def test_an_invoice_that_allows_no_discount_has_no_skonto_value_and_no_skonto_su
     assert tmp_db.suggest_invoices_for_booking(payment) == []
 
 
-@pytest.mark.parametrize('column, value', [('TaxRateBp', 1900), ('RevenueCoaId', 404400)], ids=['Satz-aus-den-Stammdaten', 'Erlöskonto-aus-den-Stammdaten'])
-def test_an_invoice_with_a_position_from_the_master_data_has_no_skonto_value(tmp_db, column, value):
-    """Eine Position mit der Momentaufnahme eines Steuersatzes (``TaxRateBp``) oder einem Erlöskonto (``RevenueCoaId``) aus den Stammdaten: Das Zuordnen mit Skonto lehnt ab (``SKONTO_TAX_ENTRY``),
-    also schlägt die Seite es nicht vor."""
+@pytest.mark.parametrize('columns, has_skonto', [
+    ({'tax_rate_bp': 1900}, True), ({'tax_rate_bp': 1900, 'revenue_coa_id': 'own'}, True), ({'tax_rate_bp': 1900, 'revenue_coa_id': 'discount'}, False),
+], ids=['Satz-aus-den-Stammdaten', 'eigenes-Erlöskonto', 'Erlöskonto-ist-ein-Skonto-Konto'])
+def test_an_invoice_with_a_position_from_the_master_data_has_a_skonto_value_unless_its_revenue_account_is_a_discount_account(tmp_db, columns, has_skonto):
+    """Eine Position mit der Momentaufnahme eines Steuersatzes (``TaxRateBp``), auch mit einem Erlöskonto aus den Stammdaten: Das Zuordnen mit Skonto geht (``tests/test_skonto_mixed_booking.py``),
+    also schlägt die Seite es vor – außer das Erlöskonto ist selbst ein Skonto-Konto (``SKONTO_REVENUE_DISCOUNT``)."""
+    account, _buyer, invoice_id = discount_world(tmp_db)
+    with closing(sqlite3.connect(tmp_db.db_name)) as conn:
+        numbers = {'own': 4400, 'discount': 4736}
+        coa = None if 'revenue_coa_id' not in columns else conn.execute('SELECT ID FROM ChartOfAccounts WHERE AccountNumber = ?', (numbers[columns['revenue_coa_id']],)).fetchone()[0]
+    tmp_db.insert_invoice_item({'invoice_id': invoice_id, 'position': 1, 'description': 'Anstrich', 'quantity': 1, 'unit': 'Stk.', 'price_per_unit': 100.0,
+                                'total_net': 100.0, 'tax_category': 'S', 'tax_rate': 0.19, **columns, 'revenue_coa_id': coa})
+    row = open_rows(tmp_db)['R26001']
+    assert (row['skonto_open_minor'], row['skonto_limit_minor']) == ((AFTER, LIMIT) if has_skonto else (None, None))
+    found = tmp_db.suggest_invoices_for_booking(add_payment(tmp_db, account, 116.62, '2026-03-10', 'Käufer AG', 'Danke'))
+    if has_skonto:
+        ((pair, _row),) = found
+        assert pair.skonto is True
+    else:
+        assert found == []
+
+
+def test_the_rows_of_a_half_snapshot_are_not_read_by_the_suggestions(tmp_db):
+    """Bekannte Grenze: Ein Erlöskonto aus den Stammdaten ohne den Satz dazu (die halbe Momentaufnahme, ein Widerspruch) sieht erst das Zuordnen (``TAX_ENTRY_CONTRADICTION``) – der Vorschlag erscheint,
+    der Klick lehnt mit einem festen Satz ab."""
     account, _buyer, invoice_id = discount_world(tmp_db)
     tmp_db.insert_invoice_item({'invoice_id': invoice_id, 'position': 1, 'description': 'Anstrich', 'quantity': 1, 'unit': 'Stk.', 'price_per_unit': 100.0,
-                                'total_net': 100.0, 'tax_category': 'S', 'tax_rate': 0.19, 'tax_rate_bp': 1900 if column == 'TaxRateBp' else None,
-                                'revenue_coa_id': value if column == 'RevenueCoaId' else None})
-    row = open_rows(tmp_db)['R26001']
-    assert (row['skonto_open_minor'], row['skonto_limit_minor']) == (None, None)
-    assert tmp_db.suggest_invoices_for_booking(add_payment(tmp_db, account, 116.62, '2026-03-10', 'Käufer AG', 'Danke')) == []
+                                'total_net': 100.0, 'tax_category': 'S', 'tax_rate': 0.19, 'tax_rate_bp': None, 'revenue_coa_id': 404400})
+    assert open_rows(tmp_db)['R26001']['skonto_open_minor'] == AFTER
 
 
 def test_a_plain_position_without_a_snapshot_does_not_stop_the_discount(tmp_db):
@@ -1640,7 +1678,8 @@ def test_a_value_that_cannot_be_read_gives_no_skonto_and_no_error(tmp_db, column
 
 
 def test_the_flag_for_a_rate_per_position_is_read_strictly_only_the_whole_number_one_counts(tmp_db):
-    """Wie überall (``has_mixed_rates``): Text und 0 heißen „ein Satz für den ganzen Beleg“ – das Skonto bleibt möglich; die ganze Zahl 1 sperrt es."""
+    """Wie überall (``has_mixed_rates``): Text und 0 heißen „ein Satz für den ganzen Beleg“ – das Skonto bleibt möglich; die ganze Zahl 1 macht ihn zum Beleg mit Steuersatz je Position – hier ohne
+    Positionen, also ohne lesbare Gruppen: kein Skonto."""
     _account, _buyer, invoice_id = discount_world(tmp_db)
     for value, allowed in (('ja', True), (0, True), (1, False)):
         run_sql(tmp_db, 'UPDATE Invoices SET MixedTaxRates = ? WHERE ID = ?', value, invoice_id)
@@ -1655,6 +1694,103 @@ def test_a_gross_that_is_not_a_whole_number_never_gives_a_limit_of_zero_a_value(
     assert (row['skonto_open_minor'], row['skonto_limit_minor']) == (None, None)
 
 
+# ── Rechnungen mit Steuersatz je Position (Stufe 2) ─────────────────────────
+
+def _snapshot(pct, coa=None):
+    """Die Momentaufnahme eines Eintrags der Stammdaten mit Satz ``pct`` (Art ``'S'``) und, wo es eines gibt, dem Erlöskonto ``coa``."""
+    return {'tax_category': 'S', 'tax_rate_bp': int(Decimal(pct) * 100), 'tax_exempt_reason': None, 'revenue_coa_id': coa}
+
+
+def _coa_of(db, number):
+    with closing(sqlite3.connect(db.db_name)) as conn:
+        return conn.execute('SELECT ID FROM ChartOfAccounts WHERE AccountNumber = ?', (number,)).fetchone()[0]
+
+
+def test_a_rate_per_position_with_19_and_7_percent_has_the_discount_over_the_whole_gross(tmp_db):
+    """19 % × 100,00 und 7 % × 50,00: brutto 172,50, Skonto 2 % = 3,45 € – die Rechnung lässt es zu (der Kopfsatz ist nur ein Platzhalter)."""
+    account, _buyer, invoice_id = mixed_discount_world(tmp_db)
+    row = open_rows(tmp_db)['R26001']
+    assert (row['open_minor'], row['skonto_open_minor'], row['skonto_limit_minor']) == (1725000, 1725000 - 34500, 34500)
+    payment = add_payment(tmp_db, account, 169.05, '2026-03-10', 'Käufer AG', 'Danke')
+    ((pair, found),) = tmp_db.suggest_invoices_for_booking(payment)
+    assert (pair.invoice_id, pair.skonto, pair.reasons) == (invoice_id, True, ('Betrag nach Skonto stimmt', 'Kunde passt'))
+    ((pair, _movement, _invoice),) = tmp_db.suggest_invoice_payments().items
+    assert (pair.movement_id, pair.invoice_id, pair.skonto) == (payment, invoice_id, True)
+    assert tmp_db.skonto_limits() == {invoice_id: 34500} and tmp_db.skonto_offer(invoice_id) == (None, 34500, 14, Decimal('2.00'))
+
+
+def test_the_head_rate_of_a_rate_per_position_never_counts(tmp_db):
+    """Der Kopfsatz so einer Rechnung ist nur der Platzhalter (der höchste Satz): Auch 16 % im Kopf macht das Skonto nicht unmöglich – es zählen die Gruppen."""
+    _account, _buyer, invoice_id = mixed_discount_world(tmp_db, tax_rate=0.16)
+    assert open_rows(tmp_db)['R26001']['skonto_limit_minor'] == 34500 and tmp_db.skonto_offer(invoice_id).error is None
+
+
+def test_a_rate_per_position_with_a_tax_free_group_from_the_master_data_has_the_discount(tmp_db):
+    """19 %, 7 % und steuerfrei (Momentaufnahme mit einem Erlöskonto, hier 4400): brutto 272,50, Skonto 5,45 €."""
+    _account, _buyer, invoice_id = mixed_discount_world(
+        tmp_db, parts=(('19', '100.00'), ('7', '50.00'), ('0', '100.00')),
+        snapshots={3: {'tax_category': 'E', 'tax_rate_bp': 0, 'tax_exempt_reason': 'erfundener Grund', 'revenue_coa_id': _coa_of(tmp_db, 4400)}})
+    row = open_rows(tmp_db)['R26001']
+    assert (row['skonto_open_minor'], row['skonto_limit_minor']) == (2725000 - 54500, 54500)
+    assert tmp_db.skonto_offer(invoice_id).limit == 54500
+
+
+@pytest.mark.parametrize('parts, snapshots, shown', [
+    ((('19', '100.00'), ('5.5', '200.00')), {2: _snapshot('5.5')}, '5,5'),
+    ((('19', '100.00'), ('16', '100.00')), None, '16'),
+    ((('19', '100.00'), ('5', '100.00')), None, '5'),
+], ids=['5,5-Prozent', '16-Prozent', '5-Prozent'])
+def test_a_rate_per_position_with_a_group_without_a_discount_account_has_no_skonto_and_names_its_rate(tmp_db, parts, snapshots, shown):
+    account, _buyer, invoice_id = mixed_discount_world(tmp_db, parts, snapshots)
+    row = open_rows(tmp_db)['R26001']
+    assert (row['skonto_open_minor'], row['skonto_limit_minor']) == (None, None)
+    assert tmp_db.skonto_offer(invoice_id) == (SKONTO_GROUP_RATE.format(rate=shown), None, None, None) and tmp_db.skonto_limits() == {}
+    assert tmp_db.suggest_invoices_for_booking(add_payment(tmp_db, account, 100.00, '2026-03-10', 'Käufer AG', 'Danke')) == []
+
+
+def test_a_rate_per_position_with_positions_that_do_not_match_its_sums_has_no_skonto(tmp_db):
+    _account, _buyer, invoice_id = mixed_discount_world(tmp_db)
+    run_sql(tmp_db, 'UPDATE Invoices SET SumNet = 9990000 WHERE ID = ?', invoice_id)
+    assert open_rows(tmp_db)['R26001']['skonto_limit_minor'] is None
+    assert tmp_db.skonto_offer(invoice_id) == (MIXED_GROUPS_MISMATCH, None, None, None)
+
+
+def test_a_rate_per_position_whose_positions_cannot_be_read_has_no_skonto_and_no_error(tmp_db):
+    _account, _buyer, invoice_id = mixed_discount_world(tmp_db)
+    run_sql(tmp_db, "UPDATE InvoiceItems SET TaxRate = 'sieben' WHERE InvoiceId = ? AND Position = 2", invoice_id)
+    assert open_rows(tmp_db)['R26001']['skonto_limit_minor'] is None
+    assert tmp_db.skonto_offer(invoice_id).error == MIXED_GROUPS_MISMATCH
+
+
+@pytest.mark.parametrize('number', sorted(SKONTO_ACCOUNT_NUMBERS))
+def test_a_rate_per_position_with_a_discount_account_as_a_revenue_account_has_no_skonto(tmp_db, number):
+    """Die Erstattung und die Rücknahme beim Stornieren verlassen sich darauf, dass kein Erlöskonto ein Skonto-Konto ist (``SKONTO_REVENUE_DISCOUNT``): Dann gibt es das Skonto nicht."""
+    _account, _buyer, invoice_id = mixed_discount_world(tmp_db, snapshots={2: _snapshot('7', _coa_of(tmp_db, number))})
+    assert open_rows(tmp_db)['R26001']['skonto_limit_minor'] is None
+    assert tmp_db.skonto_offer(invoice_id) == (SKONTO_REVENUE_DISCOUNT, None, None, None)
+
+
+def test_the_groups_of_all_the_open_invoices_are_read_with_one_query(tmp_db):
+    """Je Übersicht EINE Abfrage über die Positionen der Rechnungen mit dem Kennzeichen – nicht je Rechnung eine (``MAX_INVOICES`` je Abfrage)."""
+    for number in range(30):
+        add_invoice(tmp_db, f'M{number:05d}', 172.50, customer_id=customer(tmp_db, f'Kunde {number}'), status='draft', **{**TERMS, 'sum_net': 150.0, 'tax_amount': 22.5, 'mixed_tax_rates': 1})
+    with closing(sqlite3.connect(tmp_db.db_name)) as conn:
+        ids = [row[0] for row in conn.execute('SELECT ID FROM Invoices')]
+        conn.executemany('INSERT INTO InvoiceItems (InvoiceId, Position, Description, Quantity, PricePerUnit, TotalNet, TaxRate) VALUES (?, ?, ?, 1, 1, ?, ?)',
+                         [(invoice_id, position, 'x', net, rate) for invoice_id in ids for position, net, rate in ((1, 1000000, 19.0), (2, 500000, 7.0))])
+        conn.execute("UPDATE Invoices SET Status = 'sent'")
+        conn.commit()
+    statements = []
+    conn = tmp_db._get_connection()
+    try:
+        conn.set_trace_callback(statements.append)
+        rows = tmp_db._open_invoices(conn)
+    finally:
+        conn.close()
+    assert len(rows) == 30 and {row['skonto_limit_minor'] for row in rows} == {34500}
+    assert len([statement for statement in statements if 'InvoiceItems' in statement and 'TotalNet' in statement]) == 1
+
+
 # ── skonto_offer und skonto_limits ───────────────────────────────────────────
 
 def test_the_offer_of_an_invoice_names_the_limit_the_days_and_the_percent(tmp_db):
@@ -1664,19 +1800,21 @@ def test_the_offer_of_an_invoice_names_the_limit_the_days_and_the_percent(tmp_db
 
 
 @pytest.mark.parametrize('extra, sentence', [
-    ({'skonto_days': None, 'skonto_percent': None}, SKONTO_NO_TERMS), ({'mixed_tax_rates': 1}, SKONTO_MIXED), ({'tax_rate': 0.16}, SKONTO_RATE),
-], ids=['ohne-Bedingungen', 'Satz-je-Position', '16-Prozent'])
+    ({'skonto_days': None, 'skonto_percent': None}, SKONTO_NO_TERMS), ({'mixed_tax_rates': 1}, MIXED_GROUPS_MISMATCH), ({'tax_rate': 0.16}, SKONTO_RATE),
+], ids=['ohne-Bedingungen', 'Satz-je-Position-ohne-Positionen', '16-Prozent'])
 def test_the_offer_of_an_invoice_that_allows_no_discount_names_the_fixed_sentence(tmp_db, extra, sentence):
     _account, _buyer, invoice_id = discount_world(tmp_db, **extra)
     offer = tmp_db.skonto_offer(invoice_id)
     assert (offer.error, offer.limit, offer.days, offer.percent) == (sentence, None, None, None)
 
 
-def test_the_offer_of_an_invoice_with_a_position_from_the_master_data_is_the_master_data_sentence(tmp_db):
+def test_the_offer_of_an_invoice_with_a_position_from_the_master_data_is_there_unless_its_revenue_account_is_a_discount_account(tmp_db):
     _account, _buyer, invoice_id = discount_world(tmp_db)
     tmp_db.insert_invoice_item({'invoice_id': invoice_id, 'position': 1, 'description': 'Anstrich', 'quantity': 1, 'unit': 'Stk.', 'price_per_unit': 100.0,
                                 'total_net': 100.0, 'tax_category': 'S', 'tax_rate': 0.19, 'tax_rate_bp': 1900})
-    assert tmp_db.skonto_offer(invoice_id).error == SKONTO_TAX_ENTRY
+    assert tmp_db.skonto_offer(invoice_id).error is None and tmp_db.skonto_offer(invoice_id).limit == LIMIT
+    run_sql(tmp_db, 'UPDATE InvoiceItems SET RevenueCoaId = (SELECT ID FROM ChartOfAccounts WHERE AccountNumber = 4731) WHERE InvoiceId = ?', invoice_id)
+    assert tmp_db.skonto_offer(invoice_id) == (SKONTO_REVENUE_DISCOUNT, None, None, None)
 
 
 def test_the_offer_knows_no_deadline_and_no_status(tmp_db):
@@ -1728,16 +1866,17 @@ def _steps_of_the_open_invoices(db, count):
             'INSERT INTO InvoiceItems (InvoiceId, Position, Description, Quantity, PricePerUnit, TotalNet, TaxRate, TaxRateBp) VALUES (?, ?, ?, 1, 1, 1, 0.19, ?)',
             [(invoice_id, position, 'x', 1900 if position == 3 else None) for invoice_id in ids for position in (1, 2, 3)])
         conn.commit()
+        # die Kontonummern der Skonto-Konten stehen als Platzhalter nur in der Abfrage von heute (im ``EXISTS`` der letzten Spalte), nicht in der von vor 2.9.0
         params = [STORNO_KIND, *PAYABLE_STATUSES, count + 10]
         steps = []
-        for sql in (_OPEN_INVOICES, _OPEN_INVOICES_BEFORE):
+        for sql, sql_params in ((_OPEN_INVOICES, [*sorted(SKONTO_ACCOUNT_NUMBERS), *params]), (_OPEN_INVOICES_BEFORE, params)):
             ticks = []
 
             def tick():
                 ticks.append(1)
                 return 0                                                   # 0 = weiterrechnen
             conn.set_progress_handler(tick, 100)                           # alle 100 Schritte einmal
-            rows = conn.execute(sql + ' ORDER BY i.InvoiceDate DESC, i.ID DESC LIMIT ?', params).fetchall()
+            rows = conn.execute(sql + ' ORDER BY i.InvoiceDate DESC, i.ID DESC LIMIT ?', sql_params).fetchall()
             conn.set_progress_handler(None, 0)
             assert len(rows) == count
             steps.append(len(ticks) * 100)
