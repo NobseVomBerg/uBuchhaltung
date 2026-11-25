@@ -23,6 +23,7 @@ from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
 SCALE = 4
 FACTOR = 10 ** SCALE          # 10000
 _Q = Decimal(1).scaleb(-SCALE)  # Decimal('0.0001')
+_CENT = Decimal('0.01')
 _ONE = Decimal(1)
 _HUNDRED = Decimal(100)
 
@@ -150,6 +151,15 @@ def to_minor(value) -> int:
 def from_minor(minor: int) -> Decimal:
     """Minor Units (int) -> Euro-Decimal mit SCALE Nachkommastellen (exakt)."""
     return (Decimal(int(minor)) / FACTOR).quantize(_Q)
+
+
+def round_to_cent(value) -> Decimal:
+    """Euro-Wert (Decimal/int/float/str) -> auf den Cent gerundeter Decimal, EINMAL und kaufmaennisch (HALF_UP: ab der Haelfte weg von null).
+
+    Kein Umweg ueber Minor Units: ``to_minor`` rundet zuerst auf vier Stellen – 1,00495 wuerde so zu 1,0050 und dann zu 1,01, richtig ist 1,00.
+    float wird ueber str gewandelt (1.005 ist 1,005, nicht 1,00499…); NaN, Infinity und bool sind kein Geldwert (wie bei ``to_minor``).
+    """
+    return _to_decimal(value).quantize(_CENT, rounding=ROUND_HALF_UP)
 
 
 # ── Rechnen in Minor Units ────────────────────────────────────────────────────

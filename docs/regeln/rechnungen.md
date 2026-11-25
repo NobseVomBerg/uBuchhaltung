@@ -206,6 +206,37 @@
   `tests/test_tax_entries_save.py`, `tests/test_tax_entries_mask.py`, `tests/test_tax_entries_storno.py`, `tests/test_tax_entries_bookings.py`, `tests/test_tax_entries_reports.py`, `tests/test_tax_entries_documents.py`, `tests/test_tax_entries_demo_samples.py`,
   `tests/test_tax_accounts_reports.py`, `tests/test_standard_accounts_purchase.py`.
 
+## Abweichung vom Artikel (Maske von Rechnung und Angebot)
+
+- **Reine Anzeige:** Eine Position, die vom gespeicherten Artikel abweicht, fällt in der Maske auf; Speichern, Payload, Sperre und Summen bleiben, wie sie waren (`tests/test_mixed_tax_mask.py`,
+  `tests/test_tax_entries_mask.py`). EIN Skriptblock für beide Masken (`ARTICLE_MARK_JS` in `server/pages_invoice.py`, im Block von `MIXED_TAX_JS`, nur `var`/`function`, Präfix `art`, Texte
+  `ARTICLE_TEXTS` über `script_json`). Das Zeilen-Markup des Servers bleibt unverändert: Klassen, Tooltips und das „+“ setzt allein das Skript. `artMark()` läuft nach dem Laden, nach dem Hinzufügen und Entfernen
+  einer Zeile und bei jedem `input`/`change` der Tabelle (Zeilen, „Steuersatz je Position“, „Umsatzsteuer ausweisen“, Feld „Mehrwertsteuer“ im Kopf).
+- **Welcher Artikel (`artFind`, rein):** Die `data-article-id` der Zeile (aus der Artikelsuche) gilt nur, **solange die Beschreibung noch mit dem Namen DIESES Artikels beginnt** (`artStarts`: normalisiert – außen
+  ohne Leerraum, Leerraum zusammengefasst, `toLowerCase()` –, danach das Ende oder ein Zeichen, das weder Buchstabe noch Ziffer ist); wer die Beschreibung auf einen anderen Artikel umschreibt, vergleicht mit diesem.
+  Sonst gilt der Artikel mit dem LÄNGSTEN Namen, mit dem die Beschreibung so beginnt („Beratung“ trifft nicht „Beratungspaket“). Tragen mehrere Artikel denselben normalisierten Namen, gewinnt die kleinste ID; zwei
+  verschiedene Namen derselben Länge können nie beide der Anfang desselben Textes sein (`tests/test_article_marks.py` prüft es gegen die einfache Suche). Namen unter 3 Zeichen nehmen nur über die ID teil.
+  Die Namen stehen einmal vorbereitet (`artNames`: Verzeichnis nach normalisiertem Namen, neu aufgebaut, wenn ein Artikel über „+“ dazukommt); gefragt wird nur, ob ein Anfang der Beschreibung bis zu einer
+  Wortgrenze ein Name ist – der Aufwand hängt an der Länge des Texts, nicht an der Zahl der Artikel (5000 Artikel × 200 Zeilen: wenige Millisekunden je Tastendruck).
+- **Was markiert wird:** Menge und Beschreibung nie. Ein Feld, das abweicht, bekommt `itemDeviates` und den Tooltip „Artikel: …“ (er verschwindet mit der Abweichung; das Auswahlfeld des Satzes behält den Tooltip von
+  `mixTotals`): Einheit (außen ohne Leerraum, Kleinbuchstaben), Netto-Einzelpreis – abweichend genau dann, wenn |Zeile − Artikel| ≥ 0,005, **in Dezimalzahlen gerechnet** (`artPriceDiffers`: der Text wird
+  Ziffer für Ziffer gelesen, nie als Gleitkomma; ein leeres oder ungültiges Feld gilt als 0, wie die Summenrechnung der Maske es liest) –, Steuersatz: mit „Steuersatz je Position“ die Auswahl der Zeile gegen `mixRate`
+  des Artikels, sonst der Satz des Belegs (Zelle der Positionsnummer). Ohne Steuerausweis (§ 19) und bei einem Artikelsatz, der sich nicht lesen lässt, keine Steuer-Markierung. Eine Zeile mit Beschreibung ohne
+  Artikel trägt `itemNoArticle` (Rand links) und `itemCanSave`; eine Zeile ohne Beschreibung bleibt unmarkiert. **In einer gesperrten Rechnung (`#invoice_locked`) läuft nichts, es gibt kein „+“.** `buch.css`: Das
+  Blatt ist in beiden Farbschemata weiß (`.invoice-container`), die Regeln brauchen `!important` gegen `.invoice-container *`; der Platz des „+“ bleibt reserviert (`visibility`), sonst spränge die Spalte beim Tippen.
+- **„+“ (`.itemAddArticle`) gibt es nur an einer Zeile OHNE Artikel** (`itemCanSave`; `artAdd` tut an jeder anderen nichts, auch wenn das Stylesheet fehlt): An einer Zeile, die von ihrem Artikel abweicht, übernähme es
+  den Tippfehler als neuen Artikel und schaltete die Warnung ab. Nach Rückfrage `POST /articles/quick-add` (`_JSON_PATHS` + `_POST_ONLY_JSON_PATHS`: GET 405, Herkunft und CSRF-Token wie jede JSON-Route;
+  JSON `{name, unit, price, taxRate}`, `handlers.handle_article_quick_add`): `name` ist die Beschreibung der Zeile (Leerraum zusammengefasst, höchstens 200 Zeichen), `unit` ihre Einheit, `price` der auf zwei Stellen
+  gerundete Preis, den die Rückfrage zeigt (`artPrice`: EINE Funktion für Anzeige und Wert, exakt und ab der Hälfte aufgerundet), `taxRate` der Satz der Zeile bzw. des Belegs (ohne Steuerausweis 0). Der Server
+  verlangt: Name 1–200 und Einheit 1–20 Zeichen ohne Steuerzeichen (auch Zeilenumbruch und Tabulator), Zeilen- und Absatztrenner, Ersatz-, private und nicht zugewiesene Zeichen und ohne die Richtungszeichen, die die
+  Anzeige umdrehen (U+202A–U+202E, U+2066–U+2069, U+200E, U+200F, U+061C), mit mindestens einem sichtbaren Zeichen – weiche Trennstriche, ZWJ im Emoji und geschützte Leerzeichen sind erlaubt –; Preis 0 bis unter
+  10⁹, **EINMAL und exakt auf den Cent gerundet** (`money.round_to_cent`: 1,00495 ergibt 1,00, nie über vier Stellen und dann noch einmal); Satz 0 oder 1 bis 100 – ein Satz zwischen 0 und 1 wird abgelehnt, die App
+  läse ihn überall als Bruch (`tax_groups.rate_pct`). Jede andere Form 400 mit festem Satz, nichts angelegt. **Es wird nur angelegt, nie ein vorhandener Artikel geändert:** Gibt es schon einen mit derselben
+  Bezeichnung (aktiv oder nicht, ohne Rücksicht auf Schreibweise und Leerraum: `db.articles.article_key`, dieselbe Regel wie `artNorm`), 409 `ARTICLE_EXISTS`. Prüfung und Anlegen laufen in EINER Transaktion
+  (`insert_article_unique`, `BEGIN IMMEDIATE`). Antwort: der Artikel in der Form eines Eintrags von `articlesData` (`pages_invoice.article_json`: EINE Funktion für beide Masken und die Antwort). Im Demo-Modus erlaubt
+  (keine Datei).
+- Tests: `tests/test_article_marks.py`, `tests/test_article_quick_add.py`.
+
 ## Pflichtangaben und Hinweise im Dokument
 
 - **§ 19-Hinweis:** Beleg ohne Steuerausweis (`Invoices.TaxRate` = Platzhalter −1) trägt ihn automatisch (Rechnung, Stornorechnung,
