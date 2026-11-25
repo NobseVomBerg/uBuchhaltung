@@ -7,7 +7,6 @@ POST request handlers for form submissions
 import os
 import json
 import math
-import dataclasses
 import hashlib
 import sqlite3
 import datetime
@@ -47,14 +46,15 @@ from db.invoice_lock import (DocumentNotFound, EDITABLE_STATUSES, InvoiceLocked,
                              buyer_snapshot, status_group)
 from db.invoice_storno import NO_COUNTER_BOOKING_HINT
 from db.invoice_versions import CorrectionInvalid
-from db.invoice_payments import PAYMENT_MARK, RECEIVABLE_STATUSES, SKONTO_REFUND, BankChangeRefused, PaymentRemovalRefused, has_mixed_rates
+from db.invoice_payments import (PAYMENT_MARK, RECEIVABLE_STATUSES, SKONTO_ACCOUNT_NUMBERS, SKONTO_REFUND, BankChangeRefused, PaymentRemovalRefused,
+                                 has_mixed_rates)
 from db.invoice_repair import REBUILD_WARNING
 from db.numbering import NumberRangeError, number_format_error
 from db.matching import FORM_LIQUID_FIRST, FORM_TRANSFER, is_bank_effective, is_mirror_row, purpose_in_counter, read_entry_form
 from db.accounts import DEFAULT_CASH_ACCOUNT
-from db.tax_rates import entry_snapshot, legacy_expressible
+from db.tax_rates import FIXED_TAX_BPS, entry_snapshot, legacy_expressible
 from money import to_minor, from_minor, multiply, tax_from_gross, round_minor, fmt_eur
-from tax_groups import MIXED_TAX_RATES, bp_pct, group_label, rate_groups
+from tax_groups import MIXED_TAX_RATES, STANDARD, bp_pct, group_label, rate_groups
 from decimal import Decimal
 
 try:
@@ -460,7 +460,7 @@ def handle_confirm_import(db: Database, post_data):
         traceback.print_exc()                       # der volle Fehler nur ins Server-Log, nie in die Antwort
         return 500, json.dumps({'ok': False, 'error': 'Der Import ist fehlgeschlagen. Einzelheiten stehen im Server-Log.'})
 
-SUGGEST_RECIPIENT_MAX = 300
+SUGGEST_RECIPIENT_MAX = 2000
 SUGGEST_RECIPIENT_TOO_LONG = f'Der Empfänger ist zu lang (höchstens {SUGGEST_RECIPIENT_MAX} Zeichen).'
 
 
@@ -3235,6 +3235,13 @@ def handle_receipt_suggestions(db, document_id):
         return 500, json.dumps({'success': False, 'error': receipt_links.SUGGEST_FAILED})
 
 
+def _proposal_rate_bps(db):
+    """Die Sätze der Buchhaltung für den Buchungsvorschlag aus einem Beleg, in Hundertstel Prozent: die festen Sätze mit Steuerkonten (``FIXED_TAX_BPS``: 19, 16, 7 und 5 %)
+    und die gültigen Einträge der Stammdaten „Steuersätze“ der Art ``standard`` (``fetch_tax_rates``) – auch ein abgeschalteter: Wie in den Auswertungen nimmt das Abschalten
+    einem Satz nicht seine Geltung. Eine Zeile, die die Regeln eines Eintrags nicht erfüllt (``valid``), zählt nicht. Rein lesend."""
+    return FIXED_TAX_BPS | frozenset(entry.bp for entry in db.fetch_tax_rates() if entry.valid and entry.kind == STANDARD and type(entry.bp) is int)
+
+
 def handle_receipt_proposal(db, booking_id, document_id):
     """Der Buchungsvorschlag aus einem gelesenen Beleg (``GET /transactions/receipt-proposal?id=<Bankbewegung>&document=<Beleg>``), rein lesend – die Antwort füllt nur eine NEUE Zeile des
     Buchungssatz-Editors im Browser; gespeichert wird allein mit der Maske. ``booking_id`` und ``document_id``: die IDs aus der Adresse (``_id_param``: fehlt eine oder ist sie
@@ -3242,9 +3249,14 @@ def handle_receipt_proposal(db, booking_id, document_id):
 
     Keine Bankbewegung: 404 ``PROPOSAL_NO_BANK`` (zuerst, damit jede ungültige ``id`` dieselbe Antwort sieht); kein Beleg: 404 ``receipt_files.NOT_FOUND``; der Beleg hängt nicht als ``receipt``
     an dieser Bewegung: 404 ``PROPOSAL_NOT_LINKED``. Sonst 200 ``{"success": true, "ok": …, "message": …, "reasons": […], "hints": […], "row": …}``
-    (``receipt_links.proposal_payload``): ``ok: false`` mit dem Satz der Ablehnung und ohne Zeile, wenn es keinen Vorschlag gibt (``receipt_proposal.proposal_refusal``); die Historie wird dann nicht
-    gelesen. Ein Konto, das im Kontenrahmen ausgeblendet ist, wird verworfen (``HINT_ACCOUNT_HIDDEN``): Der Editor böte es nicht an. Nie ein Absender, eine Rechnungsnummer, ein Dateiname,
-    ein Pfad oder ein Text des Belegs in der Antwort: ein unerwarteter Fehler ist 500 mit festem Satz, der Text steht nur im Server-Log.
+    (``receipt_links.proposal_payload``): ``ok: false`` mit dem Satz der Ablehnung und ohne Zeile, wenn es keinen Vorschlag gibt (``receipt_proposal.proposal_refusal``); die Historie, die Sätze
+    der Buchhaltung und die eigene Identität werden dann nicht gelesen.
+
+    Die Historie des Absenders (USt-IdNr.) entfällt, wenn die Angabe eine USt-IdNr. der eigenen Firma ist (``Database.own_identity``, bereinigt verglichen): Sie steht auf jeder eigenen
+    Ausgangsrechnung und zöge die Konten fremder Kunden heran. Die Steuer wird nur mit einem Satz der Buchhaltung übernommen (``_proposal_rate_bps``). Das Konto prüft
+    ``receipt_proposal.check_account``: Es muss ein Aufwands- oder Erlöskonto sein (4000–7999 ohne die Wartekonten ``get_waiting_account_numbers``, die Skonto-Konten
+    ``SKONTO_ACCOUNT_NUMBERS`` und die Zahlungskonten ``get_payment_coa_ids``) und im Editor wählbar (nicht ausgeblendet) – sonst bleibt es leer, mit einem festen Hinweis. Nie ein Absender, eine
+    Rechnungsnummer, ein Dateiname, ein Pfad oder ein Text des Belegs in der Antwort: ein unerwarteter Fehler ist 500 mit festem Satz, der Text steht nur im Server-Log.
 
     Returns tuple: (status_code, json_body)
     """
@@ -3258,21 +3270,19 @@ def handle_receipt_proposal(db, booking_id, document_id):
             return 404, json.dumps({'success': False, 'error': receipt_links.PROPOSAL_NOT_LINKED})
         amount, currency, recipient = inputs['bank']
         reading, has_children, version = inputs['reading'], inputs['has_children'], receipt_reading.READER_VERSION
-        recipient_groups, sender_groups = [], []
+        recipient_groups, sender_groups, allowed_rates = [], [], frozenset()
         if receipt_proposal.proposal_refusal(reading, version, amount, currency, has_children) is None:
             from export.einvoice_model import tax_id_kind
             recipient_groups = db.recipient_history_groups(recipient, booking_id, receipt_proposal.HISTORY_DEPTH)
             kind, vat_id = tax_id_kind(reading.get('SenderVatId'))
-            if kind == 'vat':
+            if kind == 'vat' and vat_id not in db.own_identity()[1]:
                 sender_groups = db.vat_history_groups(vat_id, document_id, booking_id, receipt_proposal.HISTORY_DEPTH)
-        proposal = receipt_proposal.build_proposal(reading, version, amount, currency, has_children, recipient_groups, sender_groups)
+            allowed_rates = _proposal_rate_bps(db)
+        proposal = receipt_proposal.build_proposal(reading, version, amount, currency, has_children, recipient_groups, sender_groups, allowed_rates)
         if proposal.coa_id is not None:
-            shown = {account[0] for account in db.fetch_chart_of_accounts() if (account[7] if len(account) > 7 else 1)}
-            if proposal.coa_id not in shown:
-                account_reasons = (receipt_proposal.REASON_ACCOUNT_RECIPIENT, receipt_proposal.REASON_ACCOUNT_SENDER)
-                proposal = dataclasses.replace(
-                    proposal, coa_id=None, reasons=tuple(reason for reason in proposal.reasons if reason not in account_reasons),
-                    hints=proposal.hints + (receipt_proposal.HINT_ACCOUNT_HIDDEN,))
+            accounts = {account[0]: (account[2], bool(account[7] if len(account) > 7 else 1)) for account in db.fetch_chart_of_accounts()}
+            not_result = frozenset(db.get_waiting_account_numbers()) | SKONTO_ACCOUNT_NUMBERS
+            proposal = receipt_proposal.check_account(proposal, accounts, db.get_payment_coa_ids(), not_result)
         return 200, json.dumps({'success': True, **receipt_links.proposal_payload(proposal)})
     except Exception:
         import traceback

@@ -34,8 +34,9 @@ import userctx
 from db import Database, document_readings, receipt_proposal
 from db.invoice_payments import PAYMENT_MARK
 from db.receipt_proposal import (
-    DONE_TEXT, HINT_ACCOUNT_CONFLICT, HINT_ACCOUNT_HIDDEN, HINT_NO_ACCOUNT, HINT_TAX, REASON_ACCOUNT_RECIPIENT, REASON_ACCOUNT_SENDER, REASON_AMOUNT,
-    REASON_TAX, REASON_TAX_NONE, REFUSE_AMOUNT, REFUSE_CURRENCY, REFUSE_DIRECTION, REFUSE_HAS_ROWS, REFUSE_NO_READING, REFUSE_OUTDATED)
+    DONE_TEXT, HINT_ACCOUNT_CONFLICT, HINT_ACCOUNT_HIDDEN, HINT_ACCOUNT_KIND, HINT_NO_ACCOUNT, HINT_TAX, HINT_TAX_RATE, REASON_ACCOUNT_RECIPIENT,
+    REASON_ACCOUNT_SENDER, REASON_AMOUNT, REASON_TAX, REASON_TAX_NONE, REFUSE_AMOUNT, REFUSE_CURRENCY, REFUSE_DIRECTION, REFUSE_HAS_ROWS,
+    REFUSE_NO_READING, REFUSE_OUTDATED)
 from server import app as server_app
 from server import handlers, pages_transactions, receipt_files, receipt_links
 from server.pages_transactions import TX_LINK_JS, PageTransactions
@@ -522,6 +523,7 @@ def test_a_credit_note_with_an_incoming_payment_is_a_positive_row_with_a_positiv
 
 
 def test_the_reduced_rate_with_a_decimal_place_is_shown_with_a_point_in_the_row_and_a_comma_in_the_reason(db, acct):
+    db.insert_tax_rate(label='5,5 % (erfunden)', bp=550, revenue_coa_id=coa(db, 4400))                 # ein Satz der Stammdaten: nur so wird er übernommen
     receipt = add_receipt(db)
     save_reading(db, receipt, TaxRate=0.055, NetMinor=2000000, TaxMinor=110000, GrossMinor=2110000)
     bank = add_bank(db, acct, amount='-211.00')
@@ -653,6 +655,192 @@ def test_the_account_of_an_account_that_is_still_shown_stays(db, acct):
     assert answer(db, bank, receipt)['row']['coa_id'] == account
 
 
+# ── Das Konto muss ein Aufwands- oder Erlöskonto sein ────────────────────────
+def with_history_on(db, acct, number, **over):
+    """Eine Bankbewegung über −119,00 EUR mit verknüpftem Beleg (Rechnung, 19 %) und zwei früheren Bewegungen desselben Empfängers auf dem Konto ``number``."""
+    past(db, acct, '2026-01-10', number)
+    past(db, acct, '2026-02-10', number)
+    receipt = add_receipt(db)
+    save_reading(db, receipt, **over)
+    bank = add_bank(db, acct)
+    db.link_receipt_to_booking(bank, receipt)
+    return bank, receipt
+
+
+@pytest.mark.parametrize('number', [
+    pytest.param(2100, id='Privatentnahmen'), pytest.param(1460, id='Verrechnungskonto'), pytest.param(1406, id='Vorsteuer-19'),
+    pytest.param(1401, id='Vorsteuer-7'), pytest.param(520, id='Anlagekonto-PKW'), pytest.param(670, id='Anlagekonto-GWG'),
+    pytest.param(4405, id='Wartekonto-19'), pytest.param(4345, id='Wartekonto-7'), pytest.param(4340, id='Wartekonto-0'),
+    pytest.param(4736, id='Skonto-19'), pytest.param(4731, id='Skonto-7'), pytest.param(4730, id='Skonto-0')])
+def test_an_account_that_is_no_expense_or_revenue_account_is_never_proposed_the_hint_says_so(db, acct, number):
+    """Ein Privat-, Verrechnungs-, Steuer-, Anlage-, Warte- oder Skonto-Konto aus der Historie gäbe mit der Steuer des Belegs eine Buchung, die die EÜR anders liest
+    (Vorsteuer auf 1406 verschwindet, die Steuer auf einem Privatkonto zählt doppelt): Das Konto bleibt leer, Betrag und Steuer bleiben."""
+    bank, receipt = with_history_on(db, acct, number)
+    data = answer(db, bank, receipt)
+    assert data['ok'] is True and data['row'] == {'amount': '-119.00', 'coa_id': '', 'tax_rate': '19', 'tax_amount': '-19.00'}
+    assert data['hints'] == [HINT_ACCOUNT_KIND]
+    assert data['reasons'] == [REASON_AMOUNT, REASON_TAX.format(rate='19')]                  # die Begründung des Kontos fällt mit dem Konto weg
+
+
+@pytest.mark.parametrize('number', [6815, 6310, 6805, 4400, 4300, 4185])
+def test_an_expense_or_revenue_account_is_proposed(db, acct, number):
+    bank, receipt = with_history_on(db, acct, number)
+    data = answer(db, bank, receipt)
+    assert data['row']['coa_id'] == coa(db, number) and data['hints'] == [] and REASON_ACCOUNT_RECIPIENT in data['reasons']
+
+
+def test_the_kind_of_the_account_is_checked_for_the_sender_source_too(db, acct):
+    for number, date in ((1, '2026-01-10'), (2, '2026-02-10')):
+        past(db, acct, date, 1460, recipient=f'Anderer Zahler {number}', receipt=a_receipt(db, f'B-{number}'))
+    receipt = a_receipt(db, 'B-3')
+    bank = add_bank(db, acct, recipient='Ganz Neuer Zahler')
+    db.link_receipt_to_booking(bank, receipt)
+    data = answer(db, bank, receipt)
+    assert data['row']['coa_id'] == '' and data['hints'] == [HINT_ACCOUNT_KIND] and REASON_ACCOUNT_SENDER not in data['reasons']
+
+
+def test_the_kind_is_checked_before_the_hidden_state_and_there_is_one_hint_only(db, acct):
+    bank, receipt = with_history_on(db, acct, 2100)
+    execute(db, 'UPDATE ChartOfAccounts SET ShowInMenu = 0 WHERE ID = ?', (coa(db, 2100),))
+    assert answer(db, bank, receipt)['hints'] == [HINT_ACCOUNT_KIND]
+
+
+def test_the_hint_of_the_kind_stands_behind_the_hint_of_the_tax(db, acct):
+    bank, receipt = with_history_on(db, acct, 2100, TaxRate=None)
+    assert answer(db, bank, receipt)['hints'] == [HINT_TAX, HINT_ACCOUNT_KIND]
+
+
+# ── Die eigene USt-IdNr. ist keine Quelle ────────────────────────────────────
+def own_company(db, vat=VAT):
+    db.insert_contact(contact_type='own', entity_type='company', display_name='Probe Eigen', company_name='Probe Eigen GmbH', tax_id=vat)
+
+
+def own_invoices(db, acct):
+    """Zwei Ausgangsrechnungen der eigenen Firma (die eigene USt-IdNr. als Absender) an verschiedene Kunden, bezahlt und auf 4300 gebucht, und ein weiterer Beleg mit
+    derselben Angabe an einer Eingangszahlung eines dritten Kunden. Liefert ``(Bankbewegung, Beleg)`` des dritten."""
+    for number, (date, customer) in enumerate((('2026-01-10', 'Kunde Eins'), ('2026-02-10', 'Kunde Zwei')), start=1):
+        past(db, acct, date, 4300, recipient=customer, amount='119.00', receipt=a_receipt(db, f'A-{number}', Kind='invoice'))
+    receipt = a_receipt(db, 'G-1', Kind='credit_note')
+    bank = add_bank(db, acct, '2026-03-04', '119.00', 'Kunde Drei')
+    db.link_receipt_to_booking(bank, receipt)
+    return bank, receipt
+
+
+def test_without_an_own_company_the_vat_id_of_the_sender_pulls_the_history_of_the_documents(db, acct):
+    """Die Kontrolle zu den folgenden Tests: Ohne eigene Firma gilt die Angabe wie jede."""
+    bank, receipt = own_invoices(db, acct)
+    data = answer(db, bank, receipt)
+    assert data['row']['coa_id'] == coa(db, 4300) and REASON_ACCOUNT_SENDER in data['reasons']
+
+
+@pytest.mark.parametrize('own_vat', ['DE123456789', 'USt-IdNr. DE-123 456 789', ' de 123.456.789 '])
+def test_the_vat_id_of_the_own_company_is_no_source_in_whatever_spelling(db, acct, monkeypatch, own_vat):
+    """Die eigene USt-IdNr. steht auf jeder eigenen Ausgangsrechnung: Als Quelle zöge sie die Konten fremder Kunden heran. Verglichen wird bereinigt."""
+    own_company(db, own_vat)
+    bank, receipt = own_invoices(db, acct)
+
+    def boom(*args, **kwargs):
+        raise AssertionError('die Historie zur eigenen USt-IdNr. wird nicht gelesen')
+
+    monkeypatch.setattr(Database, 'vat_history_groups', boom)
+    data = answer(db, bank, receipt)
+    assert data['ok'] is True and data['row']['coa_id'] == '' and data['hints'] == [HINT_NO_ACCOUNT]
+    assert REASON_ACCOUNT_SENDER not in data['reasons'] and data['row']['tax_rate'] == '19'
+
+
+def test_the_reading_may_spell_the_own_vat_id_differently(db, acct):
+    own_company(db, 'DE123456789')
+    for number, (date, customer) in enumerate((('2026-01-10', 'Kunde Eins'), ('2026-02-10', 'Kunde Zwei')), start=1):
+        past(db, acct, date, 4300, recipient=customer, amount='119.00', receipt=a_receipt(db, f'A-{number}', vat='DE 123 456 789'))
+    receipt = a_receipt(db, 'G-1', vat='de-123-456-789', Kind='credit_note')
+    bank = add_bank(db, acct, '2026-03-04', '119.00', 'Kunde Drei')
+    db.link_receipt_to_booking(bank, receipt)
+    assert answer(db, bank, receipt)['row']['coa_id'] == ''
+
+
+def test_another_vat_id_is_still_a_source_when_an_own_company_exists(db, acct):
+    own_company(db, OTHER_VAT)
+    bank, receipt = own_invoices(db, acct)
+    assert answer(db, bank, receipt)['row']['coa_id'] == coa(db, 4300)
+
+
+def test_the_history_of_the_recipient_still_serves_when_the_vat_id_is_the_own_one(db, acct):
+    own_company(db)
+    past(db, acct, '2026-01-10', 6815, recipient='Kunde Drei', amount='119.00')
+    past(db, acct, '2026-02-10', 6815, recipient='Kunde Drei', amount='119.00')
+    bank, receipt = own_invoices(db, acct)
+    data = answer(db, bank, receipt)
+    assert data['row']['coa_id'] == coa(db, 6815) and data['reasons'][-1] == REASON_ACCOUNT_RECIPIENT
+
+
+# ── Der Satz muss einer der Buchhaltung sein ─────────────────────────────────
+def with_rate(db, acct, rate, net, tax):
+    """Eine Bankbewegung über den Bruttobetrag mit verknüpftem Beleg, dessen Lesung genau diesen einen Satz trägt, und der Historie auf 6815."""
+    past(db, acct, '2026-01-10', 6815)
+    past(db, acct, '2026-02-10', 6815)
+    receipt = add_receipt(db)
+    save_reading(db, receipt, TaxRate=rate, NetMinor=net, TaxMinor=tax, GrossMinor=net + tax)
+    bank = add_bank(db, acct, amount=f'-{(net + tax) // 10000}.00')
+    db.link_receipt_to_booking(bank, receipt)
+    return bank, receipt
+
+
+@pytest.mark.parametrize('rate, net, tax, shown', [
+    pytest.param(0.2, 1000000, 200000, '20', id='20'), pytest.param(0.21, 1000000, 210000, '21', id='21'),
+    pytest.param(0.055, 2000000, 110000, '5,5', id='5,5-ohne-Eintrag'), pytest.param(0.1, 1000000, 100000, '10', id='10-ohne-Eintrag')])
+def test_a_rate_that_is_no_rate_of_the_books_is_not_taken_and_the_hint_names_it(db, acct, rate, net, tax, shown):
+    bank, receipt = with_rate(db, acct, rate, net, tax)
+    data = answer(db, bank, receipt)
+    assert data['ok'] is True and data['row'] == {'amount': f'-{(net + tax) // 10000}.00', 'coa_id': coa(db, 6815), 'tax_rate': '', 'tax_amount': ''}
+    assert data['hints'] == [HINT_TAX_RATE.format(rate=shown)] and HINT_TAX not in data['hints']
+    assert data['reasons'] == [REASON_AMOUNT, REASON_ACCOUNT_RECIPIENT]
+
+
+@pytest.mark.parametrize('rate, net, tax, shown', [
+    pytest.param(0.19, 1000000, 190000, '19', id='19'), pytest.param(0.07, 1000000, 70000, '7', id='7'),
+    pytest.param(0.16, 1000000, 160000, '16', id='16'), pytest.param(0.05, 1000000, 50000, '5', id='5')])
+def test_the_rates_with_fixed_tax_accounts_are_taken_without_an_entry_of_the_master_data(db, acct, rate, net, tax, shown):
+    bank, receipt = with_rate(db, acct, rate, net, tax)
+    data = answer(db, bank, receipt)
+    assert data['row']['tax_rate'] == shown and data['row']['tax_amount'] == f'-{tax // 10000}.00' and data['hints'] == []
+    assert REASON_TAX.format(rate=shown) in data['reasons']
+
+
+def test_a_rate_of_the_master_data_is_taken(db, acct):
+    db.insert_tax_rate(label='5,5 % (erfunden)', bp=550, revenue_coa_id=coa(db, 4400))
+    bank, receipt = with_rate(db, acct, 0.055, 2000000, 110000)
+    data = answer(db, bank, receipt)
+    assert data['row'] == {'amount': '-211.00', 'coa_id': coa(db, 6815), 'tax_rate': '5.5', 'tax_amount': '-11.00'} and data['hints'] == []
+    assert REASON_TAX.format(rate='5,5') in data['reasons']
+    other = with_rate(db, acct, 0.2, 1000000, 200000)
+    assert answer(db, *other)['hints'] == [HINT_TAX_RATE.format(rate='20')]                  # der Eintrag öffnet nur seinen eigenen Satz
+
+
+def test_an_entry_that_is_switched_off_still_counts_as_a_rate_of_the_books_but_an_invalid_one_does_not(db, acct):
+    """Wie in den Auswertungen: Das Abschalten nimmt einem Satz nicht seine Geltung; eine Zeile, die die Regeln eines Eintrags nicht erfüllt (per SQL geschrieben),
+    ist kein Satz."""
+    db.insert_tax_rate(label='5,5 % (erfunden)', bp=550, revenue_coa_id=coa(db, 4400), active=False)
+    bank, receipt = with_rate(db, acct, 0.055, 2000000, 110000)
+    assert answer(db, bank, receipt)['row']['tax_rate'] == '5.5'
+    execute(db, "INSERT INTO TaxRates (Label, RateBp, Kind, Active, SortOrder) VALUES ('kaputt', 2000, 'unbekannt', 1, 90)")
+    execute(db, "INSERT INTO TaxRates (Label, RateBp, Kind, Active, SortOrder) VALUES ('kaputt', 2100, 'standard', 1, 91)")     # ohne Erlöskonto: ungültig
+    assert [entry.valid for entry in db.fetch_tax_rates() if entry.bp in (2000, 2100)] == [False, False]
+    for rate, net, tax in ((0.2, 1000000, 200000), (0.21, 1000000, 210000)):
+        bank, receipt = with_rate(db, acct, rate, net, tax)
+        data = answer(db, bank, receipt)
+        assert data['row']['tax_rate'] == '' and data['hints'][0].startswith('Steuer nicht übernommen: Der gelesene Satz')
+
+
+def test_a_reading_without_tax_needs_no_entry(db, acct):
+    receipt = add_receipt(db)
+    save_reading(db, receipt, TaxRate=0.0, NetMinor=GROSS, TaxMinor=0)
+    bank = add_bank(db, acct)
+    db.link_receipt_to_booking(bank, receipt)
+    execute(db, 'DELETE FROM TaxRates')
+    data = answer(db, bank, receipt)
+    assert data['row']['tax_rate'] == '' and REASON_TAX_NONE in data['reasons'] and HINT_TAX_RATE.format(rate='0') not in data['hints']
+
+
 def test_a_bank_movement_with_a_row_is_not_proposed_to(db, acct):
     bank, receipt, _account = a_world(db, acct)
     add_child(db, bank, 4400)
@@ -714,6 +902,8 @@ def test_a_refusal_asks_nothing_of_the_history(db, acct, monkeypatch):
 
     monkeypatch.setattr(Database, 'recipient_history_groups', boom)
     monkeypatch.setattr(Database, 'vat_history_groups', boom)
+    monkeypatch.setattr(Database, 'own_identity', boom)
+    monkeypatch.setattr(Database, 'fetch_tax_rates', boom)
     assert answer(db, bank, receipt)['message'] == REFUSE_HAS_ROWS
 
 
@@ -1025,15 +1215,22 @@ def test_an_unusable_id_of_the_suggestion_answers_like_an_unknown_one(server_por
     assert get(server_port, f'{SUGGEST}{recipient.replace("&", "?", 1)}').text == unknown.text         # ohne ID ebenso
 
 
-def test_the_recipient_of_the_suggestion_is_limited_to_300_characters(server_port, world):
-    assert handlers.SUGGEST_RECIPIENT_MAX == 300
-    exact = 'A' * 300
+def test_the_recipient_of_the_suggestion_is_limited_to_2000_characters(server_port, world):
+    """Ein gespeicherter Empfänger kann lang sein (Zeilen eines PDF-Auszugs, verbunden): 300 Zeichen ließen die Maske dort mit einer Fehlermeldung zurück."""
+    assert handlers.SUGGEST_RECIPIENT_MAX == 2000
+    assert handlers.SUGGEST_RECIPIENT_TOO_LONG == 'Der Empfänger ist zu lang (höchstens 2000 Zeichen).'
+    for length in (300, 301, 1000):
+        resp = get(server_port, f'{SUGGEST}?id=0&recipient={"A" * length}')
+        assert resp.status == 200 and json.loads(resp.text)['ok'] is False and 'zu lang' not in resp.text            # eine Antwort der Suche, kein 400
+    exact = 'A' * 2000
     resp = get(server_port, f'{SUGGEST}?id=0&recipient={exact}')
-    assert resp.status == 200 and json.loads(resp.text)['ok'] is False and 'zu lang' not in resp.text            # eine Antwort der Suche, kein 400
-    long = get(server_port, f'{SUGGEST}?id=0&recipient={"A" * 301}')
+    assert resp.status == 200 and json.loads(resp.text)['ok'] is False and 'zu lang' not in resp.text
+    long = get(server_port, f'{SUGGEST}?id=0&recipient={"A" * 2001}')
     assert (long.status, json.loads(long.text)) == (400, {'ok': False, 'message': handlers.SUGGEST_RECIPIENT_TOO_LONG})
     assert get(server_port, f'{SUGGEST}?id=0&recipient=%20{exact}%20').status == 200                    # ohne Leerraum am Rand gezählt
-    status, body = handlers.handle_transaction_suggest(world.db, {'id': ['0'], 'recipient': ['B' * 301]})
+    wide = get(server_port, f'{SUGGEST}?id=0&recipient=' + quote('€' * 2000, safe=''))                    # 2000 Zeichen, aber 18 000 Bytes in der Adresse
+    assert wide.status == 200 and 'zu lang' not in wide.text
+    status, body = handlers.handle_transaction_suggest(world.db, {'id': ['0'], 'recipient': ['B' * 2001]})
     assert (status, json.loads(body)) == (400, {'ok': False, 'message': handlers.SUGGEST_RECIPIENT_TOO_LONG})
 
 
@@ -1194,14 +1391,14 @@ const sandbox = {
   },
   fetch: (url, options) => {
     fetches.push({url, method: (options && options.method) || 'GET'});
-    if (scenario.networkError) return Promise.reject(vm.runInContext('new TypeError("offline")', sandbox));
-    const next = responses.shift();
-    // Was auf der Seite geschieht, BEVOR die Antwort eintrifft: eine andere oder neue Buchung wird geöffnet (das data-Attribut ändert sich oder
-    // das Element fehlt), oder der Nutzer legt eine Zeile im Editor an
+    const next = scenario.networkError ? (scenario.errorEffects || {}) : responses.shift();
+    // Was auf der Seite geschieht, BEVOR die Antwort eintrifft (oder der Fehler): eine andere oder neue Buchung wird geöffnet (das data-Attribut ändert
+    // sich oder das Element fehlt), oder der Nutzer legt eine Zeile im Editor an
     Object.entries(next.dom || {}).forEach(([id, change]) => {
       if (change === null) gone.add(id); else Object.assign(element(id).dataset, change);
     });
     if (next.addRow) rows.splice(rows.length - 1, 0, makeRow('typed', ['splitRow']));
+    if (scenario.networkError) return Promise.reject(vm.runInContext('new TypeError("offline")', sandbox));
     return Promise.resolve({ok: next.ok, status: next.status, text: () => Promise.resolve(next.body)});
   },
   appMsg: (text, type) => msgs.push([text, type]),
@@ -1388,6 +1585,23 @@ def test_the_hints_of_the_answer_turn_the_note_into_a_warning_and_stay_in_it(tmp
 
 
 @NO_NODE
+def test_the_real_answer_for_an_account_of_the_wrong_kind_leaves_the_field_empty_and_turns_the_note_into_a_warning(tmp_path, db, acct):
+    """Der Handler verwirft ein Privatkonto aus der Historie: Die Maske trägt Betrag und Steuer ein, lässt das Konto leer und zeigt den festen Hinweis in Warnfarbe."""
+    past(db, acct, '2026-01-10', 2100)
+    past(db, acct, '2026-02-10', 2100)
+    receipt = add_receipt(db)
+    save_reading(db, receipt)
+    bank = add_bank(db, acct, text=BANK_TEXT)
+    db.link_receipt_to_booking(bank, receipt)
+    status, body = handlers.handle_receipt_proposal(db, bank, receipt)
+    assert status == 200 and json.loads(body)['hints'] == [HINT_ACCOUNT_KIND]
+    out = run_script(tmp_path, mask(db, bank), call=f'txPropose({receipt})', responses=[reply(body)])
+    new = out['rows'][0]['values']
+    assert (new['.splitAmount'], new['[name=split_coa]'], new['[name=split_tax_rate]'], new['[name=split_tax_amount]']) == ('-119.00', '', '19', '-19.00')
+    assert out['note']['className'] == 'warnColor' and out['note']['text'].endswith(' · ' + HINT_ACCOUNT_KIND) and out['msgs'] == []
+
+
+@NO_NODE
 def test_an_account_that_the_selection_does_not_offer_leaves_the_field_empty_and_adds_the_hint(tmp_path, bank_mask):
     out = run_script(tmp_path, bank_mask.html, call=f'txPropose({bank_mask.receipt})', responses=[reply(full_answer(account=999999))])
     new = out['rows'][0]
@@ -1420,6 +1634,20 @@ def test_a_network_error_and_an_error_of_the_server_are_shown_as_a_message_and_t
     assert out['msgs'] == [[receipt_links.PROPOSAL_FAILED, 'error']] and out['note']['text'] == ''
     out = run_script(tmp_path, bank_mask.html, call=f'txPropose({bank_mask.receipt})', responses=[reply('kein JSON', status=503)])
     assert out['msgs'] == [['Der Server hat die Anfrage abgelehnt (Status 503).', 'error']]
+
+
+@NO_NODE
+def test_an_error_that_arrives_for_another_mask_is_not_shown_and_leaves_the_note_alone(tmp_path, bank_mask):
+    """Die Maske wurde ausgetauscht, bevor der Fehler eintraf: Die Meldung gehörte zu einer Buchung, die nicht mehr offen ist – weder ``appMsg`` noch die Notiz."""
+    other = {'dom': {'txReceipts': {'booking': '99'}}}
+    out = run_script(tmp_path, bank_mask.html, call=f'txPropose({bank_mask.receipt})', networkError=True, errorEffects=other)
+    assert out['msgs'] == [] and out['note']['text'] == EXPECTED_TEXTS['busy'] and [row['name'] for row in out['rows']] == ['template']
+    failed = reply({'success': False, 'error': receipt_links.PROPOSAL_FAILED}, status=500, **other)
+    out = run_script(tmp_path, bank_mask.html, call=f'txPropose({bank_mask.receipt})', responses=[failed])
+    assert out['msgs'] == [] and out['note']['text'] == EXPECTED_TEXTS['busy']
+    rejected = reply('kein JSON', status=503, dom={'txReceipts': None})                              # die Maske ist ganz weg
+    out = run_script(tmp_path, bank_mask.html, call=f'txPropose({bank_mask.receipt})', responses=[rejected])
+    assert out['msgs'] == [] and out['note']['text'] == EXPECTED_TEXTS['busy']
 
 
 @NO_NODE

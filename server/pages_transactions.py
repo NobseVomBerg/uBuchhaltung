@@ -165,7 +165,8 @@ function txPropose(documentId) {
             suggestNote([data.message].concat(data.reasons || [], hints).join(' · '), hints.length ? 'warnColor' : 'successColor');
         })
         .catch(function (error) {
-            if (txStill(bookingId)) suggestNote('');
+            if (!txStill(bookingId)) return;
+            suggestNote('');
             linkFail(error);
         });
 }

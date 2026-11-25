@@ -12,15 +12,20 @@ nicht der Inhalt des Belegs). Der Betrag ist der der Bankbewegung; er muss auf d
 Jede Unsicherheit lässt das Feld leer und erzeugt einen festen Hinweissatz:
 
 * Die Steuer (``proposal_tax``) nur bei genau einem Satz und beiden Proben (Netto + Steuer = Brutto, Netto × Satz = Steuer auf den Cent); sie bekommt
-  das Vorzeichen des Betrags der Bank.
+  das Vorzeichen des Betrags der Bank. Der Satz muss einer der Buchhaltung sein (``build_proposal``: Die erlaubten Sätze kommen als Menge von außen – die
+  festen Sätze und die Einträge der Stammdaten –, 20 % oder 21 % gelten als falsch gelesen); Satz 0 heißt „ohne Steuer“.
 * Das Konto (``steady_account``, ``choose_account``) nur, wenn die jüngsten Gruppen der Historie – eine Bankbewegung mit ihren Sätzen oder ein
   eigenständiger Satz – sich einig sind; die Historie kommt aus zwei Quellen (derselbe Empfänger der Bankbewegung, derselbe Absender des Belegs
-  über die USt-IdNr.), die sich nicht widersprechen dürfen. Eine Suche über Schlagworte gibt es nicht."""
-from dataclasses import dataclass
+  über die USt-IdNr.), die sich nicht widersprechen dürfen. Eine Suche über Schlagworte gibt es nicht.
+* Das Konto muss ein Aufwands- oder Erlöskonto sein und im Editor wählbar (``check_account``, EINE Stelle: Kontonummer 4000–7999 ohne Wartekonten und
+  Skonto-Konten, kein Zahlungskonto, nicht ausgeblendet): Ein Privat-, Anlage-, Steuer- oder Verrechnungskonto aus der Historie gäbe mit der Steuer des Belegs
+  eine Buchung, die die EÜR anders liest."""
+from dataclasses import dataclass, replace
 from decimal import Decimal
 
 from money import SCALE, tax_from_net
 
+from .matching import PL_ACCOUNT_RANGE
 from .receipt_matching import direction_fits, is_int, usable_gross
 
 HISTORY_DEPTH = 3               # so viele (nicht leere) Gruppen der Historie betrachtet ``steady_account`` höchstens: die jüngsten
@@ -41,10 +46,15 @@ REASON_TAX_NONE = 'laut Lesung ohne Steuer'
 REASON_ACCOUNT_RECIPIENT = 'Konto aus früheren Buchungen desselben Empfängers'
 REASON_ACCOUNT_SENDER = 'Konto aus früheren Buchungen zu Belegen mit derselben USt-IdNr.'
 HINT_TAX = 'Steuer nicht übernommen (kein eindeutiger Satz oder die Proben stimmen nicht) – bitte prüfen.'
+HINT_TAX_RATE = 'Steuer nicht übernommen: Der gelesene Satz ({rate} %) ist kein Steuersatz dieser Buchhaltung – bitte prüfen.'
 HINT_NO_ACCOUNT = 'Kein Konto vorgeschlagen: Frühere Buchungen geben keine eindeutige Grundlage.'
 HINT_ACCOUNT_CONFLICT = 'Kein Konto vorgeschlagen: Frühere Buchungen nennen verschiedene Konten.'
 HINT_ACCOUNT_HIDDEN = 'Das Konto früherer Buchungen ist ausgeblendet – bitte ein Konto wählen.'
+HINT_ACCOUNT_KIND = 'Kein Konto vorgeschlagen: Das Konto früherer Buchungen ist kein Aufwands- oder Erlöskonto – bitte wählen.'
 DONE_TEXT = 'Vorschlag aus dem Beleg eingetragen – nichts gespeichert. Bitte prüfen und mit „Aktualisieren“ speichern.'
+
+#: Die Begründungen eines Kontos aus der Historie: Sie fallen weg, wenn das Konto verworfen wird (``check_account``)
+ACCOUNT_REASONS = (REASON_ACCOUNT_RECIPIENT, REASON_ACCOUNT_SENDER)
 
 
 @dataclass(frozen=True)
@@ -67,6 +77,12 @@ def rate_percent_text(rate, mark='.') -> str:
     if rate is None:
         return ''
     return format((Decimal(str(rate)) * 100).normalize(), 'f').replace('.', mark)
+
+
+def rate_bp(rate) -> int:
+    """Ein Steuersatz als Anteil (``Decimal('0.19')``) in Hundertstel Prozent (1900): die ganze Zahl, in der die Stammdaten „Steuersätze“ ihn führen (``TaxEntry.bp``).
+    ``proposal_tax`` liefert nur Sätze mit höchstens zwei Nachkommastellen in Prozent – die Zahl ist exakt."""
+    return int(Decimal(str(rate)) * 10000)
 
 
 def proposal_refusal(reading, reader_version, bank_amount, bank_currency, has_children) -> str | None:
@@ -160,9 +176,42 @@ def choose_account(recipient_groups, sender_groups) -> tuple[int | None, tuple[s
     return None, (), (HINT_NO_ACCOUNT,)
 
 
-def build_proposal(reading, reader_version, bank_amount, bank_currency, has_children, recipient_groups, sender_groups) -> Proposal:
+def is_result_account(account_number, coa_id, payment_coa_ids, excluded_numbers) -> bool:
+    """Ist das ein Aufwands- oder Erlöskonto? Die Kontonummer ist eine ganze Zahl (kein ``bool``) in ``PL_ACCOUNT_RANGE`` (4000–7999), nicht in ``excluded_numbers`` (die
+    Wartekonten der offenen Posten und die Skonto-Konten: Sie liegen darin, sind aber keine Aufwands- oder Erlöskonten), und ihre ID ist kein Zahlungskonto
+    (``payment_coa_ids``: die eigenen Bank- und Kassenkonten und das Verrechnungskonto). Rein: Nummer und Mengen kommen vom Aufrufer."""
+    if type(account_number) is not int:
+        return False
+    low, high = PL_ACCOUNT_RANGE
+    return low <= account_number <= high and account_number not in excluded_numbers and coa_id not in payment_coa_ids
+
+
+def check_account(proposal, accounts, payment_coa_ids, excluded_numbers) -> Proposal:
+    """Das Konto eines Vorschlags prüfen, ehe er die Maske erreicht – EINE Stelle für die Art und für „ausgeblendet“. ``accounts``: ``{COA-ID: (Kontonummer, im Editor wählbar)}``
+    aus dem Kontenrahmen. Ein Konto, das kein Aufwands- oder Erlöskonto ist (``is_result_account``), wird verworfen: kein Konto, ``HINT_ACCOUNT_KIND``; ein ausgeblendetes
+    oder unbekanntes ebenso mit ``HINT_ACCOUNT_HIDDEN`` (die Art zuerst: genau EIN Hinweis). Die Begründungen des Kontos fallen weg, der Hinweis kommt hinter die vorhandenen;
+    alles andere bleibt. Ohne Konto und bei einer Ablehnung kommt derselbe Vorschlag zurück."""
+    if proposal.coa_id is None:
+        return proposal
+    known = accounts.get(proposal.coa_id)
+    if known is None:
+        hint = HINT_ACCOUNT_HIDDEN
+    elif not is_result_account(known[0], proposal.coa_id, payment_coa_ids, excluded_numbers):
+        hint = HINT_ACCOUNT_KIND
+    elif not known[1]:
+        hint = HINT_ACCOUNT_HIDDEN
+    else:
+        return proposal
+    return replace(proposal, coa_id=None, reasons=tuple(reason for reason in proposal.reasons if reason not in ACCOUNT_REASONS), hints=proposal.hints + (hint,))
+
+
+def build_proposal(reading, reader_version, bank_amount, bank_currency, has_children, recipient_groups, sender_groups, allowed_rate_bps) -> Proposal:
     """Der Vorschlag: Ablehnung (``proposal_refusal``) oder die Zeile mit dem Betrag der Bank, der Steuer der Lesung (Vorzeichen wie der Betrag) und dem
-    Konto der Historie. Begründungen: Betrag, Steuer, Konto; Hinweise in der Reihenfolge Steuer, Konto – alles feste Sätze, nie ein Wert aus dem Beleg."""
+    Konto der Historie. Begründungen: Betrag, Steuer, Konto; Hinweise in der Reihenfolge Steuer, Konto – alles feste Sätze, nie ein Wert aus dem Beleg.
+
+    ``allowed_rate_bps``: die Sätze der Buchhaltung in Hundertstel Prozent (``rate_bp``) – die festen Sätze mit Steuerkonten und die Einträge der Stammdaten, vom Aufrufer
+    gelesen. Ein Satz, der nicht dabei ist (20 %, 21 %, ein falsch gelesener), wird nicht übernommen: die Zeile ohne Steuer, mit ``HINT_TAX_RATE``. Satz 0 („ohne Steuer“)
+    braucht keinen Eintrag. Das Konto prüft ``check_account`` danach."""
     refusal = proposal_refusal(reading, reader_version, bank_amount, bank_currency, has_children)
     if refusal is not None:
         return Proposal(False, refusal, None, None, None, None, (), ())
@@ -174,6 +223,8 @@ def build_proposal(reading, reader_version, bank_amount, bank_currency, has_chil
         hints.append(HINT_TAX)
     elif found[0] == 0:
         reasons.append(REASON_TAX_NONE)
+    elif rate_bp(found[0]) not in allowed_rate_bps:
+        hints.append(HINT_TAX_RATE.format(rate=rate_percent_text(found[0], ',')))
     else:
         rate, tax_minor = found[0], sign * found[1]
         reasons.append(REASON_TAX.format(rate=rate_percent_text(rate, ',')))

@@ -6,7 +6,8 @@
 Vorgeschlagen wird eine Zeile für den Buchungssatz-Editor einer Bankbewegung; gespeichert wird nichts. Aus dem Beleg kommen nur Steuersatz und
 Steuerbetrag (``proposal_tax``: ein Satz, Summen- und Satzprobe, das Vorzeichen des Betrags der Bank); der Betrag ist der der Bankbewegung, das
 Konto kommt nur aus einer Historie, die sich einig ist (``steady_account``). Was sich nicht sicher sagen lässt, bleibt leer und bekommt einen festen
-Hinweissatz – nie ein Absender, eine Nummer oder ein Text aus dem Beleg.
+Hinweissatz – nie ein Absender, eine Nummer oder ein Text aus dem Beleg. Die Steuer nur mit einem Satz, den die Buchhaltung kennt (``build_proposal``: die
+erlaubten Sätze kommen als Menge von außen); das Konto nur, wenn es ein Aufwands- oder Erlöskonto ist (``is_result_account``, ``check_account``).
 
 Alle Namen, Nummern und Beträge sind erfundene Testwerte.
 """
@@ -19,14 +20,15 @@ import pytest
 
 from db import receipt_proposal as rp
 from db.receipt_proposal import (
-    CENT, DONE_TEXT, HINT_ACCOUNT_CONFLICT, HINT_NO_ACCOUNT, HINT_TAX, HISTORY_AGREE_MIN, HISTORY_DEPTH, REASON_ACCOUNT_RECIPIENT,
-    REASON_ACCOUNT_SENDER, REASON_AMOUNT, REASON_TAX, REASON_TAX_NONE, REFUSE_AMOUNT, REFUSE_BANK_AMOUNT, REFUSE_CURRENCY,
-    REFUSE_DIRECTION, REFUSE_HAS_ROWS, REFUSE_NO_READING, REFUSE_OUTDATED, Proposal, build_proposal, choose_account, proposal_refusal,
-    proposal_tax, rate_percent_text, steady_account)
+    CENT, DONE_TEXT, HINT_ACCOUNT_CONFLICT, HINT_ACCOUNT_HIDDEN, HINT_ACCOUNT_KIND, HINT_NO_ACCOUNT, HINT_TAX, HINT_TAX_RATE, HISTORY_AGREE_MIN,
+    HISTORY_DEPTH, REASON_ACCOUNT_RECIPIENT, REASON_ACCOUNT_SENDER, REASON_AMOUNT, REASON_TAX, REASON_TAX_NONE, REFUSE_AMOUNT, REFUSE_BANK_AMOUNT,
+    REFUSE_CURRENCY, REFUSE_DIRECTION, REFUSE_HAS_ROWS, REFUSE_NO_READING, REFUSE_OUTDATED, Proposal, build_proposal, check_account, choose_account,
+    is_result_account, proposal_refusal, proposal_tax, rate_bp, rate_percent_text, steady_account)
 
 VERSION = 1                                    # ``READER_VERSION`` der Tests: fest, damit eine Änderung des Lesers diese Tests nicht berührt
 GROSS = 1190000                                # 119,00 EUR in Minor Units (money.SCALE = 4)
 NET, TAX = 1000000, 190000                     # 100,00 und 19,00
+ALLOWED = frozenset({500, 700, 1600, 1900})    # die Sätze der Buchhaltung in Hundertstel Prozent: 5, 7, 16 und 19 % (``db.tax_rates.FIXED_TAX_BPS``)
 
 
 def reading(**over):
@@ -46,9 +48,9 @@ def group(*coas):
     return [row(coa) for coa in coas]
 
 
-def propose(reading_row=None, bank_amount=-GROSS, bank_currency='EUR', has_children=False, recipient=(), sender=()):
+def propose(reading_row=None, bank_amount=-GROSS, bank_currency='EUR', has_children=False, recipient=(), sender=(), allowed=ALLOWED):
     reading_row = reading() if reading_row is None else reading_row
-    return build_proposal(reading_row, VERSION, bank_amount, bank_currency, has_children, list(recipient), list(sender))
+    return build_proposal(reading_row, VERSION, bank_amount, bank_currency, has_children, list(recipient), list(sender), allowed)
 
 
 # ── Der Bau des Moduls ───────────────────────────────────────────────────────
@@ -65,7 +67,7 @@ def test_the_module_is_pure_it_imports_neither_a_database_nor_a_clock():
             imported.update(alias.name for alias in node.names)
         elif isinstance(node, ast.ImportFrom):
             imported.add(('.' * node.level) + (node.module or ''))
-    assert imported <= {'dataclasses', 'decimal', 'money', '.receipt_matching'}, imported
+    assert imported <= {'dataclasses', 'decimal', 'money', '.matching', '.receipt_matching'}, imported
 
 
 def test_a_proposal_is_immutable():
@@ -395,7 +397,7 @@ def test_a_rate_of_zero_is_without_tax_the_rate_and_the_amount_stay_empty():
 
 
 def test_the_reason_of_the_rate_names_it_with_a_comma():
-    proposal = propose(reading(TaxRate=0.055, NetMinor=2000000, TaxMinor=110000, GrossMinor=2110000), bank_amount=-2110000)
+    proposal = propose(reading(TaxRate=0.055, NetMinor=2000000, TaxMinor=110000, GrossMinor=2110000), bank_amount=-2110000, allowed=ALLOWED | {550})
     assert REASON_TAX.format(rate='5,5') in proposal.reasons and proposal.tax_rate == Decimal('0.055') and proposal.tax_minor == -110000
 
 
@@ -417,7 +419,8 @@ def test_the_account_comes_from_the_histories_and_the_hints_follow_the_order_tax
 def test_every_text_of_a_proposal_comes_from_the_constants_of_the_module():
     allowed = {value for name, value in vars(rp).items() if isinstance(value, str) and name.startswith(('REFUSE_', 'REASON_', 'HINT_', 'DONE_'))}
     allowed |= {REASON_TAX.format(rate=text) for text in ('19', '7', '5,5', '10,7')}
-    assert REASON_TAX in allowed and len(allowed) >= 18
+    allowed |= {HINT_TAX_RATE.format(rate=text) for text in ('20', '21', '5,5')}
+    assert REASON_TAX in allowed and HINT_TAX_RATE in allowed and len(allowed) >= 20
     seen = set()
     for over, amount, kwargs in [
             ({}, -GROSS, {}), ({'TaxRate': None}, -GROSS, {}), ({'TaxRate': 0, 'NetMinor': GROSS, 'TaxMinor': 0}, -GROSS, {}),
@@ -426,12 +429,18 @@ def test_every_text_of_a_proposal_comes_from_the_constants_of_the_module():
             ({}, -GROSS, {'recipient': [group(4400)] * 2, 'sender': [group(6815)] * 2}), ({}, -GROSS, {'has_children': True}),
             ({}, -GROSS, {'bank_currency': 'USD'}), ({}, 0, {}), ({'Status': 'no_text'}, -GROSS, {}), ({'ReaderVersion': 0}, -GROSS, {}),
             ({}, -1, {}), ({}, GROSS, {}), ({'TaxRate': 0.07, 'TaxMinor': 70000, 'GrossMinor': 1070000}, -1070000, {}),
-            ({'TaxRate': 0.055, 'NetMinor': 2000000, 'TaxMinor': 110000, 'GrossMinor': 2110000}, -2110000, {})]:
+            ({'TaxRate': 0.055, 'NetMinor': 2000000, 'TaxMinor': 110000, 'GrossMinor': 2110000}, -2110000, {}),
+            ({'TaxRate': 0.055, 'NetMinor': 2000000, 'TaxMinor': 110000, 'GrossMinor': 2110000}, -2110000, {'allowed': ALLOWED | {550}}),
+            ({'TaxRate': 0.2, 'NetMinor': NET, 'TaxMinor': 200000, 'GrossMinor': 1200000}, -1200000, {}),
+            ({'TaxRate': 0.21, 'NetMinor': NET, 'TaxMinor': 210000, 'GrossMinor': 1210000}, -1210000, {})]:
         proposal = propose(reading(**over), bank_amount=amount, **kwargs)
         texts = {proposal.message, *proposal.reasons, *proposal.hints}
         seen |= texts
         assert texts <= allowed, texts - allowed
-    assert {DONE_TEXT, HINT_TAX, REASON_AMOUNT, HINT_NO_ACCOUNT, HINT_ACCOUNT_CONFLICT, REFUSE_AMOUNT} <= seen
+    assert {DONE_TEXT, HINT_TAX, REASON_AMOUNT, HINT_NO_ACCOUNT, HINT_ACCOUNT_CONFLICT, REFUSE_AMOUNT, HINT_TAX_RATE.format(rate='20')} <= seen
+    for kind in (4400, 2100, 6815):                                                                  # die Hinweise der Kontoprüfung kommen aus den Konstanten
+        kept = check_account(propose(recipient=[group(kind)] * 2), {kind: (kind, False)}, frozenset(), frozenset())
+        assert {kept.message, *kept.reasons, *kept.hints} <= allowed
 
 
 def test_the_sentences_name_no_brand_and_give_no_advice():
@@ -439,3 +448,141 @@ def test_the_sentences_name_no_brand_and_give_no_advice():
         if isinstance(value, str) and name.startswith(('REFUSE_', 'REASON_', 'HINT_', 'DONE_')):
             for word in ('WISO', 'DATEV', 'ELSTER', 'GoBD', 'steuerlich', 'absetzbar', 'Vorsteuerabzug'):
                 assert word.lower() not in value.lower(), (name, word)
+
+
+# ── rate_bp ──────────────────────────────────────────────────────────────────
+@pytest.mark.parametrize('rate, expected', [
+    (Decimal('0.19'), 1900), (Decimal('0.07'), 700), (Decimal('0.055'), 550), (Decimal('0.16'), 1600), (Decimal('0.05'), 500),
+    (Decimal('0.1925'), 1925), (Decimal(0), 0), (Decimal('1'), 10000)])
+def test_the_rate_as_a_share_becomes_hundredths_of_a_percent_the_way_the_master_data_carry_it(rate, expected):
+    assert rate_bp(rate) == expected and isinstance(rate_bp(rate), int)
+
+
+# ── Der Satz muss einer der Buchhaltung sein ─────────────────────────────────
+def rated(rate, net, tax):
+    return reading(TaxRate=rate, NetMinor=net, TaxMinor=tax, GrossMinor=net + tax)
+
+
+@pytest.mark.parametrize('rate, net, tax, expected', [
+    pytest.param(0.19, 1000000, 190000, '0.19', id='19'), pytest.param(0.07, 1000000, 70000, '0.07', id='7'),
+    pytest.param(0.16, 1000000, 160000, '0.16', id='16'), pytest.param(0.05, 1000000, 50000, '0.05', id='5')])
+def test_the_rates_with_fixed_tax_accounts_are_taken(rate, net, tax, expected):
+    proposal = propose(rated(rate, net, tax), bank_amount=-(net + tax))
+    assert (proposal.tax_rate, proposal.tax_minor) == (Decimal(expected), -tax)
+    assert HINT_TAX_RATE.format(rate='19') not in proposal.hints and HINT_TAX not in proposal.hints
+
+
+@pytest.mark.parametrize('rate, net, tax, shown', [
+    pytest.param(0.2, 1000000, 200000, '20', id='20'), pytest.param(0.21, 1000000, 210000, '21', id='21'),
+    pytest.param(0.055, 2000000, 110000, '5,5', id='5,5-ohne-Eintrag'), pytest.param(0.1, 1000000, 100000, '10', id='10')])
+def test_a_rate_that_is_no_rate_of_the_books_gives_the_amount_without_a_tax_and_the_hint_with_the_rate(rate, net, tax, shown):
+    proposal = propose(rated(rate, net, tax), bank_amount=-(net + tax))
+    assert proposal.ok and proposal.amount_minor == -(net + tax)
+    assert (proposal.tax_rate, proposal.tax_minor) == (None, None)
+    assert proposal.hints == (HINT_TAX_RATE.format(rate=shown), HINT_NO_ACCOUNT)               # der Hinweis des Satzes vor dem des Kontos
+    assert proposal.reasons == (REASON_AMOUNT,) and HINT_TAX not in proposal.hints
+
+
+def test_a_rate_the_caller_passes_in_is_taken_and_it_is_the_set_that_decides():
+    reduced = rated(0.055, 2000000, 110000)
+    proposal = propose(reduced, bank_amount=-2110000, allowed=ALLOWED | {550})
+    assert (proposal.tax_rate, proposal.tax_minor) == (Decimal('0.055'), -110000) and REASON_TAX.format(rate='5,5') in proposal.reasons
+    assert HINT_TAX_RATE.format(rate='5,5') not in proposal.hints
+    nothing = propose(bank_amount=-GROSS, allowed=frozenset())                                  # kein Satz erlaubt: auch 19 % nicht
+    assert (nothing.tax_rate, nothing.tax_minor) == (None, None) and HINT_TAX_RATE.format(rate='19') in nothing.hints
+
+
+def test_the_rate_zero_means_without_tax_whatever_the_set_says():
+    for allowed in (ALLOWED, frozenset()):
+        proposal = propose(reading(TaxRate=0, NetMinor=GROSS, TaxMinor=0), allowed=allowed)
+        assert (proposal.tax_rate, proposal.tax_minor) == (None, None) and REASON_TAX_NONE in proposal.reasons
+        assert not [hint for hint in proposal.hints if hint.startswith('Steuer nicht')]
+
+
+def test_failed_checks_still_give_the_hint_of_the_checks_and_not_the_one_of_the_rate():
+    proposal = propose(reading(TaxRate=None))
+    assert HINT_TAX in proposal.hints and not [hint for hint in proposal.hints if hint.startswith('Steuer nicht übernommen: Der gelesene')]
+    off = propose(rated(0.2, NET, 200000 + 200), bank_amount=-(NET + 200200))               # Satzprobe daneben UND Satz 20 %: die Proben zuerst
+    assert HINT_TAX in off.hints
+
+
+# ── Das Konto muss ein Aufwands- oder Erlöskonto sein ────────────────────────
+PAYMENT = frozenset({401460, 401800, 406310})              # Zahlungskonten (COA-IDs): 1460, 1800 und ein Bankkonto mit der ungewöhnlichen Nummer 6310
+EXCLUDED = frozenset({4340, 4345, 4405, 4730, 4731, 4736})  # die Wartekonten und die Skonto-Konten (Kontonummern)
+CHART = {406815: (6815, True), 404400: (4400, True), 402100: (2100, True), 401460: (1460, True), 401406: (1406, True), 400520: (520, True),
+         404405: (4405, True), 404736: (4736, True), 406310: (6310, True), 407000: (7000, False), 404000: (4000, True), 407999: (7999, True),
+         403999: (3999, True), 408000: (8000, True)}
+
+
+@pytest.mark.parametrize('number', [6815, 4400, 4000, 7999, 5900, 7000, 4185, 4300])
+def test_an_expense_or_revenue_account_fits(number):
+    assert is_result_account(number, 400000 + number, PAYMENT, EXCLUDED) is True
+
+
+@pytest.mark.parametrize('number', [3999, 8000, 10000, 2100, 1460, 1406, 1401, 1800, 3806, 520, 0, 1, 999, -1])
+def test_every_account_outside_4000_to_7999_does_not_fit(number):
+    assert is_result_account(number, 400000 + number, frozenset(), EXCLUDED) is False
+
+
+@pytest.mark.parametrize('number', [4405, 4345, 4340, 4730, 4731, 4736])
+def test_a_waiting_account_and_a_discount_account_do_not_fit_although_they_lie_in_the_range(number):
+    assert 4000 <= number <= 7999 and is_result_account(number, 400000 + number, frozenset(), EXCLUDED) is False
+
+
+def test_a_payment_account_does_not_fit_wherever_its_number_lies():
+    assert is_result_account(6310, 406310, PAYMENT, EXCLUDED) is False                          # ein Bankkonto mit der Nummer 6310
+    assert is_result_account(6310, 406310, frozenset(), EXCLUDED) is True
+    assert is_result_account(6310, 406310, [406310], EXCLUDED) is False                         # eine Liste genügt
+
+
+@pytest.mark.parametrize('number', [None, '6815', 6815.0, True, False, Decimal('6815'), [], b'6815'])
+def test_a_number_that_is_not_a_whole_number_does_not_fit(number):
+    assert is_result_account(number, 406815, frozenset(), frozenset()) is False
+
+
+def test_a_fitting_account_leaves_the_proposal_as_it_is():
+    mine = Proposal(True, DONE_TEXT, -GROSS, Decimal('0.19'), -TAX, 406815, (REASON_AMOUNT, REASON_ACCOUNT_RECIPIENT), ())
+    assert check_account(mine, CHART, PAYMENT, EXCLUDED) is mine
+
+
+def test_a_proposal_without_an_account_and_a_refusal_stay_as_they_are():
+    without = Proposal(True, DONE_TEXT, -GROSS, None, None, None, (REASON_AMOUNT,), (HINT_NO_ACCOUNT,))
+    assert check_account(without, CHART, PAYMENT, EXCLUDED) is without
+    refused = propose(has_children=True)
+    assert check_account(refused, CHART, PAYMENT, EXCLUDED) is refused
+
+
+@pytest.mark.parametrize('coa_id, number', [(402100, 2100), (401460, 1460), (401406, 1406), (400520, 520), (404405, 4405), (404736, 4736),
+                                            (406310, 6310), (403999, 3999), (408000, 8000)])
+def test_an_account_of_the_wrong_kind_is_dropped_with_the_hint_and_without_its_reasons(coa_id, number):
+    proposal = Proposal(True, DONE_TEXT, -GROSS, Decimal('0.19'), -TAX, coa_id,
+                        (REASON_AMOUNT, REASON_TAX.format(rate='19'), REASON_ACCOUNT_RECIPIENT, REASON_ACCOUNT_SENDER), (HINT_TAX_RATE.format(rate='20'),))
+    checked = check_account(proposal, CHART, PAYMENT, EXCLUDED)
+    assert checked.coa_id is None and checked.ok is True and checked.message == DONE_TEXT
+    assert checked.reasons == (REASON_AMOUNT, REASON_TAX.format(rate='19'))                       # nur die Begründungen des Kontos fallen weg
+    assert checked.hints == (HINT_TAX_RATE.format(rate='20'), HINT_ACCOUNT_KIND)                  # der neue Hinweis hinter den vorhandenen
+    assert (checked.amount_minor, checked.tax_rate, checked.tax_minor) == (-GROSS, Decimal('0.19'), -TAX)
+
+
+def test_a_hidden_or_unknown_account_is_dropped_with_its_own_hint():
+    for coa_id in (407000, 999999):
+        proposal = Proposal(True, DONE_TEXT, -GROSS, None, None, coa_id, (REASON_AMOUNT, REASON_ACCOUNT_SENDER), ())
+        checked = check_account(proposal, CHART, PAYMENT, EXCLUDED)
+        assert checked.coa_id is None and checked.reasons == (REASON_AMOUNT,) and checked.hints == (HINT_ACCOUNT_HIDDEN,), coa_id
+
+
+def test_the_kind_comes_before_the_hidden_state_and_there_is_only_one_hint():
+    chart = {**CHART, 402100: (2100, False)}                       # ausgeblendet UND ein Privatkonto
+    proposal = Proposal(True, DONE_TEXT, -GROSS, None, None, 402100, (REASON_AMOUNT, REASON_ACCOUNT_RECIPIENT), ())
+    assert check_account(proposal, chart, PAYMENT, EXCLUDED).hints == (HINT_ACCOUNT_KIND,)
+
+
+def test_the_check_is_one_place_for_the_hidden_state_and_the_kind_and_changes_nothing_else():
+    proposal = Proposal(True, DONE_TEXT, -GROSS, Decimal('0.07'), -70000, 407000, (REASON_AMOUNT, REASON_ACCOUNT_RECIPIENT), (HINT_TAX,))
+    checked = check_account(proposal, CHART, PAYMENT, EXCLUDED)
+    assert dataclasses.replace(checked, coa_id=407000, reasons=proposal.reasons, hints=proposal.hints) == proposal
+
+
+def test_the_new_sentences_are_the_planned_ones():
+    assert HINT_ACCOUNT_KIND == 'Kein Konto vorgeschlagen: Das Konto früherer Buchungen ist kein Aufwands- oder Erlöskonto – bitte wählen.'
+    assert HINT_TAX_RATE == 'Steuer nicht übernommen: Der gelesene Satz ({rate} %) ist kein Steuersatz dieser Buchhaltung – bitte prüfen.'

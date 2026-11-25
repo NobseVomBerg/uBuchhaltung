@@ -225,9 +225,10 @@ Jede Funktion mit ihrer Seite im Browser. Die Regeln hinter den Funktionen stehe
 - **Vorschlag** (🪄): kontiert eine offene Buchung aus der Historie desselben Empfängers (Konto, Steuersatz, nächste Beleg-Nr.); gespeichert
   wird erst beim Speichern.
 - **Als Buchungssatz** (am verknüpften Beleg einer Bankbewegung ohne Buchungssätze): trägt aus der Lesung des Belegs eine Zeile in den leeren
-  Buchungssatz-Editor ein – den Betrag der Bankbewegung, Steuersatz und -betrag nur bei einem Satz, dessen Proben stimmen, das Konto nur, wenn
-  frühere Buchungen desselben Empfängers oder zu Belegen mit derselben USt-IdNr. sich einig sind. Gespeichert wird erst mit „Aktualisieren“.
-  Grenzen: nur gleicher Betrag auf den Cent (kein Skonto, keine Teilzahlung), nur ein Steuersatz je Beleg, nur Euro; die gelesenen Werte sind zu prüfen.
+  Buchungssatz-Editor ein – den Betrag der Bankbewegung, Steuersatz und -betrag nur bei einem Satz, dessen Proben stimmen und der ein Steuersatz der
+  Buchhaltung ist, das Konto nur, wenn frühere Buchungen desselben Empfängers oder zu Belegen mit derselben (nicht der eigenen) USt-IdNr. sich einig sind
+  und es ein Aufwands- oder Erlöskonto ist. Gespeichert wird erst mit „Aktualisieren“. Grenzen: nur gleicher Betrag auf den Cent (kein Skonto, keine
+  Teilzahlung), nur ein Steuersatz je Beleg, nur Euro; die gelesenen Werte sind zu prüfen.
 - Belege in der Maske suchen, zuordnen, ansehen und lösen.
 - Regeln: [`docs/regeln/buchungen.md`](docs/regeln/buchungen.md)
 
