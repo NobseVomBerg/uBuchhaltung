@@ -15,7 +15,8 @@ Für die Buchungen eines Belegs mit Steuersatz je Position (``Invoices.MixedTaxR
 Belegs, geprüft gegen seine gespeicherten Summen), ``split_payment`` (wie sich eine Zahlung auf die Gruppen verteilt – Betrag und Steuer je
 Satz), ``booking_rate`` (die EINE Form, in der der Satz einer Gruppe in ``Bookings.TaxRate`` steht) und ``pct_text`` (der Satz für Texte). Für die Erstattung
 und den Schutz beim Entfernen einer Zahlung: ``refund_pool`` (die Gruppen, aus denen erstattet wird) und ``booked_fault`` (ob der gebuchte Stand je Satz
-zu ihnen passt – die Eingangsprüfung von ``split_payment``, von hier aus auch vorab zu fragen).
+zu ihnen passt – die Eingangsprüfung von ``split_payment``, von hier aus auch vorab zu fragen). Schließt eine Zahlung so einen Beleg mit Skonto, verteilt ``split_skonto`` das Skonto auf die
+Gruppen (im Verhältnis ihres Bruttos).
 
 Für die Stammdaten „Steuersätze“ (2.8.0) kommen dazu: der Satz als Hundertstel Prozent – die EINE ganze Zahl, in der ein Eintrag der Stammdaten und die
 Position eines Belegs ihn führen (``parse_rate_bp`` liest ihn streng aus einem Text, ``bp_pct`` macht die Prozentzahl daraus) –, ``group_tax`` (die
@@ -380,6 +381,41 @@ def split_payment(groups, booked, amount):
             tax = min(max(round_minor(prorate(group.tax, parts[i], group.gross), 2), 0), left)
         result.append(SplitPart(group.pct, parts[i], tax))
     return result
+
+
+def split_skonto(groups, skonto):
+    """Wie sich das Skonto einer Zahlung, die einen Beleg mit Steuersatz je Position schließt, auf seine Satzgruppen verteilt – je Gruppe ein Betrag in Minor Units, in der
+    Reihenfolge der Gruppen. Die Verteilung hängt nur an den Gruppen und am Skonto, nie an den Zahlungen davor: So rechnet die Prüfliste sie nach.
+
+    ``groups``: die Gruppen des Belegs wie bei ``split_payment`` (verschiedene Sätze, jede mit positivem Brutto), ``skonto``: eine ganze Zahl über 0, ein Vielfaches von 100 (ganze
+    Cent) und höchstens das Brutto des Belegs. Sonst ``ValueError``.
+
+    **Verhältnis zum Brutto:** Das Skonto ist ein Prozentsatz vom ganzen Brutto des Belegs, der Kunde mindert also jede Gruppe um denselben Prozentsatz. Jede Gruppe außer der größten
+    bekommt ``Skonto × Brutto der Gruppe / Brutto des Belegs`` auf den Cent gerundet, **bei genau einem halben Cent nach unten** (wie ``split_payment``: sonst bekäme die kleinere Gruppe
+    den Cent); die Gruppe mit dem größten Brutto (bei Gleichstand der höhere Satz) bekommt den Rest, die Summe ist so immer ``skonto``. Wäre dieser Rest negativ (mehrere kleine
+    Gruppen, die alle aufrunden, bei einem Skonto von wenigen Cent), ist es ``ValueError`` – die Verteilung rät nicht."""
+    groups = list(groups)
+    if not _whole(skonto) or skonto <= 0 or skonto % 100:
+        raise ValueError('Das Skonto muss eine ganze Zahl über 0 sein, in ganzen Cent.')
+    if not groups or len({group.pct for group in groups}) != len(groups) or any(group.gross <= 0 for group in groups):
+        raise ValueError('Die Gruppen müssen verschiedene Sätze und je ein positives Brutto haben.')
+    gross_total = sum(group.gross for group in groups)
+    if skonto > gross_total:
+        raise ValueError('Das Skonto liegt über dem Brutto des Belegs.')
+    largest = max(range(len(groups)), key=lambda i: (groups[i].gross, groups[i].pct))
+    shares = [0] * len(groups)
+    for i, group in enumerate(groups):
+        if i == largest:
+            continue
+        # auf den Cent gerundet (100 Minor Units), bei genau einem halben Cent nach unten – ganzzahlig, damit nichts an der Genauigkeit scheitert
+        cents, remainder = divmod(group.gross * skonto, gross_total * 100)
+        if 2 * remainder > gross_total * 100:
+            cents += 1
+        shares[i] = cents * 100
+    shares[largest] = skonto - sum(shares)
+    if shares[largest] < 0:
+        raise ValueError('Das Skonto lässt sich nicht auf die Gruppen verteilen.')
+    return shares
 
 
 # ── Die Regeln eines Eintrags der Stammdaten „Steuersätze“ ───────────────────────────────────────────────────────────────────────

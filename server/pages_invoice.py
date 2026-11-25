@@ -1082,7 +1082,7 @@ function skoInvoiceInit() {
 
 def _skonto_info_html(offer, invoice_date, open_due, today_iso):
     """Die Zeile über der Liste „Vorhandene Buchung verknüpfen“: was die Rechnung an Skonto vorsieht – ``Skonto: 2 % = 2,38 € bis 10.03.2025``, nach der Frist mit dem Zusatz „(Frist abgelaufen)“
-    (kein Verbot) – oder, wenn sie Bedingungen trägt, aber kein Skonto zulässt (mehrere Sätze, Stammdaten, ein Satz ohne Skonto-Konto), der feste Satz der Ablehnung. Ohne Bedingungen (oder mit einem
+    (kein Verbot) – oder, wenn sie Bedingungen trägt, aber kein Skonto zulässt (eine Gruppe oder ein Kopfsatz ohne Skonto-Konto, ein Erlöskonto der Stammdaten, das selbst ein Skonto-Konto ist, Positionen, die nicht zu den Summen passen), der feste Satz der Ablehnung. Ohne Bedingungen (oder mit einem
     Skonto von 0,00 €) steht nichts da. ``offer``: ``Database.skonto_offer``; ``invoice_date``: ``Invoices.InvoiceDate`` (ISO-Text); ``open_due``: der offene Betrag (Euro); ``today_iso``: heute.
     Der Absatz einer Rechnung mit Skonto trägt die Werte für das Skript (``paySkontoInfo``, ``data-open``, ``data-limit``: Euro im Punkt-Format). Jeder Wert ist maskiert.
     Returns ``(HTML, buchbar)``: ``buchbar``, wenn der Absatz mit den Werten dasteht – nur dann bekommt jeder Kandidat sein Häkchen."""

@@ -25,8 +25,8 @@ from decimal import Decimal
 import pytest
 
 import userctx
-from db.invoice_payments import (NOTHING_TO_ASSIGN_MESSAGE, PAYMENT_CHANGED_MESSAGE, PAYMENT_MARK, SKONTO_ACCOUNTS, SKONTO_MIXED, SKONTO_NO_REST,
-                                 SKONTO_NO_TERMS, SKONTO_RATE, SKONTO_TAX_ENTRY, SKONTO_TOO_LARGE)
+from db.invoice_payments import (NOTHING_TO_ASSIGN_MESSAGE, PAYMENT_CHANGED_MESSAGE, PAYMENT_MARK, SKONTO_ACCOUNTS, SKONTO_GROUP_RATE, SKONTO_NO_REST,
+                                 SKONTO_NO_TERMS, SKONTO_RATE, SKONTO_TOO_LARGE, TAX_ENTRY_CONTRADICTION)
 from server.handlers import link_booking_to_invoice_capped
 from tests import installation
 from tests.entry_form_roundtrip import differences, open_form, snapshot, submit
@@ -77,10 +77,11 @@ def _sent(db, *args, **kw):
     return invoice_id
 
 
-def _mixed(db, number='SK-M'):
-    """Ein Beleg mit Steuersatz je Position (100,00 € zu 19 % und 50,00 € zu 7 %) samt Forderungen, mit Skonto-Bedingungen."""
-    invoice = _invoice(db, number, 172.5, rate=0.19, sum_net=150.0, tax_amount=22.5, mixed_tax_rates=1)
-    for position, (net, rate) in enumerate(((100.0, 0.19), (50.0, 0.07)), 1):
+def _mixed(db, number='SK-M', second_rate=0.07):
+    """Ein Beleg mit Steuersatz je Position (100,00 € zu 19 % und 50,00 € zu ``second_rate``, 7 % oder 5,5 %) samt Forderungen, mit Skonto-Bedingungen."""
+    tax, gross = (22.5, 172.5) if second_rate == 0.07 else (21.75, 171.75)
+    invoice = _invoice(db, number, gross, rate=0.19, sum_net=150.0, tax_amount=tax, mixed_tax_rates=1)
+    for position, (net, rate) in enumerate(((100.0, 0.19), (50.0, second_rate)), 1):
         db.insert_invoice_item({'invoice_id': invoice, 'position': position, 'description': 'Position', 'quantity': 1, 'unit': 'Stk.',
                                 'price_per_unit': net, 'total_net': net, 'tax_category': 'S', 'tax_rate': rate})
     db.ensure_receivable_booking(invoice)
@@ -415,20 +416,21 @@ def test_a_refused_discount_on_a_section_19_invoice_creates_no_account_at_all(db
     _assert_refused(db, invoice, bank, SKONTO_NO_TERMS)
 
 
-def test_an_invoice_with_a_rate_per_position_refuses(db, acct):
-    invoice = _mixed(db)
+def test_an_invoice_with_a_rate_per_position_and_a_group_without_a_discount_account_refuses(db, acct):
+    """19 % und 5,5 %: Eine Gruppe ohne Skonto-Konto – der feste Satz nennt ihren Satz. (19 und 7 % gehen: ``tests/test_skonto_mixed_booking.py``.)"""
+    invoice = _mixed(db, second_rate=0.055)
     bank = _bank(db, acct, '169.00')
     _without_discount_accounts(db, *SKONTO_NUMBERS, 4184, 4185)
-    _assert_refused(db, invoice, bank, SKONTO_MIXED)
+    _assert_refused(db, invoice, bank, SKONTO_GROUP_RATE.format(rate='5,5'))
 
 
-@pytest.mark.parametrize('column, value', [('TaxRateBp', 1900), ('RevenueCoaId', 404400)], ids=['Satz-aus-den-Stammdaten', 'Erlöskonto-aus-den-Stammdaten'])
-def test_an_invoice_with_a_rate_from_the_master_data_refuses(db, acct, column, value):
+def test_an_invoice_with_half_a_snapshot_from_the_master_data_refuses(db, acct):
+    """Ein Satz aus den Stammdaten geht jetzt (``tests/test_skonto_mixed_booking.py``); hier bleibt abgelehnt, was ein Widerspruch ist: ein Erlöskonto aus den Stammdaten ohne den Satz
+    dazu (die halbe Momentaufnahme) – wie bei jeder Zahlung ``TAX_ENTRY_CONTRADICTION``."""
     invoice, bank = _refusal_world(db, acct)
     db.insert_invoice_item({'invoice_id': invoice, 'position': 1, 'description': 'Anstrich', 'quantity': 1, 'unit': 'Stk.', 'price_per_unit': 100.0,
-                            'total_net': 100.0, 'tax_category': 'S', 'tax_rate': 0.19, 'tax_rate_bp': 1900 if column == 'TaxRateBp' else None,
-                            'revenue_coa_id': value if column == 'RevenueCoaId' else None})
-    _assert_refused(db, invoice, bank, SKONTO_TAX_ENTRY)
+                            'total_net': 100.0, 'tax_category': 'S', 'tax_rate': 0.19, 'tax_rate_bp': None, 'revenue_coa_id': 404400})
+    _assert_refused(db, invoice, bank, TAX_ENTRY_CONTRADICTION)
 
 
 @pytest.mark.parametrize('rate', [0.16, 0.05, 0.055], ids=['16-Prozent', '5-Prozent', '5,5-Prozent'])
@@ -546,7 +548,7 @@ def _change_after_the_precheck(monkeypatch, db, change):
     monkeypatch.setattr(type(db), '_payment_prerequisites', moved)
 
 
-@pytest.mark.parametrize('name', ['terms-removed', 'discount-shrinks', 'snapshot-added', 'another-payment', 'rate-changes'])
+@pytest.mark.parametrize('name', ['terms-removed', 'discount-shrinks', 'snapshot-added', 'discount-account-added', 'another-payment', 'rate-changes'])
 def test_a_change_between_the_precheck_and_the_transaction_refuses_with_the_changed_sentence(db, acct, monkeypatch, name):
     invoice = _sent(db, 'SK-18', 119.0)
     bank = _bank(db, acct, '116.62')
@@ -554,8 +556,13 @@ def test_a_change_between_the_precheck_and_the_transaction_refuses_with_the_chan
     changes = {
         'terms-removed': lambda: _exec(db, 'UPDATE Invoices SET SkontoDays = NULL, SkontoPercent = NULL WHERE ID = ?', invoice),
         'discount-shrinks': lambda: _exec(db, 'UPDATE Invoices SET SkontoPercent = 1.0 WHERE ID = ?', invoice),                  # Skonto jetzt 1,19 €, der Rest 2,38 €
+        # ein Satz aus den Stammdaten kommt hinzu, auch ohne eigenes Erlöskonto: Die Vorprüfung sah keinen, die Transaktion bucht nicht auf einem Stand, den sie nicht kannte
         'snapshot-added': lambda: db.insert_invoice_item({'invoice_id': invoice, 'position': 1, 'description': 'x', 'quantity': 1, 'unit': 'Stk.',
                                                           'price_per_unit': 100.0, 'total_net': 100.0, 'tax_rate': 0.19, 'tax_rate_bp': 1900}),
+        # ein Erlöskonto aus den Stammdaten, das selbst ein Skonto-Konto ist (ein Satz aus den Stammdaten allein lehnt nicht mehr ab)
+        'discount-account-added': lambda: db.insert_invoice_item({'invoice_id': invoice, 'position': 1, 'description': 'x', 'quantity': 1, 'unit': 'Stk.',
+                                                                  'price_per_unit': 100.0, 'total_net': 100.0, 'tax_rate': 0.19, 'tax_rate_bp': 1900,
+                                                                  'revenue_coa_id': _coa(db, 4736)}),
         'another-payment': lambda: _exec(db, 'INSERT INTO InvoicePayments (InvoiceID, BookingID, Amount, PaymentDate) VALUES (?, ?, 100000, ?)',
                                          invoice, other, '2025-04-11'),                                                          # der Rest der Rechnung sinkt um 10,00 €
         'rate-changes': lambda: _exec(db, 'UPDATE Invoices SET TaxRate = 0.07 WHERE ID = ?', invoice),
@@ -688,13 +695,13 @@ def test_the_replay_log_carries_the_skonto_column_only_when_there_is_a_discount(
 def test_the_precheck_gives_the_same_sentences_before_a_movement_exists(db, acct):
     _without_discount_accounts(db, *SKONTO_NUMBERS)
     no_terms = _sent(db, 'SK-27', 119.0, skonto=None)
-    mixed = _mixed(db, 'SK-28')
+    mixed = _mixed(db, 'SK-28', second_rate=0.055)
     sixteen = _sent(db, 'SK-29', 116.0, rate=0.16)
     fine = _sent(db, 'SK-30', 119.0)
     before = installation.dump(db.db_name)
 
     assert db.payment_precheck(no_terms, acct, None, on='2025-04-10', amount='116.62', skonto=True) == SKONTO_NO_TERMS
-    assert db.payment_precheck(mixed, acct, None, on='2025-04-10', amount='116.62', skonto=True) == SKONTO_MIXED
+    assert db.payment_precheck(mixed, acct, None, on='2025-04-10', amount='116.62', skonto=True) == SKONTO_GROUP_RATE.format(rate='5,5')
     assert db.payment_precheck(sixteen, acct, None, on='2025-04-10', amount='113.68', skonto=True) == SKONTO_RATE
     assert db.payment_precheck(fine, acct, None, on='2025-04-10', amount='119.00', skonto=True) == SKONTO_NO_REST
     assert db.payment_precheck(fine, acct, None, on='2025-04-10', skonto=True) == SKONTO_NO_REST                                # ohne Betrag: die ganze Rechnung

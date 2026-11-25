@@ -477,7 +477,7 @@ Ersatzrechnung, Angebot → Rechnung), nehmen sie unverändert mit (`db.invoice_
 | PaymentDate | 4 | DATE | NOT NULL | Datum der Bankbewegung |
 | Notes | 5 | TEXT | | |
 | CreatedAt | 6 | DATETIME | DEFAULT CURRENT_TIMESTAMP | |
-| SkontoAmount | 7 | INTEGER | | Skonto (Schema 2009): der Rest der Rechnung, den diese Zahlung als Skonto ausbucht; NULL = keines (der ganze Bestand). Nur an der Zuordnung, die die Rechnung mit Skonto schließt |
+| SkontoAmount | 7 | INTEGER | | Skonto (Schema 2009): der Rest der Rechnung, den diese Zahlung als Skonto ausbucht; NULL = keines (der ganze Bestand). Nur an der Zuordnung, die die Rechnung mit Skonto schließt; bei einer Rechnung mit Steuersatz je Position die Summe über die Sätze (je Satz ein Skonto-Satz unter der Bankbewegung) |
 
 Das Paar (`InvoiceID`, `BookingID`) kommt höchstens einmal vor: UNIQUE-Index `ux_invoicepayments_invoice_booking` (neue Datenbanken gleich, bestehende
 beim Öffnen – nur ohne Dubletten; sonst wird er übersprungen und die Prüfliste meldet sie). Was eine Zuordnung an der Rechnung erledigt, ist

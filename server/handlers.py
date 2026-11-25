@@ -949,7 +949,7 @@ def _new_payment_problem(db, invoice_id, account_id, amount, revenue_coa_id=None
     lässt (kein Zahlungseingang, Rechnung nicht zahlbar, Bankkonto ohne SKR-Nummer, kein
     Erlöskonto, ein Datum, von dem das Erlöskonto abhängt und das keines ist …) – ``None``, wenn sie
     sich zuordnen lässt. Geprüft wird vor dem Anlegen. ``on``: das Datum der neuen Bewegung (das Datumsfeld der Maske).
-    ``skonto``: Die Zahlung soll die Rechnung mit Skonto schließen – dann gelten auch dessen Regeln (kein Skonto vorgesehen, ein Beleg mit mehreren Sätzen,
+    ``skonto``: Die Zahlung soll die Rechnung mit Skonto schließen – dann gelten auch dessen Regeln (kein Skonto vorgesehen, ein Satz ohne Skonto-Konto,
     kein Rest, ein Rest über dem Skonto …), mit dem Betrag der neuen Bewegung; abgelehnt wird vor dem Anlegen, es entsteht keine Bewegung."""
     try:
         positive = to_minor(amount) > 0

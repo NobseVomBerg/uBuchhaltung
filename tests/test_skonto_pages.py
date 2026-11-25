@@ -11,8 +11,8 @@ der Knopf „Mit Skonto zuordnen“ im Kasten ist der eine Klick, der bucht. Gep
   Stornorechnung ist ``true`` 400 ``SKONTO_REFUND``; jede Ablehnung der Datenbankschicht kommt als fester Satz zurück, ohne Schreiben;
 * **die Buchungsmaske** (``handle_add_transaction``): Feld ``skonto`` streng (fehlt = nein, ``1`` = ja, sonst 400), bei einer NEUEN Bewegung lehnt die Vorprüfung VOR dem Schreiben ab (es
   entsteht keine Bankbewegung), bei einer vorhandenen bleibt der Nutzer bei der gespeicherten Buchung (``PAYMENT_NOT_ASSIGNED``); öffnen und unverändert speichern ändert nichts;
-* **die Seiten:** der Haken nur, wo die Rechnung ein Skonto zulässt (die Zeile „Skonto: 2 % = 2,38 € bis …“ mit der Frist, bei abgelaufener Frist der Zusatz, der feste Satz bei einer Rechnung mit
-  mehreren Sätzen, Stammdaten oder einem Satz ohne Skonto-Konto), jeder Wert maskiert, die Zahlungstabelle mit „+ Skonto“ und der Summenzeile, der Haken der Maske nur mit einer Option, die ein
+* **die Seiten:** der Haken nur, wo die Rechnung ein Skonto zulässt (die Zeile „Skonto: 2 % = 2,38 € bis …“ mit der Frist, bei abgelaufener Frist der Zusatz, auch bei mehreren Sätzen und Sätzen aus
+  den Stammdaten; der feste Satz bei einer Gruppe oder einem Kopfsatz ohne Skonto-Konto und bei einem Erlöskonto der Stammdaten, das selbst ein Skonto-Konto ist), jeder Wert maskiert, die Zahlungstabelle mit „+ Skonto“ und der Summenzeile, der Haken der Maske nur mit einer Option, die ein
   Skonto kennt;
 * **die Skripte** – die echten, aus den Seiten geschnitten – in Node auf einer DOM-Attrappe (``tests/test_mixed_tax_mask.HARNESS``): wann der Haken erscheint und verschwindet (und dabei den Haken
   zurücknimmt), was ``linkPayment`` und ``payAssign`` schicken; statisch nur ``var`` und ``function`` mit dem Präfix ``sko``;
@@ -36,7 +36,8 @@ import pytest
 import server.handlers as handlers
 import server.pages_invoice as pages_invoice
 import server.pages_transactions as pages_transactions
-from db.invoice_payments import (SKONTO_MIXED, SKONTO_NO_REST, SKONTO_NO_TERMS, SKONTO_RATE, SKONTO_REFUND, SKONTO_TAX_ENTRY, SKONTO_TOO_LARGE)
+from db.invoice_payments import (MIXED_GROUPS_MISMATCH, SKONTO_GROUP_RATE, SKONTO_NO_REST, SKONTO_NO_TERMS, SKONTO_RATE, SKONTO_REFUND, SKONTO_REVENUE_DISCOUNT,
+                                 SKONTO_TOO_LARGE)
 from money import fmt_eur
 from server.handlers import INVALID_REQUEST, PAYMENT_NOT_ASSIGNED, SKONTO_TAKEN_BACK_HINT, handle_add_transaction, handle_link_invoice_payment
 from server.pages import script_json
@@ -49,7 +50,8 @@ from tests.entry_form_roundtrip import differences, open_form, snapshot, submit
 from tests.http_client import own_origin, post
 from tests.test_invoice_storno import at, sent as world_sent, world  # noqa: F401  (world: Fixture mit den Routen der Oberfläche)
 from tests.test_mixed_tax_mask import HARNESS, extract_function
-from tests.test_payment_suggestions import (TERMS, add_invoice, add_payment, bank_account, box_rows, customer, discount_world, period_page, run_sql)
+from tests.test_payment_suggestions import (TERMS, _coa_of, _snapshot, add_invoice, add_payment, bank_account, box_rows, customer, discount_world, mixed_discount_world, period_page,
+                                            run_sql)
 
 NODE = shutil.which('node')
 NO_NODE = pytest.mark.skipif(NODE is None, reason='Node.js nicht installiert – die Läufe der Skripte entfallen, das HTML und die Aufbauprüfungen decken das Wichtigste ab')
@@ -148,8 +150,8 @@ def test_any_other_value_is_a_bad_request_and_nothing_is_written(routes, value):
 
 
 @pytest.mark.parametrize('terms, sentence', [
-    ({'skonto_days': None, 'skonto_percent': None}, SKONTO_NO_TERMS), ({'mixed_tax_rates': 1}, SKONTO_MIXED), ({'tax_rate': 0.16}, SKONTO_RATE),
-], ids=['ohne-Bedingungen', 'Satz-je-Position', '16-Prozent'])
+    ({'skonto_days': None, 'skonto_percent': None}, SKONTO_NO_TERMS), ({'mixed_tax_rates': 1}, MIXED_GROUPS_MISMATCH), ({'tax_rate': 0.16}, SKONTO_RATE),
+], ids=['ohne-Bedingungen', 'Satz-je-Position-ohne-Positionen', '16-Prozent'])
 def test_a_refusal_of_the_database_layer_comes_back_as_its_fixed_sentence_and_nothing_is_written(routes, terms, sentence):
     account, _buyer, invoice_id = discount_world(routes, **terms)
     payment = add_payment(routes, account, 116.62, '2026-03-10', 'Käufer AG', 'Danke')
@@ -159,13 +161,33 @@ def test_a_refusal_of_the_database_layer_comes_back_as_its_fixed_sentence_and_no
     assert installation.dump(routes.db_name) == before
 
 
-def test_an_invoice_from_the_master_data_comes_back_with_its_sentence(routes):
+def test_an_invoice_whose_revenue_account_from_the_master_data_is_a_discount_account_comes_back_with_its_sentence(routes):
+    account, _buyer, invoice_id = discount_world(routes)
+    routes.insert_invoice_item({'invoice_id': invoice_id, 'position': 1, 'description': 'Anstrich', 'quantity': 1, 'unit': 'Stk.', 'price_per_unit': 100.0,
+                                'total_net': 100.0, 'tax_category': 'S', 'tax_rate': 0.19, 'tax_rate_bp': 1900, 'revenue_coa_id': _coa_of(routes, 4736)})
+    payment = add_payment(routes, account, 116.62, '2026-03-10', 'Käufer AG', 'Danke')
+    before = installation.dump(routes.db_name)
+
+    assert link({'invoice_id': invoice_id, 'transaction_id': payment, 'skonto': True}) == (400, SKONTO_REVENUE_DISCOUNT)
+    assert installation.dump(routes.db_name) == before
+
+
+def test_an_invoice_with_a_rate_from_the_master_data_books_the_discount_over_the_route(routes):
     account, _buyer, invoice_id = discount_world(routes)
     routes.insert_invoice_item({'invoice_id': invoice_id, 'position': 1, 'description': 'Anstrich', 'quantity': 1, 'unit': 'Stk.', 'price_per_unit': 100.0,
                                 'total_net': 100.0, 'tax_category': 'S', 'tax_rate': 0.19, 'tax_rate_bp': 1900})
     payment = add_payment(routes, account, 116.62, '2026-03-10', 'Käufer AG', 'Danke')
 
-    assert link({'invoice_id': invoice_id, 'transaction_id': payment, 'skonto': True}) == (400, SKONTO_TAX_ENTRY)
+    assert link({'invoice_id': invoice_id, 'transaction_id': payment, 'skonto': True}) == (200, f'/invoice/view?id={invoice_id}')
+    assert assigned(routes, invoice_id) == [(1166200, 23800)] and status_of(routes, invoice_id) == ('paid', 0)
+
+
+def test_an_invoice_with_a_rate_per_position_books_the_discount_over_the_route(routes):
+    account, _buyer, invoice_id = mixed_discount_world(routes)
+    payment = add_payment(routes, account, 169.05, '2026-03-10', 'Käufer AG', 'Danke')
+
+    assert link({'invoice_id': invoice_id, 'transaction_id': payment, 'skonto': True}) == (200, f'/invoice/view?id={invoice_id}')
+    assert assigned(routes, invoice_id) == [(1690500, 34500)] and status_of(routes, invoice_id) == ('paid', 0)
 
 
 def test_a_rest_that_is_too_big_or_missing_names_both_amounts_and_writes_nothing(routes):
@@ -272,8 +294,8 @@ def test_a_new_booking_that_cannot_close_with_a_discount_is_refused_before_anyth
 
 
 @pytest.mark.parametrize('terms, sentence', [
-    ({'skonto_days': None, 'skonto_percent': None}, SKONTO_NO_TERMS), ({'mixed_tax_rates': 1}, SKONTO_MIXED), ({'tax_rate': 0.16}, SKONTO_RATE),
-], ids=['ohne-Bedingungen', 'Satz-je-Position', '16-Prozent'])
+    ({'skonto_days': None, 'skonto_percent': None}, SKONTO_NO_TERMS), ({'mixed_tax_rates': 1}, MIXED_GROUPS_MISMATCH), ({'tax_rate': 0.16}, SKONTO_RATE),
+], ids=['ohne-Bedingungen', 'Satz-je-Position-ohne-Positionen', '16-Prozent'])
 def test_a_new_booking_for_an_invoice_without_a_discount_is_refused_before_anything_is_written(tmp_db, terms, sentence):
     account, _buyer, invoice_id = discount_world(tmp_db, **terms)
     before = installation.dump(tmp_db.db_name)
@@ -514,9 +536,30 @@ def test_without_discount_terms_the_page_names_nothing_and_has_no_tick(tmp_db):
     assert 'Vorhandene Buchung verknüpfen' in page                                                    # die Liste selbst bleibt
 
 
+@pytest.mark.parametrize('kind', ['16-Prozent', 'Satz-je-Position-ohne-Positionen', 'Gruppe-5,5-Prozent', 'Skonto-Konto-als-Erloeskonto'])
+def test_without_discount_terms_the_page_says_nothing_about_rates_or_discount_accounts(tmp_db, kind):
+    """Eine Rechnung ohne Bedingungen sieht kein Skonto vor – ob ihr Satz ein Skonto-Konto hat oder ihre Positionen passen, geht die Seite dann nichts an."""
+    none = {'skonto_days': None, 'skonto_percent': None}
+    if kind == 'Gruppe-5,5-Prozent':
+        account, _buyer, invoice_id = mixed_discount_world(tmp_db, parts=(('19', '100.00'), ('5.5', '200.00')), snapshots={2: _snapshot('5.5')}, **none)
+    else:
+        account, _buyer, invoice_id = discount_world(tmp_db, **{'16-Prozent': {'tax_rate': 0.16}, 'Satz-je-Position-ohne-Positionen': {'mixed_tax_rates': 1}, 'Skonto-Konto-als-Erloeskonto': {}}[kind], **none)
+    if kind == 'Skonto-Konto-als-Erloeskonto':
+        tmp_db.insert_invoice_item({'invoice_id': invoice_id, 'position': 1, 'description': 'Anstrich', 'quantity': 1, 'unit': 'Stk.', 'price_per_unit': 100.0,
+                                    'total_net': 100.0, 'tax_category': 'S', 'tax_rate': 0.19, 'tax_rate_bp': 1900, 'revenue_coa_id': _coa_of(tmp_db, 4736)})
+    add_payment(tmp_db, account, 100.00, '2026-03-10', 'Käufer AG', 'Danke')
+
+    page = PageInvoice(tmp_db, {}, invoice_id)
+
+    assert info_of(page) is None and 'id="paySkonto' not in page and 'skoInvoiceInit' not in page
+    for sentence in (SKONTO_RATE, MIXED_GROUPS_MISMATCH, SKONTO_REVENUE_DISCOUNT, SKONTO_GROUP_RATE.format(rate='5,5')):
+        assert sentence not in page
+    assert 'Vorhandene Buchung verknüpfen' in page
+
+
 @pytest.mark.parametrize('terms, sentence', [
-    ({'mixed_tax_rates': 1}, SKONTO_MIXED), ({'tax_rate': 0.16}, SKONTO_RATE),
-], ids=['Satz-je-Position', '16-Prozent'])
+    ({'mixed_tax_rates': 1}, MIXED_GROUPS_MISMATCH), ({'tax_rate': 0.16}, SKONTO_RATE),
+], ids=['Satz-je-Position-ohne-Positionen', '16-Prozent'])
 def test_an_invoice_with_terms_but_without_a_discount_account_names_the_fixed_sentence_and_has_no_tick(tmp_db, terms, sentence):
     account, _buyer, invoice_id = discount_world(tmp_db, **terms)
     add_payment(tmp_db, account, 116.62, '2026-03-10', 'Käufer AG', 'Danke')
@@ -527,13 +570,48 @@ def test_an_invoice_with_terms_but_without_a_discount_account_names_the_fixed_se
     assert 'id="paySkonto' not in page and 'skoInvoiceInit' not in page
 
 
-def test_an_invoice_from_the_master_data_names_its_sentence(tmp_db):
+def test_an_invoice_whose_revenue_account_from_the_master_data_is_a_discount_account_names_its_sentence(tmp_db):
     account, _buyer, invoice_id = discount_world(tmp_db)
     tmp_db.insert_invoice_item({'invoice_id': invoice_id, 'position': 1, 'description': 'Anstrich', 'quantity': 1, 'unit': 'Stk.', 'price_per_unit': 100.0,
-                                'total_net': 100.0, 'tax_category': 'S', 'tax_rate': 0.19, 'tax_rate_bp': 1900})
+                                'total_net': 100.0, 'tax_category': 'S', 'tax_rate': 0.19, 'tax_rate_bp': 1900, 'revenue_coa_id': _coa_of(tmp_db, 4736)})
     add_payment(tmp_db, account, 116.62, '2026-03-10', 'Käufer AG', 'Danke')
 
-    assert f'<p class="hint">{SKONTO_TAX_ENTRY}</p>' in PageInvoice(tmp_db, {}, invoice_id)
+    page = PageInvoice(tmp_db, {}, invoice_id)
+
+    assert f'<p class="hint">{SKONTO_REVENUE_DISCOUNT}</p>' in page and 'id="paySkonto' not in page
+
+
+def test_an_invoice_with_a_rate_from_the_master_data_shows_the_line_and_the_tick(tmp_db):
+    account, _buyer, invoice_id = discount_world(tmp_db, date='2099-03-04')
+    tmp_db.insert_invoice_item({'invoice_id': invoice_id, 'position': 1, 'description': 'Anstrich', 'quantity': 1, 'unit': 'Stk.', 'price_per_unit': 100.0,
+                                'total_net': 100.0, 'tax_category': 'S', 'tax_rate': 0.19, 'tax_rate_bp': 1900})
+    payment = add_payment(tmp_db, account, 116.62, '2026-03-10', 'Käufer AG', 'Danke')
+
+    page = PageInvoice(tmp_db, {}, invoice_id)
+
+    assert info_of(page)[0] == 'Skonto: 2 % = 2,38 € bis 18.03.2099' and f'id="paySkonto_{payment}"' in page
+
+
+def test_an_invoice_with_a_rate_per_position_shows_the_line_over_the_whole_gross_and_the_tick(tmp_db):
+    """19 % × 100,00 und 7 % × 50,00: brutto 172,50, Skonto 2 % = 3,45 € – die Seite zeigt die Zeile mit dem Betrag und den Haken je Kandidat."""
+    account, _buyer, invoice_id = mixed_discount_world(tmp_db, date='2099-03-04')
+    payment = add_payment(tmp_db, account, 169.05, '2026-03-10', 'Käufer AG', 'Danke')
+
+    page = PageInvoice(tmp_db, {}, invoice_id)
+
+    text, attributes = info_of(page)
+    assert text == 'Skonto: 2 % = 3,45 € bis 18.03.2099' and (attributes['data-open'], attributes['data-limit']) == ('172.50', '3.45')
+    assert f'id="paySkonto_{payment}"' in page and f'id="paySkontoRow_{payment}"' in page and 'hidden' in the_row(page, f'paySkontoRow_{payment}')
+
+
+def test_a_group_without_a_discount_account_names_its_rate_on_the_page_and_has_no_tick(tmp_db):
+    account, _buyer, invoice_id = mixed_discount_world(tmp_db, parts=(('19', '100.00'), ('5.5', '200.00')), snapshots={2: _snapshot('5.5')})
+    add_payment(tmp_db, account, 323.40, '2026-03-10', 'Käufer AG', 'Danke')
+
+    page = PageInvoice(tmp_db, {}, invoice_id)
+
+    assert f'<p class="hint">{SKONTO_GROUP_RATE.format(rate="5,5")}</p>' in page and 'Skonto lässt sich für 5,5 % dieser Rechnung noch nicht ausbuchen.' in page
+    assert 'id="paySkonto' not in page and 'skoInvoiceInit' not in page
 
 
 def test_each_candidate_has_a_hidden_tick_that_is_never_ticked(tmp_db):

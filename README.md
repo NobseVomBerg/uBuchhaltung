@@ -255,7 +255,7 @@ Jede Funktion mit ihrer Seite im Browser. Die Regeln hinter den Funktionen stehe
 - Status: Entwurf → Abgeschlossen → Versendet → Bezahlt (dazu Teilzahlung, Überfällig, Storniert). Storno über „Stornieren“: Die **Stornorechnung**
   ist ein eigener Beleg mit eigener Nummer; „Stornieren und neu ausstellen“ legt den Entwurf einer neuen Rechnung an.
 - **Zahlungen** (Bankbewegung ganz, teilweise oder auf mehrere Rechnungen zuordnen; Überschuss bleibt als Guthaben), **Skonto** (Prozent und Frist im PDF,
-  Abzug wird beim Zuordnen auf Klick ausgebucht), **Erstattung** auf der Seite der Stornorechnung. Mit dem Status *Versendet* steht die Rechnung als
+  Abzug wird beim Zuordnen auf Klick ausgebucht – auch bei mehreren Steuersätzen: 19 %, 7 %, steuerfrei; nach Teilzahlungen nicht immer), **Erstattung** auf der Seite der Stornorechnung. Mit dem Status *Versendet* steht die Rechnung als
   offener Posten in den Büchern; die EÜR bleibt eine Ist-Rechnung (Einnahme erst mit der Zahlung). Eine Prüfliste unter *Daten* zeigt Unstimmigkeiten.
 - **Mahnwesen** (`/invoice/reminders`): überfällige Rechnungen mit drei Mahnstufen nach Verzugstagen (bis 30, bis 60, über 60 Tage) und eine Vorschau der in 7 Tagen fälligen.
 - **Angebote** (`/quote`): gleiche Positionen und PDF-Logik, eigener Nummernkreis, Gültigkeitsdatum, Umwandlung in eine Rechnung.
