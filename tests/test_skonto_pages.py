@@ -536,6 +536,27 @@ def test_without_discount_terms_the_page_names_nothing_and_has_no_tick(tmp_db):
     assert 'Vorhandene Buchung verknüpfen' in page                                                    # die Liste selbst bleibt
 
 
+@pytest.mark.parametrize('kind', ['16-Prozent', 'Satz-je-Position-ohne-Positionen', 'Gruppe-5,5-Prozent', 'Skonto-Konto-als-Erloeskonto'])
+def test_without_discount_terms_the_page_says_nothing_about_rates_or_discount_accounts(tmp_db, kind):
+    """Eine Rechnung ohne Bedingungen sieht kein Skonto vor – ob ihr Satz ein Skonto-Konto hat oder ihre Positionen passen, geht die Seite dann nichts an."""
+    none = {'skonto_days': None, 'skonto_percent': None}
+    if kind == 'Gruppe-5,5-Prozent':
+        account, _buyer, invoice_id = mixed_discount_world(tmp_db, parts=(('19', '100.00'), ('5.5', '200.00')), snapshots={2: _snapshot('5.5')}, **none)
+    else:
+        account, _buyer, invoice_id = discount_world(tmp_db, **{'16-Prozent': {'tax_rate': 0.16}, 'Satz-je-Position-ohne-Positionen': {'mixed_tax_rates': 1}, 'Skonto-Konto-als-Erloeskonto': {}}[kind], **none)
+    if kind == 'Skonto-Konto-als-Erloeskonto':
+        tmp_db.insert_invoice_item({'invoice_id': invoice_id, 'position': 1, 'description': 'Anstrich', 'quantity': 1, 'unit': 'Stk.', 'price_per_unit': 100.0,
+                                    'total_net': 100.0, 'tax_category': 'S', 'tax_rate': 0.19, 'tax_rate_bp': 1900, 'revenue_coa_id': _coa_of(tmp_db, 4736)})
+    add_payment(tmp_db, account, 100.00, '2026-03-10', 'Käufer AG', 'Danke')
+
+    page = PageInvoice(tmp_db, {}, invoice_id)
+
+    assert info_of(page) is None and 'id="paySkonto' not in page and 'skoInvoiceInit' not in page
+    for sentence in (SKONTO_RATE, MIXED_GROUPS_MISMATCH, SKONTO_REVENUE_DISCOUNT, SKONTO_GROUP_RATE.format(rate='5,5')):
+        assert sentence not in page
+    assert 'Vorhandene Buchung verknüpfen' in page
+
+
 @pytest.mark.parametrize('terms, sentence', [
     ({'mixed_tax_rates': 1}, MIXED_GROUPS_MISMATCH), ({'tax_rate': 0.16}, SKONTO_RATE),
 ], ids=['Satz-je-Position-ohne-Positionen', '16-Prozent'])

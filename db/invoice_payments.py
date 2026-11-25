@@ -262,11 +262,12 @@ SKONTO_NO_TERMS = 'Diese Rechnung sieht kein Skonto vor.'
 SKONTO_RATE = 'Skonto lässt sich für den Steuersatz dieser Rechnung noch nicht ausbuchen.'
 # Ein Beleg mit Steuersatz je Position: Eine seiner Satzgruppen hat kein Skonto-Konto (nur 19 %, 7 % und 0 % haben eines) – der Satz steht im Satz; ein Erlöskonto einer Position (Momentaufnahme der
 # Stammdaten) ist selbst ein Skonto-Konto (bei jedem Beleg: Nur ohne so ein Konto ist in einer Zuordnung mit Skonto jeder Satz auf einem Skonto-Konto ein Skonto-Satz – die Erstattung und die
-# Rücknahme beim Stornieren verlassen sich darauf); die bisherigen Zahlungen eines Belegs mit Steuersatz je Position lassen die Aufteilung des Skontos auf die Sätze nicht zu
+# Rücknahme beim Stornieren verlassen sich darauf); die bisherigen Zahlungen eines Belegs mit Steuersatz je Position lassen die Aufteilung des Skontos auf die Sätze nicht zu – nach einem
+# Eingriff an den Buchungen, aber auch nach Teilzahlungen, die die App selbst gebucht hat (``mixed_skonto_parts``): Der Satz sagt nur, dass es an den bisherigen Zahlungen liegt, nicht woran
 SKONTO_GROUP_RATE = 'Skonto lässt sich für {rate} % dieser Rechnung noch nicht ausbuchen.'
 SKONTO_REVENUE_DISCOUNT = 'Skonto lässt sich nicht ausbuchen: Ein Erlöskonto dieser Rechnung ist selbst ein Skonto-Konto.'
 SKONTO_MIXED_SPLIT = ('Das Skonto lässt sich nicht auf die Steuersätze dieser Rechnung aufteilen – die bisherigen Zahlungen '
-                      'passen nicht dazu.')
+                      'lassen es nicht zu.')
 SKONTO_NO_REST = 'Nach dieser Zahlung bleibt kein Rest – es gibt kein Skonto auszubuchen.'
 SKONTO_TOO_LARGE = 'Der Rest nach dieser Zahlung ({rest}) ist größer als das Skonto der Rechnung ({skonto}).'
 # ``SKONTO_REFUND`` lehnt die Route ab, die eine Zahlung einer Stornorechnung mit Skonto zuordnen will (spätere Etappe); ``SKONTO_STORNO_EDITED`` lehnt das Stornieren einer Rechnung ab, deren
@@ -350,11 +351,18 @@ def skonto_terms(gross, days, percent, tax_rate, mixed, group_pcts=None, revenue
     **Der Schlüssel** ist bei einem Beleg mit einem Satz die Zahl 19, 7 oder 0 (``skonto_rate_key``: sein Kopfsatz), bei einem Beleg mit Steuersatz je Position das Tupel der Schlüssel aller seiner
     Gruppen (``skonto_group_key``), in der Reihenfolge der Gruppen: ``(19, 7)``, ``(19, 7, 0)``. Der Kopfsatz so eines Belegs ist nur ein Platzhalter und zählt nie.
 
-    Die Reihenfolge der Ablehnungen: Gruppen eines Belegs mit Steuersatz je Position nicht lesbar (``MIXED_GROUPS_MISMATCH``), die erste Gruppe (absteigend) ohne Skonto-Konto
-    (``SKONTO_GROUP_RATE``) bzw. der Kopfsatz eines Belegs mit einem Satz ohne Skonto-Konto (``SKONTO_RATE``), ein Erlöskonto der Stammdaten, das selbst ein Skonto-Konto ist
-    (``SKONTO_REVENUE_DISCOUNT``), keine oder unlesbare Bedingungen (``SKONTO_NO_TERMS``; gelesen wie überall, ``export.einvoice_model.parse_skonto``). **Die Frist des Skontos wird nie
-    geprüft:** Sie zu überschreiten ist kein Verbot – das Skonto zieht der Kunde ab, die App bucht, was geflossen ist."""
+    Die Reihenfolge der Ablehnungen: **keine oder unlesbare Bedingungen zuerst** (``SKONTO_NO_TERMS``; gelesen wie überall, ``export.einvoice_model.parse_skonto``) – eine Rechnung ohne
+    Skonto sagt nichts über Steuersätze oder Skonto-Konten, die Rechnungsseite zeigt dazu nichts –, dann Gruppen eines Belegs mit Steuersatz je Position nicht lesbar
+    (``MIXED_GROUPS_MISMATCH``), die erste Gruppe (absteigend) ohne Skonto-Konto (``SKONTO_GROUP_RATE``) bzw. der Kopfsatz eines Belegs mit einem Satz ohne Skonto-Konto
+    (``SKONTO_RATE``), ein Erlöskonto der Stammdaten, das selbst ein Skonto-Konto ist (``SKONTO_REVENUE_DISCOUNT``). **Die Frist des Skontos wird nie geprüft:** Sie zu überschreiten
+    ist kein Verbot – das Skonto zieht der Kunde ab, die App bucht, was geflossen ist."""
     from export.einvoice_model import parse_skonto          # ``export`` importiert diese Schicht: erst zur Laufzeit
+    try:
+        terms = parse_skonto(days, percent)
+    except ValueError:
+        terms = None
+    if terms is None:
+        return SKONTO_NO_TERMS, None
     if has_mixed_rates(mixed):
         if group_pcts is None:
             return MIXED_GROUPS_MISMATCH, None
@@ -368,12 +376,6 @@ def skonto_terms(gross, days, percent, tax_rate, mixed, group_pcts=None, revenue
             return SKONTO_RATE, None
     if revenue_on_discount:
         return SKONTO_REVENUE_DISCOUNT, None
-    try:
-        terms = parse_skonto(days, percent)
-    except ValueError:
-        terms = None
-    if terms is None:
-        return SKONTO_NO_TERMS, None
     return None, (rate_key, skonto_limit(gross or 0, terms[1]))
 
 
@@ -407,8 +409,10 @@ def mixed_skonto_parts(groups, booked, alloc, skonto):
 
     ``ValueError``, wo sich nicht ohne Raten buchen lässt: ``split_payment`` oder ``split_skonto`` lehnen ab (der gebuchte Stand passt nicht zu den Gruppen, das Skonto ist keine ganze Zahl
     Cent, es lässt sich nicht verteilen), ``alloc + skonto`` ist nicht das, was noch offen ist (die Zahlung schlösse die Rechnung nicht), eine Gruppe hat kein Skonto-Konto
-    (``skonto_group_key``), oder der Anteil einer Gruppe ist größer als ihr Rest bzw. die Steuer darin größer als der Rest ihrer Steuer (nach Vorzahlungen, die nicht im Verhältnis der Gruppen
-    liefen – etwa nach einem Eingriff im Editor). Die Zuordnung lehnt dann mit ``SKONTO_MIXED_SPLIT`` ab."""
+    (``skonto_group_key``), oder der Anteil einer Gruppe ist größer als ihr Rest bzw. die Steuer darin größer als der Rest ihrer Steuer. Das kommt nach einem Eingriff im Editor vor – und auch
+    OHNE einen, nach Teilzahlungen, die die App selbst gebucht hat: Jede rundet die Steuer je Satz auf den Cent, und bei einer kleinen Gruppe kann ihre Steuer aufgebraucht sein, bevor ihr Betrag
+    bezahlt ist (19 % × 1078,00 und 7 % × 4,00, Teilzahlungen über 675,00 und 582,00 €: bei den 7 % bleiben 0,10 € offen, aber 0,00 € Steuer; ein Skonto von 25,74 € trüge von ihnen 0,09 € mit
+    0,01 € Steuer). Die Zuordnung lehnt dann mit ``SKONTO_MIXED_SPLIT`` ab; die Zahlung ohne Skonto geht."""
     groups = list(groups)
     closing = split_payment(groups, booked, alloc + skonto)
     if alloc + skonto != sum(group.gross - booked.get(group.pct, (0, 0))[0] for group in groups):
@@ -1196,6 +1200,15 @@ class InvoicePaymentsMixin:
             debtor, waiting[pct] = row_debtor, row_waiting
         return debtor, waiting
 
+    def _mixed_receivable_sides(self, conn, number, pcts):
+        """``_receivable_sides_by_rate`` eines Belegs mit Steuersatz je Position, dazu geprüft: Gibt es Forderungen, tragen sie genau die Sätze ``pcts`` (die der Gruppen des Belegs) –
+        ``MixedNotBookable`` mit ``MIXED_RECEIVABLE_MISMATCH`` sonst (wie bei zwei Zeilen desselben Satzes). Ganz ohne Forderung ist es ``(None, {})``. Die EINE Stelle für die Vorprüfung einer
+        Zuordnung mit Skonto (vor allem, was ein Konto anlegt) und die Transaktion (``_assign_mixed``)."""
+        debtor, waiting = self._receivable_sides_by_rate(conn, number)
+        if waiting and set(waiting) != pcts:
+            raise MixedNotBookable(MIXED_RECEIVABLE_MISMATCH)
+        return debtor, waiting
+
     @classmethod
     def _mixed_booked(cls, conn, invoice_id, number, pcts, except_booking=None, except_payments=()):
         """Was die Zuordnungen einer Rechnung mit Steuersatz je Position je Satz tragen: ``{Satz: (Betrag, Steuer)}`` in Minor Units, mit Vorzeichen
@@ -1242,9 +1255,10 @@ class InvoicePaymentsMixin:
         (``_assign_in_tx``, frisch gelesen): ``(Fehlertext, None)`` oder ``(None, SkontoState(rate_key, limit, amount, parts))``. ``due``: der Rest der Rechnung vor dieser Zahlung
         (Brutto minus das Erledigte der anderen Zuordnungen, Minor Units), ``alloc``: der Betrag der Zahlung (Geld). Der Rest nach der Zahlung, ``due − alloc``, ist das Skonto.
 
-        Zuerst die Bedingungen der Rechnung (``skonto_terms``: die Gruppen eines Belegs mit Steuersatz je Position, ein Satz ohne Skonto-Konto, ein Erlöskonto der Stammdaten, das selbst ein
-        Skonto-Konto ist, keine Bedingungen), dann der Rest. **Ein Beleg mit Steuersatz je Position** (``MixedTaxRates``) liest seine Gruppen geprüft (``_checked_mixed_groups``: ``MixedNotBookable``,
-        ein Widerspruch der Momentaufnahme, Positionen, die nicht zu den Summen passen, eine Gruppe ohne positives Brutto, lehnt mit seinem festen Satz ab – vor allem anderen) und schlüsselt das
+        Zuerst die Bedingungen der Rechnung (``skonto_terms``: keine Bedingungen vor allem anderen – dann die Gruppen eines Belegs mit Steuersatz je Position, ein Satz ohne Skonto-Konto, ein
+        Erlöskonto der Stammdaten, das selbst ein Skonto-Konto ist), dann der Rest. **Ein Beleg mit Steuersatz je Position** (``MixedTaxRates``) liest seine Gruppen geprüft (``_checked_mixed_groups``:
+        ``MixedNotBookable``, ein Widerspruch der Momentaufnahme, Positionen, die nicht zu den Summen passen, eine Gruppe ohne positives Brutto, lehnt mit seinem festen Satz ab – vor allem
+        anderen, nur nicht vor ``SKONTO_NO_TERMS``: Eine Rechnung ohne Bedingungen sagt allein das) und schlüsselt das
         Skonto am Ende auf die Sätze auf (``mixed_skonto_parts``, ``SkontoState.parts``): Die bisherigen Zahlungen müssen sich je Satz lesen lassen (``_mixed_booked``,
         ``MIXED_ALLOCATION_UNREADABLE``), und die Aufteilung muss aufgehen (``SKONTO_MIXED_SPLIT``). Ein Beleg mit einem Satz aus den Stammdaten gilt wie jeder andere – sein Kopfsatz bestimmt
         das Skonto-Konto (``skonto_rate_key``), das Erlöskonto seiner Momentaufnahme gilt, wie bei jeder Zahlung. Eine Zahlung ohne Betrag
@@ -1258,16 +1272,17 @@ class InvoicePaymentsMixin:
         if row is None:
             return 'Rechnung nicht gefunden', None
         number, gross, days, percent, rate, mixed = row
-        groups = None
+        groups, group_error = None, None
         if has_mixed_rates(mixed):
             try:
                 groups = self._checked_mixed_groups(conn, invoice_id)
             except MixedNotBookable as exc:
-                return str(exc), None
+                group_error = str(exc)
         error, terms = skonto_terms(gross or 0, days, percent, rate, mixed, None if groups is None else tuple(group.pct for group in groups),
                                     self._revenue_on_discount(conn, invoice_id))
         if error is not None:
-            return error, None
+            # Gruppen, die sich nicht buchen lassen, nennen ihren genaueren Satz – nur nicht bei einer Rechnung ohne Bedingungen: Die sagt allein ``SKONTO_NO_TERMS``
+            return (group_error if group_error is not None and error != SKONTO_NO_TERMS else error), None
         rate_key, limit = terms
         if alloc <= 0:
             return NOTHING_TO_ASSIGN_MESSAGE, None
@@ -1317,9 +1332,12 @@ class InvoicePaymentsMixin:
         (``_skonto_precheck``; ``None`` heißt „keine Grenze“ bzw. „so viel wie möglich“). Die Regeln des Skontos (``skonto_terms``, Rest und Grenze) kommen gleich nach der Prüfung, ob
         die Rechnung sich bezahlen lässt, und VOR allem, was ein Konto anlegen kann: Eine abgelehnte Zuordnung legt kein Konto an, auch nicht 4184/4185 oder das Skonto-Konto. Erst am
         Ende, wenn alles andere gilt, wird das Skonto-Konto des Satzes aufgelöst (``SKONTO_ACCOUNTS``, ``_ensure_standard_coa``: fehlt es in einem älteren Bestand, entsteht es hier,
-        in einer eigenen Verbindung). Der Kontext trägt dann ``skonto`` = ``{'coa': COA-ID, 'rate_key': 19/7/0}`` (``_assign_in_tx``). **Ein Beleg mit Steuersatz je Position**
-        löst das Skonto-Konto jedes seiner Sätze auf (``{'coas': {19: COA-ID, 7: COA-ID, 0: COA-ID}, 'rate_key': (19, 7)}``, nur die Schlüssel seiner Gruppen) – erst nachdem jede Prüfung
-        gilt, auch die Erlöskonten je Satz: Eine abgelehnte Zuordnung legt kein Konto an.
+        in einer eigenen Verbindung). Der Kontext trägt dann ``skonto`` = ``{'coa': COA-ID, 'rate_key': 19/7/0, 'entry': …}`` (``_assign_in_tx``); ``entry`` ist die Momentaufnahme des Satzes aus den
+        Stammdaten, die die Vorprüfung am Beleg sah (``document_entry``: ``(Satz, Snapshot)`` oder ``None``), gelesen VOR dem Erlöskonto – die Transaktion liest sie frisch und lehnt bei jeder
+        Abweichung ab. **Ein Beleg mit Steuersatz je Position** löst das Skonto-Konto jedes seiner Sätze auf (``{'coas': {19: COA-ID, 7: COA-ID, 0: COA-ID}, 'rate_key': (19, 7)}``, nur die
+        Schlüssel seiner Gruppen) – erst nachdem jede Prüfung gilt, auch die Erlöskonten je Satz; und er prüft schon hier, was die Transaktion sonst erst ablehnte und was sich lesen lässt:
+        dass die Forderungen genau seine Sätze tragen (``_mixed_receivable_sides``, ``MIXED_RECEIVABLE_MISMATCH``) – vor dem ersten Konto, das ein Weg anlegen kann. Eine abgelehnte
+        Zuordnung legt kein Konto an.
 
         Das Erlöskonto ergibt sich aus der Rechnung (``resolve_revenue_coa``); ``revenue_coa_id``
         zählt nur, wenn dafür keines hinterlegt ist, und muss dann ein Erlöskonto sein.
@@ -1362,6 +1380,8 @@ class InvoicePaymentsMixin:
             try:
                 groups = self._checked_mixed_groups(conn, invoice_id)
                 snapshots = self.group_snapshots(conn, invoice_id)
+                if skonto_state is not None:
+                    self._mixed_receivable_sides(conn, invoice[1], {group.pct for group in groups})        # lesend prüfbar, und die Transaktion lehnte es ab: vor jedem Konto, das ein Weg unten anlegt
             except MixedNotBookable as exc:
                 return str(exc), None
             finally:
@@ -1392,6 +1412,12 @@ class InvoicePaymentsMixin:
         by_date = on is not None and uses_small_business_rule(invoice[35])
         if by_date and small_business_revenue_number(on) is None and not self.invoice_entry_accounts(invoice_id):
             return REVENUE_DATE_UNREADABLE, None
+        entry = None
+        if skonto_state is not None:
+            try:
+                entry = self.document_entry(invoice_id, invoice[35])           # vor dem Erlöskonto gelesen: Ändert sich die Momentaufnahme danach, weicht die Transaktion davon ab (``_assign_in_tx``)
+            except MixedNotBookable as exc:
+                return str(exc), None
         revenue_coa, error = self._document_revenue(invoice_id, invoice[35], revenue_coa_id, on=on)
         if error:
             return error, None
@@ -1406,7 +1432,7 @@ class InvoicePaymentsMixin:
             if isinstance(skonto_state.rate_key, tuple):
                 return PAYMENT_CHANGED_MESSAGE, None                          # das Kennzeichen hat sich seit dem Lesen der Rechnung geändert
             number, name = SKONTO_ACCOUNTS[skonto_state.rate_key]
-            context['skonto'] = {'coa': self._ensure_standard_coa(number, name), 'rate_key': skonto_state.rate_key}
+            context['skonto'] = {'coa': self._ensure_standard_coa(number, name), 'rate_key': skonto_state.rate_key, 'entry': entry}
         return None, context
 
     def payment_precheck(self, invoice_id, account_id, revenue_coa_id=None, on=None, amount=None, skonto=False):
@@ -1567,9 +1593,10 @@ class InvoicePaymentsMixin:
         gebucht wird der tatsächliche Rest, nie mehr als das Skonto, das die Rechnung vorsieht (``Invoices.SkontoDays``/``SkontoPercent``: Prozent vom Brutto, auf den Cent); die
         Frist wird nicht geprüft. ``InvoicePayments.Amount`` bleibt das Geld, ``SkontoAmount`` ist der Rest; ``AmountDue`` wird 0, die Rechnung „bezahlt“. Die Sätze sind „Bank an
         Debitoren“ und „Wartekonto an Erlöskonto“ (ohne Forderung „Erlöskonto an Bank“) über Betrag plus Skonto – dieser mit dem Rest der Rechnungssteuer, wie jede schließende Zahlung –
-        und zuletzt „Skonto-Konto an Bank“ mit dem negativen Skonto und seiner Steuer (``payment_rows``; das Skonto-Konto: ``SKONTO_ACCOUNTS``). Abgelehnt wird – nichts geschrieben,
-        kein Konto angelegt, auch kein Skonto-Konto –, wenn die Rechnung kein Skonto vorsieht, mehrere Steuersätze oder einen Satz aus den Stammdaten trägt, ihr Kopfsatz kein Skonto-Konto
-        hat (nur 19 %, 7 %, 0 % und § 19), nach der Zahlung kein Rest bleibt oder der Rest größer ist als das Skonto (feste Sätze ``SKONTO_*``).
+        und zuletzt „Skonto-Konto an Bank“ mit dem negativen Skonto und seiner Steuer (``payment_rows``; das Skonto-Konto: ``SKONTO_ACCOUNTS``); bei mehreren Steuersätzen je Satz einer
+        (``mixed_skonto_parts``). Abgelehnt wird – nichts geschrieben, kein Konto angelegt, auch kein Skonto-Konto –, wenn die Rechnung kein Skonto vorsieht (das sagt sie vor jedem anderen
+        Grund), ihr Kopfsatz bzw. ein Satz ihrer Gruppen kein Skonto-Konto hat (nur 19 %, 7 %, 0 % und § 19), ein Erlöskonto aus den Stammdaten selbst ein Skonto-Konto ist, die Zahlungen
+        sich nicht auf die Sätze aufteilen lassen, nach der Zahlung kein Rest bleibt oder der Rest größer ist als das Skonto (feste Sätze ``SKONTO_*``).
 
         **``exact=True``: nur genau der angeforderte Betrag** (braucht ``amount``, sonst ``ValueError``). Sonst kappt die Zuordnung auf den Rest der Rechnung und den freien Rest der Bewegung; mit ``exact``
         lehnt ``_assign_in_tx`` IN der Transaktion ab, wenn der Betrag, der zugeordnet würde, nicht der angeforderte ist (``PAYMENT_STATE_CHANGED``, nichts geschrieben) – so ordnet „Alle eindeutigen
@@ -1638,11 +1665,13 @@ class InvoicePaymentsMixin:
         (``_payment_prerequisites``), bei einem Beleg mit Steuersatz je Position dazu ``mixed`` (``_assign_mixed``). Bei einem Beleg ohne
         Steuerausweis, dessen Erlöskonto am Datum der Bankbewegung hängt (``uses_small_business_rule``), dazu ``revenue_date_number``: das Kleinunternehmer-Konto (4185 oder
         4184), für das die Vorbereitung aufgelöst hat – gehört das Datum der Bewegung in der Transaktion zu einem anderen, lehnt der Baustein mit dem „geändert“-Satz ab (ein
-        Kontext ohne den Schlüssel, etwa von Hand gebaut, bindet nichts). **Mit Skonto** (``ctx['skonto']`` = ``{'coa': Skonto-Konto (COA-ID), 'rate_key': 19/7/0}``, aus
+        Kontext ohne den Schlüssel, etwa von Hand gebaut, bindet nichts). **Mit Skonto** (``ctx['skonto']`` = ``{'coa': Skonto-Konto (COA-ID), 'rate_key': 19/7/0, 'entry': Momentaufnahme}``, aus
         ``_payment_prerequisites``): Die Zahlung schließt die Rechnung, der Rest nach ihr (Rest der Rechnung minus Betrag der Zahlung) ist das Skonto – er wird in
         ``InvoicePayments.SkontoAmount`` geschrieben und in den Sätzen ausgebucht (``payment_rows(skonto=…)``); die Steuer der Zahlung ist wie bei jedem schließenden Teil der Rest der
         Rechnungssteuer. Die Regeln (``skonto_terms``, Rest > 0 und höchstens das Skonto der Rechnung) gelten am frisch gelesenen Stand wie in der Vorprüfung; ein Kontext ohne den
-        Schlüssel bucht wie immer.
+        Schlüssel bucht wie immer. **Bei einem Beleg mit EINEM Satz** liest der Baustein auch die Momentaufnahme des Satzes aus den Stammdaten frisch (``_single_snapshot``) und lehnt mit dem
+        „geändert“-Satz ab, wenn sie nicht ``ctx['skonto']['entry']`` ist (eine kam hinzu oder fiel weg, ein anderes Erlöskonto, ein Widerspruch): ``ctx['revenue_coa']`` gälte sonst für einen
+        Stand, den die Vorprüfung nicht kannte. Ohne Skonto bindet der Kontext die Momentaufnahme nicht.
         ``allow_cancelled``: Auch eine stornierte Rechnung (mit positivem Betrag, keine
         Stornorechnung) nimmt die Zuordnung an – nur für den Rest, der beim Umzug an der stornierten Rechnung bleibt.
         ``exact``: ``requested`` ist ein Betrag, der genau so zugeordnet werden muss – würde am frisch gelesenen Stand weniger zugeordnet (Rest der Rechnung oder freier Rest der Bewegung sind
@@ -1706,6 +1735,12 @@ class InvoicePaymentsMixin:
             error, state = self._skonto_state(conn, invoice_id, due, alloc)
             if error is not None or state.rate_key != skonto_ctx['rate_key']:
                 return _refused(PAYMENT_CHANGED_MESSAGE)
+            if not ctx.get('mixed'):
+                try:
+                    if self._single_snapshot(conn, invoice_id, rate) != skonto_ctx['entry']:
+                        return _refused(PAYMENT_CHANGED_MESSAGE)
+                except MixedNotBookable:
+                    return _refused(PAYMENT_CHANGED_MESSAGE)
             skonto_minor = state.amount
         if ctx.get('mixed'):
             return self._assign_mixed(tx, invoice_id, booking_id, number, customer_id, bank, alloc, ctx, skonto_minor=skonto_minor,
@@ -1746,8 +1781,9 @@ class InvoicePaymentsMixin:
         **Mit Skonto** (``skonto_minor``: der Rest nach der Zahlung, Minor Units, > 0 – die Zahlung schließt die Rechnung; ``skonto_coas``: ``{Schlüssel: COA-ID}`` der Skonto-Konten, aus
         ``ctx['skonto']['coas']``) verteilt ``mixed_skonto_parts`` die Zahlung: Jede Gruppe wird mit ihrem ganzen Rest und dem Rest ihrer Steuer umgebucht, das Skonto trägt je Gruppe, auf die es
         entfällt, ein Satz „Skonto-Konto an Bank“ mit dem Anteil im Verhältnis zum Brutto und der Steuer darin (``payment_rows(skonto_parts=…)``; ein Satz ohne Steuer – 0 % – ohne Satz
-        und Betrag). Geht die Aufteilung nicht auf (der Anteil einer Gruppe ist größer als ihr Rest: Vorzahlungen, die nicht im Verhältnis der Gruppen liefen), lehnt ``SKONTO_MIXED_SPLIT`` ab;
-        fehlt das Skonto-Konto eines Satzes in ``skonto_coas``, der „geändert“-Satz. ``InvoicePayments.SkontoAmount`` ist die Summe über die Sätze.
+        und Betrag). Geht die Aufteilung nicht auf (der Anteil einer Gruppe ist größer als ihr Rest – nach einem Eingriff an den Vorzahlungen, aber auch nach Teilzahlungen der App, deren
+        gerundete Steuer die einer kleinen Gruppe aufgebraucht hat, ``mixed_skonto_parts``), lehnt ``SKONTO_MIXED_SPLIT`` ab; fehlt das Skonto-Konto eines Satzes in ``skonto_coas``, der
+        „geändert“-Satz. ``InvoicePayments.SkontoAmount`` ist die Summe über die Sätze.
 
         Geprüft wird in der Transaktion am frisch gelesenen Stand, alles vor dem ersten Schreiben (jede Ablehnung ist ein fester Satz): die
         Gruppen sind noch die der Vorprüfung („geändert“-Satz), jede Gruppe ist buchbar (``_checked_mixed_groups``), die Forderungen tragen genau
@@ -1760,9 +1796,7 @@ class InvoicePaymentsMixin:
             if tuple(groups) != ctx['mixed']['groups']:
                 return _refused(PAYMENT_CHANGED_MESSAGE)
             pcts = {group.pct for group in groups}
-            debtor_side, waiting = self._receivable_sides_by_rate(conn, number)
-            if waiting and set(waiting) != pcts:
-                return _refused(MIXED_RECEIVABLE_MISMATCH)
+            debtor_side, waiting = self._mixed_receivable_sides(conn, number, pcts)
             booked = self._mixed_booked(conn, invoice_id, number, pcts)
         except MixedNotBookable as exc:
             return _refused(str(exc))

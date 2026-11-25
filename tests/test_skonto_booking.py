@@ -548,7 +548,7 @@ def _change_after_the_precheck(monkeypatch, db, change):
     monkeypatch.setattr(type(db), '_payment_prerequisites', moved)
 
 
-@pytest.mark.parametrize('name', ['terms-removed', 'discount-shrinks', 'discount-account-added', 'another-payment', 'rate-changes'])
+@pytest.mark.parametrize('name', ['terms-removed', 'discount-shrinks', 'snapshot-added', 'discount-account-added', 'another-payment', 'rate-changes'])
 def test_a_change_between_the_precheck_and_the_transaction_refuses_with_the_changed_sentence(db, acct, monkeypatch, name):
     invoice = _sent(db, 'SK-18', 119.0)
     bank = _bank(db, acct, '116.62')
@@ -556,6 +556,9 @@ def test_a_change_between_the_precheck_and_the_transaction_refuses_with_the_chan
     changes = {
         'terms-removed': lambda: _exec(db, 'UPDATE Invoices SET SkontoDays = NULL, SkontoPercent = NULL WHERE ID = ?', invoice),
         'discount-shrinks': lambda: _exec(db, 'UPDATE Invoices SET SkontoPercent = 1.0 WHERE ID = ?', invoice),                  # Skonto jetzt 1,19 €, der Rest 2,38 €
+        # ein Satz aus den Stammdaten kommt hinzu, auch ohne eigenes Erlöskonto: Die Vorprüfung sah keinen, die Transaktion bucht nicht auf einem Stand, den sie nicht kannte
+        'snapshot-added': lambda: db.insert_invoice_item({'invoice_id': invoice, 'position': 1, 'description': 'x', 'quantity': 1, 'unit': 'Stk.',
+                                                          'price_per_unit': 100.0, 'total_net': 100.0, 'tax_rate': 0.19, 'tax_rate_bp': 1900}),
         # ein Erlöskonto aus den Stammdaten, das selbst ein Skonto-Konto ist (ein Satz aus den Stammdaten allein lehnt nicht mehr ab)
         'discount-account-added': lambda: db.insert_invoice_item({'invoice_id': invoice, 'position': 1, 'description': 'x', 'quantity': 1, 'unit': 'Stk.',
                                                                   'price_per_unit': 100.0, 'total_net': 100.0, 'tax_rate': 0.19, 'tax_rate_bp': 1900,

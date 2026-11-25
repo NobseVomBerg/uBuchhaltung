@@ -12,8 +12,9 @@ schließt, bucht das Skonto je Satz – mit Forderung fünf markierte Sätze unt
 
 Geprüft wird: die Beispiele a (genau), b (ein Cent mehr, ein Cent weniger), c (Teilzahlung vor der schließenden), d (drei Gruppen, eine steuerfreie aus den Stammdaten) Spalte für Spalte,
 mit und ohne Forderung; der Beleg mit EINEM Satz aus den Stammdaten (19 % mit eigenem Erlöskonto, steuerfrei → 4730 ohne Steuer); jede Ablehnung ohne Schreiben und ohne neues Konto
-(``SKONTO_GROUP_RATE``, ``SKONTO_REVENUE_DISCOUNT``, ``SKONTO_MIXED_SPLIT``, ``SKONTO_RATE``, ``MIXED_*``); die Konten, die eine Zuordnung anlegt (nur die der Sätze des Belegs); das Netz in
-der Transaktion; Entfernen, der Bank-Editor, ``payment_precheck`` und die Route.
+(``SKONTO_GROUP_RATE``, ``SKONTO_REVENUE_DISCOUNT``, ``SKONTO_MIXED_SPLIT`` – auch nach Teilzahlungen, die die App selbst gebucht hat –, ``SKONTO_RATE``, ``MIXED_*``, die Forderungen schon in der
+Vorprüfung, ``SKONTO_NO_TERMS`` vor jedem anderen Grund); die Konten, die eine Zuordnung anlegt (nur die der Sätze des Belegs); das Netz in der Transaktion (bei EINEM Satz auch die
+Momentaufnahme der Stammdaten); Entfernen, der Bank-Editor, ``payment_precheck`` und die Route.
 
 Alle Namen, Nummern und Beträge sind erfundene Testwerte.
 """
@@ -23,8 +24,8 @@ from decimal import Decimal
 import pytest
 
 import server.handlers as handlers
-from db.invoice_payments import (MIXED_ALLOCATION_UNREADABLE, MIXED_GROUPS_MISMATCH, PAYMENT_CHANGED_MESSAGE, PAYMENT_MARK, SKONTO_GROUP_RATE, SKONTO_MIXED_SPLIT, SKONTO_NO_TERMS,
-                                 SKONTO_NOT_CENTS, SKONTO_RATE, SKONTO_REVENUE_DISCOUNT, SKONTO_TOO_LARGE, TAX_ENTRY_CONTRADICTION)
+from db.invoice_payments import (MIXED_ALLOCATION_UNREADABLE, MIXED_GROUPS_MISMATCH, MIXED_RECEIVABLE_MISMATCH, PAYMENT_CHANGED_MESSAGE, PAYMENT_MARK, SKONTO_GROUP_RATE, SKONTO_MIXED_SPLIT,
+                                 SKONTO_NO_TERMS, SKONTO_NOT_CENTS, SKONTO_RATE, SKONTO_REVENUE_DISCOUNT, SKONTO_TOO_LARGE, Snapshot, TAX_ENTRY_CONTRADICTION)
 from money import from_minor, to_minor
 from server.pages_invoice import PageInvoice
 from server.pages_transactions import PageTransactions
@@ -416,7 +417,8 @@ def _break_the_split(db, invoice, first):
 
 @pytest.mark.parametrize('paid, rest', [('50.05', '3,45'), ('52.43', '1,07')], ids=['volles-Skonto', 'Rest-1,07'])
 def test_part_payments_that_do_not_fit_the_split_refuse_with_the_fixed_sentence_and_create_no_account(db, acct, paid, rest):
-    """Fall f: Die 19 % wären bei einem Skonto von 3,45 € mit 2,38 € dabei (bei 1,07 € Skonto mit 0,74 €) – ihr Rest ist 0."""
+    """Fall f: Die 19 % wären bei einem Skonto von 3,45 € mit 2,38 € dabei (bei 1,07 € Skonto mit 0,74 €) – ihr Rest ist 0. Hier hat ein Eingriff die Teilzahlung geändert; dass es auch ohne
+    einen geht, zeigt der nächste Test."""
     invoice = mixed_invoice(db)
     first, second = _bank(db, acct, '119.00', date='2025-04-02'), _bank(db, acct, paid, date='2025-05-05')
     assert db.assign_invoice_payment(invoice, first).ok
@@ -424,7 +426,36 @@ def test_part_payments_that_do_not_fit_the_split_refuse_with_the_fixed_sentence_
     no_accounts(db)
 
     _assert_refused(db, invoice, second, SKONTO_MIXED_SPLIT)
-    assert SKONTO_MIXED_SPLIT == ('Das Skonto lässt sich nicht auf die Steuersätze dieser Rechnung aufteilen – die bisherigen Zahlungen passen nicht dazu.') and rest
+    assert SKONTO_MIXED_SPLIT == 'Das Skonto lässt sich nicht auf die Steuersätze dieser Rechnung aufteilen – die bisherigen Zahlungen lassen es nicht zu.' and rest
+
+
+def test_part_payments_the_app_booked_itself_can_leave_a_small_group_no_tax_for_its_share_of_the_discount(db, acct):
+    """Fall E der Prüfung, ohne jeden Eingriff: 19 % × 1078,00 und 7 % × 4,00 (brutto 1287,10, Skonto 2 % = 25,74 €). Die Teilzahlungen über 675,00 und 582,00 € buchen die Steuer je Satz auf den
+    Cent gerundet; bei den 7 % ist die ganze Steuer (0,28 €) weg, bevor ihr Betrag bezahlt ist (Rest 0,10 €). Die schließende Zahlung über 4,36 € mit dem Skonto von 25,74 € trüge davon 0,09 € mit 0,01 €
+    Steuer – mehr, als dort noch steht: Das Skonto lässt sich nicht auf die Sätze aufteilen. Nichts wird geschrieben, kein Konto angelegt; die Zahlung ohne Skonto geht."""
+    invoice = mixed_invoice(db, 'M-E', parts=[(19, '1078.00', None), (7, '4.00', None)])
+    for paid in ('675.00', '582.00'):
+        assign(db, invoice, _bank(db, acct, paid), skonto=False)
+    assert _raw(db, "SELECT TaxRate, SUM(Amount), SUM(TaxAmount) FROM Bookings WHERE Status = ? AND DocumentNumber = 'M-E' AND EntryForm = 'transfer' GROUP BY TaxRate ORDER BY TaxRate",
+                PAYMENT_MARK) == [(0.07, 41800, 2800), (0.19, 12528200, 2000300)]                                               # 7 %: 4,18 € von 4,28 € bezahlt, 0,28 € von 0,28 € Steuer
+    closing = _bank(db, acct, '4.36')
+    no_accounts(db)
+
+    _assert_refused(db, invoice, closing, SKONTO_MIXED_SPLIT)
+    assert db.payment_precheck(invoice, acct, None, on='2025-04-10', amount='4.36', skonto=True) == SKONTO_MIXED_SPLIT          # die Vorprüfung der Maske sagt dasselbe
+
+    assert db.assign_invoice_payment(invoice, closing).ok and _state(db, invoice) == ('partial_payment', D('25.74'))           # ohne Skonto: eine gewöhnliche Teilzahlung
+
+
+def test_the_same_sum_in_one_part_payment_leaves_the_tax_of_the_small_group_and_the_discount_goes(db, acct):
+    """Gegenprobe zu Fall E: Dieselben 1257,00 € in EINER Teilzahlung – die Steuer der 7 % wird nur einmal gerundet und reicht für ihren Anteil am Skonto."""
+    invoice = mixed_invoice(db, 'M-E', parts=[(19, '1078.00', None), (7, '4.00', None)])
+    assign(db, invoice, _bank(db, acct, '1257.00'), skonto=False)
+    closing = _bank(db, acct, '4.36')
+
+    result = assign(db, invoice, closing)
+
+    assert _payment(db, invoice)[-1] == (43600, 257400, '2025-04-10') and _state(db, invoice) == ('paid', 0) and result.payment_id
 
 
 def test_an_earlier_payment_without_the_rows_of_the_app_refuses_before_the_split(db, acct):
@@ -443,6 +474,29 @@ def test_a_rest_that_is_no_whole_cent_amount_refuses(db, acct):
     _assert_refused(db, invoice, bank, SKONTO_NOT_CENTS)
 
 
+@pytest.mark.parametrize('damage', [
+    "DELETE FROM Bookings WHERE DocumentNumber = ? AND TaxRate = 0.07",
+    "UPDATE Bookings SET TaxRate = 0.16 WHERE DocumentNumber = ? AND TaxRate = 0.07",
+    "UPDATE Bookings SET TaxRate = 0.19 WHERE DocumentNumber = ? AND TaxRate = 0.07",
+], ids=['eine-Forderung-fehlt', 'Forderung-mit-fremdem-Satz', 'zwei-Forderungen-desselben-Satzes'])
+def test_receivables_that_do_not_carry_the_rates_of_the_invoice_refuse_before_any_account_is_created(db, acct, damage):
+    """Fall A der Prüfung: ``MIXED_RECEIVABLE_MISMATCH`` ist lesend zu prüfen – die Vorprüfung sagt es, BEVOR sie die Skonto-Konten (4736, 4731) anlegt, und die Vorprüfung der Maske ebenso."""
+    invoice = mixed_invoice(db)
+    _exec(db, damage, NUMBER)
+    bank = _bank(db, acct, '169.05')
+    no_accounts(db)
+
+    _assert_refused(db, invoice, bank, MIXED_RECEIVABLE_MISMATCH)
+
+    assert db.payment_precheck(invoice, acct, None, on='2025-04-10', amount='169.05', skonto=True) == MIXED_RECEIVABLE_MISMATCH
+    assert all(_coa(db, number) is None for number in (*SKONTO_NUMBERS, 4184, 4185))
+
+
+def test_a_mixed_invoice_without_receivables_has_nothing_to_mismatch(db, acct):
+    invoice = mixed_invoice(db, receivable=False)
+    assert db.payment_precheck(invoice, acct, None, on='2025-04-10', amount='169.05', skonto=True) is None
+
+
 def test_a_refused_discount_leaves_a_plain_payment_possible(db, acct):
     invoice, bank = _world(db, acct, [PLAIN_19, entry('5.5', '200.00', account(db, REDUCED))], '323.40', receivable=False)
     _assert_refused(db, invoice, bank, SKONTO_GROUP_RATE.format(rate='5,5'))
@@ -450,6 +504,70 @@ def test_a_refused_discount_leaves_a_plain_payment_possible(db, acct):
     result = db.assign_invoice_payment(invoice, bank)
 
     assert result.ok and _payment(db, invoice) == [(3234000, None, '2025-04-10')]
+
+
+# Eine Rechnung ohne Skonto-Bedingungen sagt NIE etwas über Steuersätze oder Skonto-Konten: ``SKONTO_NO_TERMS`` kommt vor jedem anderen Grund
+def _sixteen_percent(db):
+    return mixed_invoice(db, 'N-1', parts=[(16, '100.00', None)], skonto=None, receivable=False)
+
+
+def _group_without_account(db):
+    return mixed_invoice(db, 'N-2', parts=[PLAIN_19, entry('5.5', '200.00', account(db, REDUCED))], skonto=None, receivable=False)
+
+
+def _discount_account_as_revenue(db):
+    return mixed_invoice(db, 'N-3', parts=[PLAIN_19, entry(7, '50.00', _coa(db, 4731))], skonto=None)
+
+
+def _sums_do_not_match(db):
+    invoice = mixed_invoice(db, 'N-4', skonto=None)
+    _exec(db, 'UPDATE Invoices SET SumNet = 9990000 WHERE ID = ?', invoice)
+    return invoice
+
+
+def _snapshots_contradict(db):
+    invoice = mixed_invoice(db, 'N-5', skonto=None)
+    _exec(db, "UPDATE InvoiceItems SET TaxExemptReason = 'Grund ohne Satz' WHERE InvoiceId = ? AND TaxRate = 7", invoice)
+    return invoice
+
+
+def _rate_flag_without_positions(db):
+    invoice = mixed_invoice(db, 'N-6', parts=[PLAIN_19], skonto=None, receivable=False)
+    _exec(db, 'DELETE FROM InvoiceItems WHERE InvoiceId = ?', invoice)
+    _exec(db, 'UPDATE Invoices SET MixedTaxRates = 1 WHERE ID = ?', invoice)
+    return invoice
+
+
+DEFECTS = [(_sixteen_percent, SKONTO_RATE), (_group_without_account, SKONTO_GROUP_RATE.format(rate='5,5')), (_discount_account_as_revenue, SKONTO_REVENUE_DISCOUNT),
+           (_sums_do_not_match, MIXED_GROUPS_MISMATCH), (_snapshots_contradict, TAX_ENTRY_CONTRADICTION), (_rate_flag_without_positions, MIXED_GROUPS_MISMATCH)]
+DEFECT_IDS = ['16-Prozent', 'Gruppe-5,5-Prozent', 'Skonto-Konto-als-Erlöskonto', 'Summen-passen-nicht', 'Momentaufnahme-widerspricht', 'Kennzeichen-ohne-Positionen']
+
+
+@pytest.mark.parametrize('world', [world for world, _sentence in DEFECTS], ids=DEFECT_IDS)
+def test_an_invoice_without_discount_terms_names_only_that_whatever_else_is_wrong_with_it(db, acct, world):
+    invoice = world(db)
+    bank = _bank(db, acct, '100.00')
+    before = installation.dump(db.db_name)
+
+    refused = db.assign_invoice_payment(invoice, bank, None, None, True)
+
+    assert (refused.ok, refused.message) == (False, SKONTO_NO_TERMS) and installation.dump(db.db_name) == before
+    assert db.payment_precheck(invoice, acct, None, on='2025-04-10', amount='100.00', skonto=True) == SKONTO_NO_TERMS
+    assert db.skonto_offer(invoice).error == SKONTO_NO_TERMS                                                                    # die Seite sagt dazu nichts (``_skonto_info_html``)
+
+
+@pytest.mark.parametrize('world, sentence', DEFECTS, ids=DEFECT_IDS)
+def test_the_same_defects_with_discount_terms_keep_their_own_sentences(db, acct, world, sentence):
+    """Nichts ändert sich für eine Rechnung MIT Bedingungen: Die Gründe stehen in ihrer Reihenfolge."""
+    invoice = world(db)
+    _exec(db, 'UPDATE Invoices SET SkontoDays = 14, SkontoPercent = 2.0 WHERE ID = ?', invoice)
+    bank = _bank(db, acct, '100.00')
+    before = installation.dump(db.db_name)
+
+    refused = db.assign_invoice_payment(invoice, bank, None, None, True)
+
+    assert (refused.ok, refused.message) == (False, sentence) and installation.dump(db.db_name) == before
+    assert db.payment_precheck(invoice, acct, None, on='2025-04-10', amount='100.00', skonto=True) == sentence
 
 
 # ═══ Das Netz in der Transaktion ═════════════════════════════════════════════
@@ -479,6 +597,56 @@ def test_a_change_between_the_precheck_and_the_transaction_refuses_with_the_chan
     assert (result.ok, result.message) == (False, PAYMENT_CHANGED_MESSAGE)
     assert _tables(db) == seen['tables'] and _kid_ids(db, bank) == []
     assert all(row[1] is None for row in _payment(db, invoice))
+
+
+@pytest.mark.parametrize('name', ['snapshot-contradicts-the-head', 'snapshot-with-a-revenue-account-added', 'revenue-account-changes', 'snapshot-removed'])
+def test_a_change_of_the_snapshot_of_an_invoice_with_one_rate_after_the_precheck_refuses_with_the_changed_sentence(db, acct, monkeypatch, name):
+    """Fall D der Prüfung: Die Vorprüfung merkt sich, ob die Rechnung mit EINEM Satz die Momentaufnahme eines Satzes aus den Stammdaten trägt und welche; die Transaktion liest sie frisch und lehnt bei jeder
+    Abweichung ab. Sonst bucht sie auf dem Erlöskonto, das die Vorprüfung aufgelöst hat, obwohl die Rechnung inzwischen ein anderes (oder keines) trägt – oder trotz eines Widerspruchs."""
+    own, other = account(db, FREE), account(db, REDUCED)
+    invoice = mixed_invoice(db, 'S-7', parts=[entry(19, '100.00', own)] if name in ('revenue-account-changes', 'snapshot-removed') else [PLAIN_19])
+    bank = _bank(db, acct, '116.62')
+    changes = {
+        'snapshot-contradicts-the-head': lambda: db.insert_invoice_item({'invoice_id': invoice, 'position': 2, 'description': 'x', 'quantity': 1, 'unit': 'C62', 'price_per_unit': 100.0,
+                                                                         'total_net': 100.0, 'tax_rate': 0.07, 'tax_rate_bp': 700, 'revenue_coa_id': own}),
+        'snapshot-with-a-revenue-account-added': lambda: _exec(db, 'UPDATE InvoiceItems SET TaxRateBp = 1900, RevenueCoaId = ? WHERE InvoiceId = ?', own, invoice),
+        'revenue-account-changes': lambda: _exec(db, 'UPDATE InvoiceItems SET RevenueCoaId = ? WHERE InvoiceId = ?', other, invoice),
+        'snapshot-removed': lambda: _exec(db, 'UPDATE InvoiceItems SET TaxRateBp = NULL, RevenueCoaId = NULL WHERE InvoiceId = ?', invoice),
+    }
+    seen = {}
+
+    def change():
+        changes[name]()
+        seen['tables'] = _tables(db)
+
+    _change_after_the_precheck(monkeypatch, db, change)
+
+    result = db.assign_invoice_payment(invoice, bank, None, None, True)
+
+    assert (result.ok, result.message) == (False, PAYMENT_CHANGED_MESSAGE)
+    assert _tables(db) == seen['tables'] and _kid_ids(db, bank) == []
+    assert all(row[1] is None for row in _payment(db, invoice))
+
+
+def test_without_a_change_the_precheck_and_the_transaction_agree_on_the_snapshot(db, acct, monkeypatch):
+    """Gegenprobe: Ändert sich nichts, bucht die Zuordnung – auch mit einer Momentaufnahme samt eigenem Erlöskonto."""
+    invoice = mixed_invoice(db, 'S-8', parts=[entry(19, '100.00', account(db, FREE))])
+    bank = _bank(db, acct, '116.62')
+    _change_after_the_precheck(monkeypatch, db, lambda: None)
+
+    assign(db, invoice, bank)
+
+    assert shape(_kids(db, bank))[1] == ('transfer', 4405, FREE, D('119'), D('19'), 0.19) and _state(db, invoice) == ('paid', 0)
+
+
+def test_the_context_of_an_invoice_with_one_rate_carries_the_snapshot_the_precheck_saw(db, acct):
+    own = account(db, FREE)
+    plain, entered = mixed_invoice(db, 'S-9', parts=[PLAIN_19]), mixed_invoice(db, 'S-10', parts=[entry(19, '100.00', own)])
+    for invoice, expected in ((plain, None), (entered, (D(19), Snapshot(False, None, own)))):
+        error, context = db._payment_prerequisites(invoice, acct, None, on='2025-04-10', skonto=(1166200, 1166200))
+        assert error is None and context['skonto']['entry'] == expected and context['skonto']['rate_key'] == 19
+    error, context = db._payment_prerequisites(plain, acct, None, on='2025-04-10')
+    assert error is None and 'skonto' not in context                                                                            # ohne Skonto bindet die Vorprüfung nichts
 
 
 def test_a_context_without_the_key_books_as_always_even_with_discount_terms(db, acct):
@@ -667,6 +835,21 @@ def test_the_mask_refuses_a_new_movement_before_anything_is_written(routes, acct
 
     assert handlers.handle_add_transaction(routes, form) == (400, SKONTO_GROUP_RATE.format(rate='5,5'))
     assert installation.dump(routes.db_name) == before
+
+
+def test_the_mask_refuses_a_new_movement_for_broken_receivables_before_anything_is_written(routes, acct):
+    """Die Vorprüfung sieht die Forderungen: Es entsteht keine Bankbewegung, die die Zuordnung dann ablehnte – und kein Skonto-Konto."""
+    invoice = mixed_invoice(routes)
+    _exec(routes, "DELETE FROM Bookings WHERE DocumentNumber = ? AND TaxRate = 0.07", NUMBER)
+    no_accounts(routes)
+    before = installation.dump(routes.db_name)
+    form = {'transaction_id': ['0'], 'date': ['2025-04-10'], 'amount': ['169.05'], 'account': [str(acct)], 'recipient': ['Käufer AG'], 'text': ['Danke'],
+            'invoice_id': [str(invoice)], 'currency': ['EUR'], 'skonto': ['1']}
+
+    assert handlers.handle_add_transaction(routes, form) == (400, MIXED_RECEIVABLE_MISMATCH)
+
+    assert installation.dump(routes.db_name) == before and _raw(routes, "SELECT COUNT(*) FROM Bookings WHERE BookingType = 'bank'") == [(0,)]
+    assert all(_coa(routes, number) is None for number in (*SKONTO_NUMBERS, 4184, 4185))
 
 
 # ═══ Die Seiten und die Auswertungen nehmen den Skonto-Satz je Satz mit ═════

@@ -182,10 +182,14 @@
     gesamt gerechneten Wert gibt es nicht (kann um einen Cent von „Belegsteuer × Skonto / Brutto“ abweichen).
   - **Konten je Gruppe:** das Konto ihres Satzes (steuerfrei wie 0 %); der Kopfsatz des Belegs ist nur ein Platzhalter und bestimmt kein Konto. Angelegt werden nur die Konten der
     Sätze des Belegs.
-  - **Ablehnungen** (feste Sätze, vor dem ersten Schreiben): Gruppe ohne Skonto-Konto (5,5 %, 16 % …) `SKONTO_GROUP_RATE` mit ihrem Satz; Positionen passen
-    nicht zu den Summen `MIXED_GROUPS_MISMATCH`, Widerspruch der Momentaufnahme `TAX_ENTRY_CONTRADICTION`; Vorzahlungen nicht je Satz lesbar
-    `MIXED_ALLOCATION_UNREADABLE`; die Aufteilung geht nicht auf (Anteil oder Steuer darin größer als der Rest der Gruppe, etwa nach Vorzahlungen, die nicht im
-    Verhältnis der Gruppen liefen) `SKONTO_MIXED_SPLIT`.
+  - **Ablehnungen** (feste Sätze, vor dem ersten Schreiben und vor jedem Konto, das eine Zuordnung anlegt): Gruppe ohne Skonto-Konto (5,5 %, 16 % …) `SKONTO_GROUP_RATE` mit ihrem
+    Satz; Positionen passen nicht zu den Summen `MIXED_GROUPS_MISMATCH`, Widerspruch der Momentaufnahme `TAX_ENTRY_CONTRADICTION`; Forderungen, die nicht genau die Sätze des Belegs
+    tragen, `MIXED_RECEIVABLE_MISMATCH` (schon die Vorprüfung, `_mixed_receivable_sides`); Vorzahlungen nicht je Satz lesbar `MIXED_ALLOCATION_UNREADABLE`; die Aufteilung geht nicht
+    auf (Anteil oder Steuer darin größer als der Rest der Gruppe) `SKONTO_MIXED_SPLIT` – „… die bisherigen Zahlungen lassen es nicht zu.“
+  - **Bekannte Grenze – `SKONTO_MIXED_SPLIT` kommt auch ohne Eingriff:** Jede Teilzahlung, die die App bucht, rundet die Steuer je Satz auf den Cent. Bei einer kleinen Gruppe kann das
+    ihre ganze Steuer aufbrauchen, bevor ihr Betrag bezahlt ist (19 % × 1078,00 und 7 % × 4,00, Teilzahlungen über 675,00 und 582,00 €: bei den 7 % bleiben 0,10 € offen, aber 0,00 €
+    Steuer); die schließende Zahlung mit Skonto lehnt dann ab, weil der Anteil der Gruppe am Skonto Steuer trüge. Dieselben Teilzahlungen in einer Summe gehen; die Zahlung ohne Skonto
+    geht (der Rest bleibt offen). `tests/test_skonto_mixed_booking.py`
 - **Konten** (`SKONTO_ACCOUNTS`): 19 % → 4736, 7 % → 4731, 0 %/§ 19 → 4730 ohne Steuer (Standardkonten; fehlt eines, legt die erste Zuordnung
   es vor der Transaktion an – eine abgelehnte nichts). Ein Skonto-Konto lehrt nie ein Erlöskonto, der Skonto-Satz zählt nicht in
   `_allocations_tax` und steht nicht in `payment_revenue_choices` und der Wahl eines Stammdaten-Steuersatzes.
@@ -200,6 +204,11 @@
   EINMAL auf den Cent gerundet (`skonto_tax`). Nur Rechnungen, deren Sätze ein Skonto-Konto haben: 19 %, 7 %, 0 % und § 19 (beim Beleg mit einem Satz sein Kopfsatz,
   ein Satz aus den Stammdaten gilt wie jeder andere; beim Beleg mit Steuersatz je Position jede Gruppe – 19 %, 7 %, steuerfrei); jeder andere Satz lehnt mit festem
   Satz ab (`SKONTO_RATE`, `SKONTO_GROUP_RATE`, `SKONTO_*`).
+- **Reihenfolge der Ablehnungen** (`skonto_terms`): Hat die Rechnung keine lesbaren Bedingungen, sagt sie allein `SKONTO_NO_TERMS` – vor jedem anderen Grund, gleich was sonst an ihr ist;
+  die Rechnungsseite zeigt dazu nichts. Danach: Gruppen nicht lesbar, Satz bzw. Gruppe ohne Skonto-Konto, Erlöskonto der Stammdaten, das selbst ein Skonto-Konto ist.
+- **Netz in der Transaktion:** `_assign_in_tx` prüft dieselben Regeln am frisch gelesenen Stand; beim Beleg mit EINEM Satz auch die Momentaufnahme des Satzes aus den Stammdaten
+  (`ctx['skonto']['entry']`, was die Vorprüfung sah – gelesen vor dem Erlöskonto): Weicht sie ab, lehnt `PAYMENT_CHANGED_MESSAGE` ab, nichts geschrieben. Ohne Skonto bindet der Kontext sie
+  nicht. Der Beleg mit Steuersatz je Position vergleicht seine Gruppen, wie ohne Skonto. `tests/test_skonto_booking.py`, `tests/test_skonto_mixed_booking.py`
 - **Entfernen:** Die Zahlung mit Skonto geht auf jedem Weg samt Skonto-Sätzen; solange sie hängt, lässt sich keine ANDERE Zahlung der
   Rechnung entfernen (`SKONTO_REMOVAL_REFUSED`, in der einen Prüfung aller Entfernen-Wege, `_refund_removal_blocker`).
 - **Stornieren nimmt das Skonto zurück** (`_reverse_skonto_in`, in der Transaktion von `cancel_invoice`): drei markierte Sätze unter der

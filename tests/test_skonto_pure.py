@@ -129,11 +129,12 @@ def test_skonto_terms_accepts_a_plain_invoice():
 
 @pytest.mark.parametrize('over, expected', [
     pytest.param(dict(revenue_on_discount=True), SKONTO_REVENUE_DISCOUNT, id='Erlöskonto der Stammdaten ist ein Skonto-Konto'),
-    pytest.param(dict(revenue_on_discount=True, tax_rate=0.16, days=None, percent=None), SKONTO_RATE, id='der Satz vor dem Erlöskonto'),
-    pytest.param(dict(revenue_on_discount=True, days=None, percent=None), SKONTO_REVENUE_DISCOUNT, id='das Erlöskonto vor den Bedingungen'),
+    pytest.param(dict(revenue_on_discount=True, tax_rate=0.16), SKONTO_RATE, id='der Satz vor dem Erlöskonto'),
+    pytest.param(dict(revenue_on_discount=True, days=None, percent=None), SKONTO_NO_TERMS, id='die Bedingungen vor dem Erlöskonto'),
     pytest.param(dict(tax_rate=0.16), SKONTO_RATE, id='16 %'),
     pytest.param(dict(tax_rate=0.05), SKONTO_RATE, id='5 %'),
-    pytest.param(dict(tax_rate=0.16, days=None, percent=None), SKONTO_RATE, id='der Satz vor den Bedingungen'),
+    pytest.param(dict(tax_rate=0.16, days=None, percent=None), SKONTO_NO_TERMS, id='die Bedingungen vor dem Satz'),
+    pytest.param(dict(tax_rate=0.16, revenue_on_discount=True, days=None, percent=None), SKONTO_NO_TERMS, id='die Bedingungen vor dem Satz und dem Erlöskonto'),
     pytest.param(dict(days=None, percent=None), SKONTO_NO_TERMS, id='keine Bedingungen'),
     pytest.param(dict(days=14, percent=None), SKONTO_NO_TERMS, id='nur Tage'),
     pytest.param(dict(days=None, percent=2.0), SKONTO_NO_TERMS, id='nur Prozent'),

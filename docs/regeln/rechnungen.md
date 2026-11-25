@@ -203,7 +203,7 @@
 - **DATEV:** Satz außerhalb 19/16/7/5 % bekommt keinen BU-Schlüssel (0; bei Umsatzsteuer der Satz in Spalte 40); der Export zählt solche
   Zeilen (`export_to_datev(rates_without_key=…)`, `DatevStack.hint`), fester Hinweis `DATEV_RATE_NOTE`; der Stapel bleibt Byte für Byte
   gleich. Weitere Auswertungen: `auswertungen.md`.
-- **Bekannte Grenzen:** kein Wartekonto für weitere Sätze; kein Skonto-Konto für weitere Sätze (nur 19 %, 7 % und steuerfrei); ein Eintrag mit genau 100 % ist speicherbar, der Beleg aber nicht
+- **Bekannte Grenzen:** kein Wartekonto für weitere Sätze; kein Skonto-Konto für weitere Sätze (nur 19 %, 7 % und steuerfrei); kein Skonto bei mehreren Sätzen nach Teilzahlungen, deren gerundete Steuer die einer kleinen Gruppe aufbraucht (`SKONTO_MIXED_SPLIT`, `zahlungen.md`); ein Eintrag mit genau 100 % ist speicherbar, der Beleg aber nicht
   versendbar; Reverse Charge, innergemeinschaftliche Lieferung, Ausfuhr fehlen (`docs/aufgaben.md`). Keine Steuerberatung in Texten.
 - Tests: `tests/test_tax_entries_pure.py`, `tests/test_tax_rates_schema_2008.py`, `tests/test_tax_rates_db.py`, `tests/test_tax_rates_page.py`,
   `tests/test_tax_entries_save.py`, `tests/test_tax_entries_mask.py`, `tests/test_tax_entries_storno.py`, `tests/test_tax_entries_bookings.py`, `tests/test_tax_entries_reports.py`, `tests/test_tax_entries_documents.py`, `tests/test_tax_entries_demo_samples.py`,

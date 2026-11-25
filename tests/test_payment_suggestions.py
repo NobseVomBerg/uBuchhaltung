@@ -1748,6 +1748,17 @@ def test_a_rate_per_position_with_a_group_without_a_discount_account_has_no_skon
     assert tmp_db.suggest_invoices_for_booking(add_payment(tmp_db, account, 100.00, '2026-03-10', 'Käufer AG', 'Danke')) == []
 
 
+@pytest.mark.parametrize('parts, snapshots', [
+    ((('19', '100.00'), ('5.5', '200.00')), {2: _snapshot('5.5')}),
+    ((('19', '100.00'), ('16', '100.00')), None),
+], ids=['5,5-Prozent', '16-Prozent'])
+def test_a_rate_per_position_without_discount_terms_has_no_skonto_and_names_no_rate(tmp_db, parts, snapshots):
+    """Hat die Rechnung keine Bedingungen, kommt ``SKONTO_NO_TERMS`` vor dem Satz einer Gruppe: Die Rechnungsseite sagt dazu nichts."""
+    _account, _buyer, invoice_id = mixed_discount_world(tmp_db, parts, snapshots, skonto_days=None, skonto_percent=None)
+    assert open_rows(tmp_db)['R26001']['skonto_limit_minor'] is None
+    assert tmp_db.skonto_offer(invoice_id) == (SKONTO_NO_TERMS, None, None, None)
+
+
 def test_a_rate_per_position_with_positions_that_do_not_match_its_sums_has_no_skonto(tmp_db):
     _account, _buyer, invoice_id = mixed_discount_world(tmp_db)
     run_sql(tmp_db, 'UPDATE Invoices SET SumNet = 9990000 WHERE ID = ?', invoice_id)
@@ -1801,7 +1812,8 @@ def test_the_offer_of_an_invoice_names_the_limit_the_days_and_the_percent(tmp_db
 
 @pytest.mark.parametrize('extra, sentence', [
     ({'skonto_days': None, 'skonto_percent': None}, SKONTO_NO_TERMS), ({'mixed_tax_rates': 1}, MIXED_GROUPS_MISMATCH), ({'tax_rate': 0.16}, SKONTO_RATE),
-], ids=['ohne-Bedingungen', 'Satz-je-Position-ohne-Positionen', '16-Prozent'])
+    ({'skonto_days': None, 'skonto_percent': None, 'tax_rate': 0.16}, SKONTO_NO_TERMS), ({'skonto_days': None, 'skonto_percent': None, 'mixed_tax_rates': 1}, SKONTO_NO_TERMS),
+], ids=['ohne-Bedingungen', 'Satz-je-Position-ohne-Positionen', '16-Prozent', 'ohne-Bedingungen-und-16-Prozent', 'ohne-Bedingungen-und-Satz-je-Position-ohne-Positionen'])
 def test_the_offer_of_an_invoice_that_allows_no_discount_names_the_fixed_sentence(tmp_db, extra, sentence):
     _account, _buyer, invoice_id = discount_world(tmp_db, **extra)
     offer = tmp_db.skonto_offer(invoice_id)

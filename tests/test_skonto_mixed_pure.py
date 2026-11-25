@@ -263,18 +263,22 @@ def test_a_group_without_a_discount_account_names_its_rate(pcts, shown):
 
 
 def test_the_refusals_come_in_their_order():
-    # 1. die Gruppen sind nicht lesbar – vor allem anderen
-    assert _terms(group_pcts=None, revenue_on_discount=True, days=None, percent=None) == (MIXED_GROUPS_MISMATCH, None)
-    # 2. der erste Satz (absteigend) ohne Skonto-Konto – vor dem Erlöskonto und den Bedingungen
-    assert _terms(group_pcts=(D('19'), D('16'), D('5.5')), revenue_on_discount=True, days=None, percent=None) == (SKONTO_GROUP_RATE.format(rate='16'), None)
-    # 3. ein Beleg mit einem Satz: sein Kopfsatz ohne Skonto-Konto
-    assert skonto_terms(1190000, None, None, 0.16, None, None, True) == (SKONTO_RATE, None)
-    # 4. ein Erlöskonto, das selbst ein Skonto-Konto ist – bei beiden Arten von Belegen, vor den Bedingungen
-    assert _terms(revenue_on_discount=True, days=None, percent=None) == (SKONTO_REVENUE_DISCOUNT, None)
-    assert skonto_terms(1190000, None, None, 0.19, None, None, True) == (SKONTO_REVENUE_DISCOUNT, None)
-    # 5. keine oder unlesbare Bedingungen
+    # 1. keine oder unlesbare Bedingungen – vor allem anderen: Eine Rechnung ohne Skonto sagt nichts über Sätze, Gruppen oder Skonto-Konten
     assert _terms(days=None, percent=None) == (SKONTO_NO_TERMS, None)
     assert skonto_terms(1190000, None, None, 0.19, None) == (SKONTO_NO_TERMS, None)
+    assert _terms(group_pcts=None, revenue_on_discount=True, days=None, percent=None) == (SKONTO_NO_TERMS, None)
+    assert _terms(group_pcts=(D('19'), D('16'), D('5.5')), revenue_on_discount=True, days=None, percent=None) == (SKONTO_NO_TERMS, None)
+    assert skonto_terms(1190000, None, None, 0.16, None, None, True) == (SKONTO_NO_TERMS, None)
+    assert _terms(revenue_on_discount=True, days=14, percent=None) == (SKONTO_NO_TERMS, None)
+    # 2. die Gruppen sind nicht lesbar – vor den Sätzen und dem Erlöskonto
+    assert _terms(group_pcts=None, revenue_on_discount=True) == (MIXED_GROUPS_MISMATCH, None)
+    # 3. der erste Satz (absteigend) ohne Skonto-Konto – vor dem Erlöskonto
+    assert _terms(group_pcts=(D('19'), D('16'), D('5.5')), revenue_on_discount=True) == (SKONTO_GROUP_RATE.format(rate='16'), None)
+    # 4. ein Beleg mit einem Satz: sein Kopfsatz ohne Skonto-Konto – vor dem Erlöskonto
+    assert skonto_terms(1190000, 14, 2.0, 0.16, None, None, True) == (SKONTO_RATE, None)
+    # 5. ein Erlöskonto, das selbst ein Skonto-Konto ist – bei beiden Arten von Belegen
+    assert _terms(revenue_on_discount=True) == (SKONTO_REVENUE_DISCOUNT, None)
+    assert skonto_terms(1190000, 14, 2.0, 0.19, None, None, True) == (SKONTO_REVENUE_DISCOUNT, None)
 
 
 @pytest.mark.parametrize('mixed', [None, 0, True, 1.0, '1', 2])
@@ -395,7 +399,7 @@ def test_the_single_discount_still_refuses_a_rate_per_position():
 def test_the_new_fixed_sentences():
     assert SKONTO_GROUP_RATE == 'Skonto lässt sich für {rate} % dieser Rechnung noch nicht ausbuchen.'
     assert SKONTO_REVENUE_DISCOUNT == 'Skonto lässt sich nicht ausbuchen: Ein Erlöskonto dieser Rechnung ist selbst ein Skonto-Konto.'
-    assert SKONTO_MIXED_SPLIT == ('Das Skonto lässt sich nicht auf die Steuersätze dieser Rechnung aufteilen – die bisherigen Zahlungen passen nicht dazu.')
+    assert SKONTO_MIXED_SPLIT == 'Das Skonto lässt sich nicht auf die Steuersätze dieser Rechnung aufteilen – die bisherigen Zahlungen lassen es nicht zu.'
     assert SKONTO_GROUP_RATE.format(rate='5,5') == 'Skonto lässt sich für 5,5 % dieser Rechnung noch nicht ausbuchen.'
 
 

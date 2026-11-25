@@ -246,8 +246,8 @@ class PaymentSuggestionsMixin:
 
     def skonto_offer(self, invoice_id):
         """Was diese Rechnung an Skonto zulässt – für ihre Seite (die Zeile „Skonto: …“ und die Häkchen). Rein lesend, mit denselben Regeln wie das Zuordnen
-        (``invoice_payments.skonto_terms``: die Gruppen eines Belegs mit Steuersatz je Position, ein Satz ohne Skonto-Konto, ein Erlöskonto der Stammdaten, das selbst ein Skonto-Konto ist,
-        keine oder unlesbare Bedingungen). Returns
+        (``invoice_payments.skonto_terms``: keine oder unlesbare Bedingungen zuerst – die Seite sagt dazu nichts –, dann die Gruppen eines Belegs mit Steuersatz je Position, ein Satz ohne
+        Skonto-Konto, ein Erlöskonto der Stammdaten, das selbst ein Skonto-Konto ist). Returns
         :class:`SkontoOffer` – ``(Fehlertext, None, None, None)`` oder ``(None, Grenze, Tage, Prozent)``; eine unbekannte Rechnung sieht kein Skonto vor. Die Frist spielt keine Rolle."""
         conn = self._get_connection()
         try:
