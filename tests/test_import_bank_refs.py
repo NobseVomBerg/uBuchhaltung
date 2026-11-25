@@ -19,10 +19,11 @@ Ohne ``force`` ist das Ergebnis des Imports Bit für Bit das von früher.
 
 Namen, Beträge und Referenzen sind erfunden; die IBANs sind die erlaubten Test-IBANs.
 """
+import datetime
 import json
 import subprocess
 from contextlib import closing
-from itertools import product
+from itertools import chain, combinations, product
 from types import SimpleNamespace
 from urllib.parse import parse_qs
 
@@ -41,6 +42,7 @@ DATE_OTHER = "2026-03-03"
 AMOUNT = -12.5
 KEY = (DATE, AMOUNT, 1)
 INVALID = {"ok": False, "error": "Ungültige Auswahl"}
+STALE = {"ok": False, "error": "Die Vorschau ist nicht mehr aktuell – bitte verwerfen und die Datei erneut hochladen."}
 
 
 # ── Hilfen ───────────────────────────────────────────────────────────────────
@@ -58,12 +60,12 @@ def _file(refs, iban=IBAN_A, date=DATE, name="auszug.xml"):
             "transactions": [_row(ref, date) for ref in refs]}
 
 
-def _seed(db, refs, iban=IBAN_A, date=DATE):
+def _seed(db, refs, iban=IBAN_A, date=DATE, text="Kaffee"):
     """Bankbewegungen im Bestand, je mit ihrer Bankreferenz (``''`` = keine Zeile in ``BankTransactionDetails``)."""
     account = match_account(db.fetch_accounts(), iban)[0]
     for ref in refs:
         db.insert_booking(date, AMOUNT, account_id=account, foreign_bank_account="DE00FOREIGN", recipient_client="Partner",
-                          text="Kaffee", booking_type="bank", bank_details={"bank_ref": ref} if ref else None)
+                          text=text, booking_type="bank", bank_details={"bank_ref": ref} if ref else None)
 
 
 def _refs(db):
@@ -71,6 +73,13 @@ def _refs(db):
     with closing(db._get_connection()) as conn:
         return sorted(row[0] or "" for row in conn.execute(
             "SELECT d.BankRef FROM Bookings b LEFT JOIN BankTransactionDetails d ON d.Booking_ID = b.ID WHERE b.BookingType = 'bank'"))
+
+
+def _refs_on(db, date):
+    """Die Bankreferenzen der Bankbewegungen eines Tages, sortiert; ``''`` = keine."""
+    with closing(db._get_connection()) as conn:
+        return sorted(row[0] or "" for row in conn.execute(
+            "SELECT d.BankRef FROM Bookings b LEFT JOIN BankTransactionDetails d ON d.Booking_ID = b.ID WHERE b.BookingType = 'bank' AND b.DateBooking = ?", (date,)))
 
 
 def _confirm(db, import_id, force=None, selection=None, file_index=None):
@@ -108,15 +117,16 @@ def _counts(results):
 # ── die reine Funktion ───────────────────────────────────────────────────────
 
 def _classify(stock, refs):
-    """``stock`` = [(Quelle, Referenz)], ``refs`` = die Referenzen der Umsätze in Dateireihenfolge → [(dup_source, ref_differs)] je Umsatz."""
-    verdicts = classify_duplicates([(n, KEY, ref) for n, ref in enumerate(refs)], lambda key: list(stock))
+    """``stock`` = [(Quelle, Referenz)] oder [(Quelle, Referenz, erzwungen)], ``refs`` = die Referenzen der Umsätze in Dateireihenfolge → [(dup_source, ref_differs)] je Umsatz."""
+    triples = [row if len(row) == 3 else (*row, False) for row in stock]
+    verdicts = classify_duplicates([(n, KEY, ref) for n, ref in enumerate(refs)], lambda key: list(triples))
     return [verdicts[n] for n in range(len(refs))]
 
 
 @pytest.mark.parametrize("stock, refs, expected", [
     pytest.param([("db", "A")], ["B"], [("db", True)], id="fremde-Referenz"),
     pytest.param([("db", "A"), ("db", "B")], ["B", "C"], [("db", False), ("db", True)], id="eine-passt-eine-nicht"),
-    pytest.param([("db", "A")], ["B", "A"], [("db", True), (None, False)], id="die-gleiche-steht-hinten"),
+    pytest.param([("db", "A")], ["B", "A"], [(None, False), ("db", False)], id="die-passende-Zeile-ist-das-Duplikat-auch-wenn-sie-hinten-steht"),
     pytest.param([("db", "A")], ["A"], [("db", False)], id="gleiche-Referenz"),
     pytest.param([("db", "")], ["B"], [("db", False)], id="Bestand-ohne-Referenz"),
     pytest.param([("db", "A")], [""], [("db", False)], id="Umsatz-ohne-Referenz"),
@@ -125,43 +135,123 @@ def _classify(stock, refs):
     pytest.param([("db", "A")], ["A", "A"], [("db", False), (None, False)], id="zweimal-gleich-einmal-im-Bestand"),
     pytest.param([("db", "A"), ("db", "")], ["B", "C"], [("db", False), ("db", True)], id="eine-Zeile-ohne-Referenz-nimmt-den-ersten"),
     pytest.param([("db", "A"), ("db", "")], ["", "B"], [("db", False), ("db", False)], id="ohne-Referenz-nimmt-zuerst-eine-mit"),
-    pytest.param([("db", "A")], ["", "A"], [("db", False), (None, False)], id="ohne-Referenz-wird-nie-verdaechtig"),
-    pytest.param([("db", "A"), ("upload", "B")], ["B", "C"], [("db", False), ("upload", True)], id="die-Quelle-folgt-der-Zaehlung-nicht-dem-Treffer"),
-    pytest.param([("db", "A"), ("upload", "B")], ["C", "D"], [("db", True), ("upload", True)], id="beide-fremd"),
+    pytest.param([("db", "A")], ["", "A"], [(None, False), ("db", False)], id="die-gleiche-Referenz-geht-dem-Umsatz-ohne-Referenz-vor"),
+    pytest.param([("db", "A"), ("upload", "B")], ["B", "C"], [("upload", False), ("db", True)], id="die-Quelle-ist-die-der-belegten-Zeile"),
+    pytest.param([("db", "A"), ("upload", "B")], ["C", "D"], [("db", True), ("upload", True)], id="beide-fremd-Quelle-nach-Zaehlung-db-vor-upload"),
     pytest.param([("upload", "A")], ["A", "B"], [("upload", False), (None, False)], id="Bestand-aus-diesem-Lauf"),
+    pytest.param([("db", "A"), ("db", "B")], ["A", "C", "D"], [("db", False), ("db", True), (None, False)], id="aufgefuellt-wird-der-erste-nicht-zugeordnete"),
+    pytest.param([("db", "A"), ("db", "B")], ["C", "D", "E"], [("db", True), ("db", True), (None, False)], id="nur-so-viele-wie-die-Zahl-erlaubt"),
+    # Zeilen, die dieser Lauf erzwungen angelegt hat: sie zählen nicht mit, treffen aber bei gleicher Referenz
+    pytest.param([("db", "A"), ("upload", "B", True)], ["B", "C"], [("upload", False), (None, False)], id="erzwungene-Zeile-trifft-und-zaehlt-nicht"),
+    pytest.param([("upload", "B", True)], ["C"], [(None, False)], id="nur-eine-erzwungene-Zeile-im-Bestand"),
+    pytest.param([("db", "A"), ("upload", "B", True), ("upload", "C", True)], ["A", "B", "C"], [("db", False), ("upload", False), ("upload", False)], id="Treffer-duerfen-die-Zahl-uebersteigen"),
+    pytest.param([("db", "A"), ("upload", "B", True)], ["X"], [("db", True)], id="die-Quelle-nach-Zaehlung-nie-von-einer-erzwungenen-Zeile"),
+    pytest.param([("db", ""), ("upload", "B", True)], ["B", "C"], [("upload", False), (None, False)], id="der-Treffer-nimmt-den-Platz-der-Zahl"),
 ])
-def test_the_two_passes_decide_who_looks_like_a_duplicate_and_who_looks_foreign(stock, refs, expected):
+def test_the_references_decide_who_is_the_duplicate_and_who_looks_foreign(stock, refs, expected):
     assert _classify(stock, refs) == expected
 
 
 def test_the_keys_of_one_file_do_not_disturb_each_other():
-    stocks = {("2026-03-02", -1.0, 1): [("db", "A")], ("2026-03-02", -2.0, 1): [("db", "B")], ("2026-03-03", -1.0, 1): []}
+    stocks = {("2026-03-02", -1.0, 1): [("db", "A", False)], ("2026-03-02", -2.0, 1): [("db", "B", False)], ("2026-03-03", -1.0, 1): []}
     rows = [(0, ("2026-03-02", -1.0, 1), "B"), (1, ("2026-03-02", -2.0, 1), "B"), (2, ("2026-03-03", -1.0, 1), "B"), (3, ("2026-03-02", -1.0, 1), "A")]
-    assert classify_duplicates(rows, stocks.__getitem__) == {0: ("db", True), 1: ("db", False), 2: (None, False), 3: (None, False)}
+    assert classify_duplicates(rows, stocks.__getitem__) == {0: (None, False), 1: ("db", False), 2: (None, False), 3: ("db", False)}
 
 
 def _sequences(alphabet, longest):
     return [seq for length in range(longest + 1) for seq in product(alphabet, repeat=length)]
 
 
-def test_the_count_stays_the_one_of_today_for_every_small_combination():
-    """Alle Bestände und Dateien aus höchstens drei Zeilen mit den Referenzen „keine“, A und B (und jeder Aufteilung des Bestands in ``db`` und ``upload``):
-    Die ersten ``min(Umsätze, Bestand)`` Umsätze sind Duplikate, die Quelle folgt der Position im Bestand – die Referenz ändert daran nie etwas. Verdächtig ist nur ein
-    solches Duplikat mit eigener Referenz; ohne Referenz auf einer Seite ist nie ein Umsatz verdächtig."""
+def _subsets(items):
+    return chain.from_iterable(combinations(items, size) for size in range(len(items) + 1))
+
+
+def _after_the_import(stock, refs, verdicts, forced):
+    """Die Referenzen im Bestand nach dem Import der Datei: der Bestand, jeder Umsatz, der kein Duplikat ist, und jeder erzwungene."""
+    return [row[1] for row in stock] + [refs[n] for n, (source, _differs) in enumerate(verdicts) if source is None or n in forced]
+
+
+def _never_doubles(stock, refs, after):
+    """Jede Referenz der Datei steht im Bestand höchstens so oft, wie sie vorher dort stand oder in der Datei vorkommt."""
+    before = [row[1] for row in stock]
+    return all(after.count(ref) <= max(before.count(ref), refs.count(ref)) for ref in set(refs) - {""})
+
+
+def test_the_number_of_duplicates_is_the_count_for_every_small_combination():
+    """Alle Bestände und Dateien aus höchstens drei Zeilen mit den Referenzen „keine“, A und B (und jeder Aufteilung des Bestands in ``db`` und ``upload``): Die Zahl der Duplikate ist
+    ``min(Umsätze, Bestand)`` – die Referenz ändert daran nie etwas. Ohne Referenz auf einer Seite sind auch die Zeilen der Datei, die Duplikate sind, die ersten nach Position (bei einem Bestand ohne Referenz
+    auch ihre Quelle); verdächtig ist nur ein Duplikat mit eigener Referenz. Und: Wer verdächtig ist und erzwungen wird, legt nur sich selbst an – kein als neu gezeigter Umsatz verdoppelt eine vorhandene
+    Bewegung."""
     checked = 0
     for refs_in_stock in _sequences(("", "A", "B"), 3):
         for split in range(len(refs_in_stock) + 1):
-            stock = [("db" if n < split else "upload", ref) for n, ref in enumerate(refs_in_stock)]
+            stock = [("db" if n < split else "upload", ref, False) for n, ref in enumerate(refs_in_stock)]
             for refs in _sequences(("", "A", "B"), 3):
                 verdicts = _classify(stock, refs)
-                today = [stock[n][0] if n < len(stock) else None for n in range(len(refs))]
-                assert [source for source, _ in verdicts] == today, (stock, refs)
+                where = (stock, refs)
+                assert sum(source is not None for source, _ in verdicts) == min(len(refs), len(stock)), where
                 for n, (source, differs) in enumerate(verdicts):
-                    assert not differs or (source is not None and refs[n] != ""), (stock, refs, n)
-                if not any(ref for _source, ref in stock) or not any(refs):
-                    assert not any(differs for _source, differs in verdicts), (stock, refs)
+                    assert not differs or (source is not None and refs[n] != ""), (where, n)
+                if not any(ref for _source, ref, _forced in stock) or not any(refs):
+                    assert [source is not None for source, _ in verdicts] == [n < len(stock) for n in range(len(refs))], where
+                    assert not any(differs for _source, differs in verdicts), where
+                if not any(ref for _source, ref, _forced in stock):
+                    assert [source for source, _ in verdicts] == [stock[n][0] if n < len(stock) else None for n in range(len(refs))], where
+                flagged = [n for n, (_source, differs) in enumerate(verdicts) if differs]
+                for forced in _subsets(flagged):
+                    assert _never_doubles(stock, refs, _after_the_import(stock, refs, verdicts, set(forced))), (where, forced)
                 checked += 1
     assert checked > 3000
+
+
+def test_forced_rows_of_the_run_never_count_but_they_meet_the_same_reference():
+    """Bestände mit bis zu drei Zeilen, darunter erzwungene (immer mit eigener Referenz): Die Zahl der Duplikate ist die Zählung über die nicht erzwungenen Zeilen – nur Treffer mit gleicher
+    Referenz auf eine erzwungene Zeile können sie übersteigen. Auch hier verdoppelt kein neuer und kein erzwungener Umsatz eine vorhandene Bewegung."""
+    kinds = [("db", ""), ("db", "A"), ("db", "B"), ("upload", "A", True), ("upload", "B", True)]
+    checked = 0
+    for length in range(4):
+        for rows in product(kinds, repeat=length):
+            stock = [row if len(row) == 3 else (*row, False) for row in rows]
+            counted = sum(1 for _s, _r, forced in stock if not forced)
+            forced_refs = {ref for _s, ref, forced in stock if forced}
+            for refs in _sequences(("", "A", "B"), 3):
+                verdicts = _classify(stock, refs)
+                duplicates = sum(source is not None for source, _ in verdicts)
+                assert duplicates >= min(len(refs), counted), (stock, refs)
+                if not forced_refs & set(refs):
+                    assert duplicates == min(len(refs), counted), (stock, refs)
+                for n, (source, differs) in enumerate(verdicts):
+                    assert not differs or (source is not None and refs[n] != ""), (stock, refs, n)
+                flagged = [n for n, (_source, differs) in enumerate(verdicts) if differs]
+                for forced in _subsets(flagged):
+                    assert _never_doubles(stock, refs, _after_the_import(stock, refs, verdicts, set(forced))), (stock, refs, forced)
+                checked += 1
+    assert checked > 5000
+
+
+def test_the_whole_way_does_what_the_function_says_for_every_small_combination(db_two_accounts, pending_factory):
+    """Bestand und Datei aus höchstens zwei Zeilen mit den Referenzen „keine“, A und B – je Kombination ein eigener Tag –, durch Vorschau und Import, mit ``force`` auf jede verdächtige Zeile:
+    Die Vorschau meldet, was die Funktion sagt; der Import legt genau die neuen und die erzwungenen Zeilen an; die Referenzen im Bestand danach sind die der Simulation – und keine verdoppelt
+    eine vorhandene Bewegung."""
+    day = datetime.date(2027, 1, 1)
+    checked = 0
+    for stock_refs, file_refs in product(_sequences(("", "A", "B"), 2), [seq for seq in _sequences(("", "A", "B"), 2) if seq]):
+        date = (day + datetime.timedelta(days=checked)).isoformat()
+        _seed(db_two_accounts, list(stock_refs), date=date)
+        file = _file(list(file_refs), date=date)
+        verdicts = _classify([("db", ref) for ref in stock_refs], list(file_refs))
+        (card,) = _preview(db_two_accounts, [file])
+        assert [(t["dup"], t["ref_differs"]) for t in card["transactions"]] == [(source is not None, differs) for source, differs in verdicts], (stock_refs, file_refs)
+        flagged = [n for n, (_source, differs) in enumerate(verdicts) if differs]
+        status, data = _confirm(db_two_accounts, pending_factory([file]), force={"0": flagged} if flagged else None)
+        assert status == 200, (stock_refs, file_refs, data)
+        (result,) = data["results"]
+        new = sum(source is None for source, _ in verdicts)
+        assert (result["inserted"], result["skipped"], result.get("forced", 0)) == (new + len(flagged), len(file_refs) - new - len(flagged), len(flagged)), (stock_refs, file_refs)
+        after = _after_the_import([("db", ref) for ref in stock_refs], list(file_refs), verdicts, set(flagged))
+        assert _refs_on(db_two_accounts, date) == sorted(after) and _never_doubles([("db", ref) for ref in stock_refs], list(file_refs), after), (stock_refs, file_refs)
+        checked += 1
+    assert checked > 100
 
 
 def test_without_any_reference_the_result_is_the_plain_count():
@@ -175,11 +265,13 @@ def test_without_any_reference_the_result_is_the_plain_count():
 
 #: je Fall: ``stock`` = Referenzen im Bestand, ``files`` = Referenzen der Umsätze je Datei (alle mit gleichem Datum und Betrag), ``preview`` = je Datei (neu, Duplikate, davon aus
 #: anderer Datei), ``flags`` = je Datei die Positionen, die die Vorschau als verdächtig markiert, ``all`` = je Datei (angelegt, Duplikate, davon aus anderer Datei) bei „Alle
-#: importieren“ OHNE ``force`` – die Zählung von heute –, ``end`` = die Referenzen im Bestand danach.
+#: importieren“ OHNE ``force`` – die Zahlen sind die der Zählung allein –, ``end`` = die Referenzen im Bestand danach.
 CASES = {
     "fremde-referenz": dict(stock=["A"], files=[["B"]], preview=[(0, 1, 0)], flags=[[0]], all=[(0, 1, 0)], end=["A"]),
     "eine-passt-eine-nicht": dict(stock=["A", "B"], files=[["B", "C"]], preview=[(0, 2, 0)], flags=[[1]], all=[(0, 2, 0)], end=["A", "B"]),
-    "die-gleiche-steht-hinten": dict(stock=["A"], files=[["B", "A"]], preview=[(1, 1, 0)], flags=[[0]], all=[(1, 1, 0)], end=["A", "A"]),
+    "die-passende-steht-hinten": dict(stock=["A"], files=[["B", "A"]], preview=[(1, 1, 0)], flags=[[]], all=[(1, 1, 0)], end=["A", "B"]),
+    "treffer-hinten-fremder-vorn": dict(stock=["A", "B"], files=[["C", "A"]], preview=[(0, 2, 0)], flags=[[0]], all=[(0, 2, 0)], end=["A", "B"]),
+    "drei-zeilen-ein-treffer": dict(stock=["A", "B"], files=[["A", "C", "D"]], preview=[(1, 2, 0)], flags=[[1]], all=[(1, 2, 0)], end=["A", "B", "D"]),
     "gleiche-referenz": dict(stock=["A"], files=[["A"]], preview=[(0, 1, 0)], flags=[[]], all=[(0, 1, 0)], end=["A"]),
     "bestand-ohne-referenz": dict(stock=[""], files=[["B"]], preview=[(0, 1, 0)], flags=[[]], all=[(0, 1, 0)], end=[""]),
     "umsatz-ohne-referenz": dict(stock=["A"], files=[[""]], preview=[(0, 1, 0)], flags=[[]], all=[(0, 1, 0)], end=["A"]),
@@ -189,7 +281,7 @@ CASES = {
     "bestand-mit-und-ohne-referenz": dict(stock=["A", ""], files=[["B", "C"]], preview=[(0, 2, 0)], flags=[[1]], all=[(0, 2, 0)], end=["", "A"]),
     "alle-passen": dict(stock=["A", "B"], files=[["A", "B"]], preview=[(0, 2, 0)], flags=[[]], all=[(0, 2, 0)], end=["A", "B"]),
     "ohne-referenz-nimmt-zuerst-eine-mit": dict(stock=["A", ""], files=[["", "B"]], preview=[(0, 2, 0)], flags=[[]], all=[(0, 2, 0)], end=["", "A"]),
-    "ohne-referenz-steht-vor-der-gleichen": dict(stock=["A"], files=[["", "A"]], preview=[(1, 1, 0)], flags=[[]], all=[(1, 1, 0)], end=["A", "A"]),
+    "ohne-referenz-steht-vor-der-gleichen": dict(stock=["A"], files=[["", "A"]], preview=[(1, 1, 0)], flags=[[]], all=[(1, 1, 0)], end=["", "A"]),
     "mehr-umsaetze-als-bestand": dict(stock=["A"], files=[["B", "C"]], preview=[(1, 1, 0)], flags=[[0]], all=[(1, 1, 0)], end=["A", "C"]),
     "zwei-dateien-fremd": dict(stock=["A"], files=[["B"], ["B"]], preview=[(0, 1, 0), (0, 1, 0)], flags=[[0], [0]],
                                all=[(0, 1, 0), (0, 1, 0)], end=["A"]),
@@ -250,7 +342,8 @@ def test_without_force_the_import_counts_as_before_and_equals_the_preview(db_two
 FORCED = {
     "fremde-referenz": dict(force={"0": [0]}, all=[(1, 0, 0, 1)], end=["A", "B"]),
     "eine-passt-eine-nicht": dict(force={"0": [1]}, all=[(1, 1, 0, 1)], end=["A", "B", "C"]),
-    "die-gleiche-steht-hinten": dict(force={"0": [0]}, all=[(2, 0, 0, 1)], end=["A", "A", "B"]),
+    "treffer-hinten-fremder-vorn": dict(force={"0": [0]}, all=[(1, 1, 0, 1)], end=["A", "B", "C"]),
+    "drei-zeilen-ein-treffer": dict(force={"0": [1]}, all=[(2, 1, 0, 1)], end=["A", "B", "C", "D"]),
     "bestand-mit-und-ohne-referenz": dict(force={"0": [1]}, all=[(1, 1, 0, 1)], end=["", "A", "C"]),
     "mehr-umsaetze-als-bestand": dict(force={"0": [0]}, all=[(2, 0, 0, 1)], end=["A", "B", "C"]),
     "zwei-dateien-erst-neu-dann-fremd": dict(force={"1": [0]}, all=[(1, 0, 0, 0), (1, 0, 0, 1)], end=["A", "B"]),
@@ -278,13 +371,64 @@ def test_force_creates_exactly_the_named_suspect_row_and_nothing_else(db_two_acc
 
 
 def test_forcing_the_same_transaction_from_two_files_creates_it_once(db_two_accounts, pending_factory):
-    """Der Umsatz „B“ steht in zwei Dateien, beide Kästchen sind angehakt (beide Karten zeigten ihn als verdächtig): Die erste Datei legt ihn an, in der zweiten ist er dann ein gewöhnliches Duplikat –
-    mit der Quelle, die die Zählung von früher der Position gibt (Bestand „A“ aus der Datenbank, „B“ aus diesem Lauf: der erste Umsatz zählt gegen „A“)."""
+    """Der Umsatz „B“ steht in zwei Dateien, beide Kästchen sind angehakt (beide Karten zeigten ihn als verdächtig): Die erste Datei legt ihn an, in der zweiten trifft seine Referenz die erzwungene
+    Zeile – ein gewöhnliches Duplikat, aus diesem Lauf (``skipped_upload``), nicht erzwungen."""
     _seed(db_two_accounts, ["A"])
     files = [_file(["B"], name="eins.xml"), _file(["B"], name="zwei.xml")]
     results = _run(db_two_accounts, pending_factory, files, "all", force={"0": [0], "1": [0]})
-    assert [(r["inserted"], r["skipped"], r["skipped_upload"], r.get("forced", 0)) for r in results] == [(1, 0, 0, 1), (0, 1, 0, 0)]
+    assert [(r["inserted"], r["skipped"], r["skipped_upload"], r.get("forced", 0)) for r in results] == [(1, 0, 0, 1), (0, 1, 1, 0)]
     assert _refs(db_two_accounts) == ["A", "B"]
+
+
+def test_a_forced_row_never_doubles_an_existing_booking(db_two_accounts, pending_factory):
+    """Bestand „A“; die Datei hat „B“ (echt neu) vor „A“ (der schon importierten Bewegung). Die passende Zeile ist das Duplikat: „A“ wird übersprungen, „B“ ist neu – nichts ist erzwingbar, und
+    ein ``force`` auf „B“ ist die Vorschau von vorgestern (400). Als „B“ noch das Duplikat und „A“ neu war, stand „A“ mit ``force`` zweimal im Bestand."""
+    _seed(db_two_accounts, ["A"])
+    file = _file(["B", "A"])
+    (card,) = _preview(db_two_accounts, [file])
+    assert [(t["index"], t["dup"], t["importable"], t["forceable"]) for t in card["transactions"]] == [(0, False, True, False), (1, True, False, False)]
+    import_id = pending_factory([file])
+    assert _confirm(db_two_accounts, import_id, force={"0": [0]}) == (400, STALE)
+    assert _refs(db_two_accounts) == ["A"]
+    status, data = _confirm(db_two_accounts, import_id)
+    assert status == 200 and (data["results"][0]["inserted"], data["results"][0]["skipped"]) == (1, 1)
+    assert _refs(db_two_accounts) == ["A", "B"]                                                   # „A“ steht einmal da
+
+
+def test_a_forced_row_of_an_earlier_file_does_not_swallow_a_new_row_of_the_next(db_two_accounts, pending_factory):
+    """Bestand „A“; Datei 0 erzwingt „B“; Datei 1 hat „B“ und „C“. Die erzwungene Zeile zählt nicht für die Zahl, aber ihre Referenz trifft: „B“ ist das Duplikat dieser Zeile, „C“ ist neu – Ende „A“, „B“,
+    „C“. Die Vorschau (sie kennt kein ``force``) zeigt Datei 1 genauso: „C“ ist neu."""
+    _seed(db_two_accounts, ["A"])
+    files = [_file(["B"], name="null.xml"), _file(["B", "C"], name="eins.xml")]
+    cards = _preview(db_two_accounts, files)
+    assert [(c["new_count"], c["dup_count"]) for c in cards] == [(0, 1), (1, 1)]
+    assert [t["index"] for t in cards[1]["transactions"] if t["forceable"]] == [0]
+    results = _run(db_two_accounts, pending_factory, files, force={"0": [0]})
+    assert [(r["inserted"], r["skipped"], r["skipped_upload"], r.get("forced", 0)) for r in results] == [(1, 0, 0, 1), (1, 1, 1, 0)]
+    assert _refs(db_two_accounts) == ["A", "B", "C"]
+
+
+def test_the_same_with_force_ticked_on_both_cards_changes_nothing_for_the_second(db_two_accounts, pending_factory):
+    """Hakt der Nutzer auch „B“ der zweiten Karte an (dort war es in der Vorschau verdächtig), prüft der Import es gegen seinen Bestand: Es trifft die erzwungene Zeile, das ``force`` ist wirkungslos."""
+    _seed(db_two_accounts, ["A"])
+    files = [_file(["B"], name="null.xml"), _file(["B", "C"], name="eins.xml")]
+    results = _run(db_two_accounts, pending_factory, files, force={"0": [0], "1": [0]})
+    assert [(r["inserted"], r["skipped"], r["skipped_upload"], r.get("forced", 0)) for r in results] == [(1, 0, 0, 1), (1, 1, 1, 0)]
+    assert _refs(db_two_accounts) == ["A", "B", "C"]
+
+
+def test_a_separate_import_after_a_forced_one_counts_the_forced_row_like_any_other(db_two_accounts, pending_factory):
+    """Zwei Aufrufe nacheinander (der Einzelimport): Die erzwungene Zeile ist beim zweiten Aufruf Bestand wie jede andere. Datei 1 („B“, „C“) hat dann zwei Umsätze für zwei Bestandszeilen („A“, „B“):
+    „B“ trifft seine Zeile, „C“ ist nur nach Zählung ein Duplikat – verdächtig, die nächste Vorschau bietet es an."""
+    _seed(db_two_accounts, ["A"])
+    files = [_file(["B"], name="null.xml"), _file(["B", "C"], name="eins.xml")]
+    results = _run(db_two_accounts, pending_factory, files, "single", force={"0": [0]})
+    assert [(r["inserted"], r["skipped"], r.get("forced", 0)) for r in results] == [(1, 0, 1), (0, 2, 0)]
+    assert _refs(db_two_accounts) == ["A", "B"]
+    (card,) = _preview(db_two_accounts, [files[1]])
+    assert [t["index"] for t in card["transactions"] if t["forceable"]] == [1]
+    assert _run(db_two_accounts, pending_factory, [files[1]], force={"0": [1]})[0]["forced"] == 1
+    assert _refs(db_two_accounts) == ["A", "B", "C"]
 
 
 @pytest.mark.parametrize("selection", [[1], [0, 1], [], [2]], ids=lambda s: "Auswahl-" + "-".join(map(str, s)) if s else "Auswahl-leer")
@@ -334,13 +478,9 @@ def mixed_upload(db_two_accounts, pending_factory):
     return SimpleNamespace(db=db_two_accounts, import_id=pending_factory(files), files=files, before=_bank_bookings(db_two_accounts))
 
 
-BROKEN_FORCE = [
-    pytest.param({"1": [0]}, id="gleiche-Referenz-ist-kein-Verdacht"),
-    pytest.param({"2": [0]}, id="Duplikat-ohne-Referenz"),
-    pytest.param({"3": [0]}, id="neue-Zeile"),
-    pytest.param({"4": [0]}, id="unvollstaendige-Zeile"),
+#: Formfehler und Belege, die dieser Lauf nicht anlegt (Datei ohne Konto): „Ungültige Auswahl“
+INVALID_FORCE = [
     pytest.param({"5": [0]}, id="Datei-ohne-Konto"),
-    pytest.param({"0": [0], "3": [0]}, id="eine-gueltige-und-eine-ungueltige"),
     pytest.param({"0": [1]}, id="Position-ausserhalb"),
     pytest.param({"0": [-1]}, id="negative-Position"),
     pytest.param({"6": [0]}, id="unbekannter-Beleg"),
@@ -360,15 +500,47 @@ BROKEN_FORCE = [
     pytest.param("1", id="JSON-Zahl"),
 ]
 
+#: eine Position im Lauf, die in der frisch gerechneten Einordnung nicht (mehr) verdächtig ist: der feste Satz zur veralteten Vorschau
+STALE_FORCE = [
+    pytest.param({"1": [0]}, id="gleiche-Referenz-ist-kein-Verdacht"),
+    pytest.param({"2": [0]}, id="Duplikat-ohne-Referenz"),
+    pytest.param({"3": [0]}, id="neue-Zeile"),
+    pytest.param({"4": [0]}, id="unvollstaendige-Zeile"),
+    pytest.param({"0": [0], "3": [0]}, id="eine-verdaechtige-und-eine-nicht"),
+]
 
-@pytest.mark.parametrize("force", BROKEN_FORCE)
-def test_a_force_that_names_no_suspect_row_is_refused_before_anything_is_written(mixed_upload, force):
+
+@pytest.mark.parametrize("force", INVALID_FORCE)
+def test_a_force_with_a_bad_form_is_refused_before_anything_is_written(mixed_upload, force):
     status, data = _confirm(mixed_upload.db, mixed_upload.import_id, force=force)
     assert (status, data) == (400, INVALID)
     assert _bank_bookings(mixed_upload.db) == mixed_upload.before
     # nichts ist verbraucht: dieselbe Vorschau lässt sich danach mit einem gültigen force bestätigen
     status, data = _confirm(mixed_upload.db, mixed_upload.import_id, force={"0": [0]}, file_index=0)
     assert status == 200 and (data["results"][0]["inserted"], data["results"][0]["forced"]) == (1, 1)
+
+
+@pytest.mark.parametrize("force", STALE_FORCE)
+def test_a_force_on_a_row_that_is_not_suspect_any_more_says_the_preview_is_out_of_date(mixed_upload, force):
+    status, data = _confirm(mixed_upload.db, mixed_upload.import_id, force=force)
+    assert (status, data) == (400, STALE)
+    assert _bank_bookings(mixed_upload.db) == mixed_upload.before
+    status, data = _confirm(mixed_upload.db, mixed_upload.import_id, force={"0": [0]}, file_index=0)
+    assert status == 200 and (data["results"][0]["inserted"], data["results"][0]["forced"]) == (1, 1)
+
+
+def test_a_single_import_after_a_preview_over_several_files_says_so_when_the_preview_assumed_the_other_file(db_two_accounts, pending_factory):
+    """Die Vorschau rechnete die neue Zeile der ersten Datei („A“) schon als Bestand: „B“ der zweiten war darum verdächtig. Wer die zweite Datei allein importiert, hat diesen Bestand nicht – „B“ ist dort neu,
+    das ``force`` darauf ist ein Rest der Vorschau (feste Meldung, nichts geschrieben); ohne ``force`` wird „B“ angelegt."""
+    files = [_file(["A"], name="eins.xml"), _file(["B"], name="zwei.xml")]
+    cards = _preview(db_two_accounts, files)
+    assert [t["index"] for t in cards[1]["transactions"] if t["forceable"]] == [0]
+    import_id = pending_factory(files)
+    assert _confirm(db_two_accounts, import_id, force={"1": [0]}, file_index=1) == (400, STALE)
+    assert _refs(db_two_accounts) == []
+    status, data = _confirm(db_two_accounts, import_id, file_index=1)
+    assert status == 200 and (data["results"][0]["inserted"], data["results"][0]["skipped"]) == (1, 0)
+    assert _refs(db_two_accounts) == ["B"]
 
 
 def test_the_field_force_may_appear_only_once(mixed_upload):
@@ -407,19 +579,71 @@ def test_after_forcing_the_row_is_an_ordinary_duplicate_with_the_same_reference(
     assert (row["dup"], row["dup_source"], row["ref_differs"], row["forceable"]) == (True, "db", False, False)
     assert "ref_differs" not in row["warn"] and (card["new_count"], card["dup_count"]) == (0, 1)
     import_id = pending_factory([file])
-    assert _confirm(db_two_accounts, import_id, force={"0": [0]}) == (400, INVALID)                   # nicht mehr verdächtig
+    assert _confirm(db_two_accounts, import_id, force={"0": [0]}) == (400, STALE)                     # nicht mehr verdächtig
     status, data = _confirm(db_two_accounts, import_id)
     assert status == 200 and (data["results"][0]["inserted"], data["results"][0]["skipped"]) == (0, 1)
     assert _refs(db_two_accounts) == ["A", "B"]
 
 
-def test_a_forced_row_counts_as_stock_for_the_next_file_of_the_run(db_two_accounts, pending_factory):
-    """Bestand „A“; Datei 1 erzwingt „B“; Datei 2 („A“, „B“) liest den Bestand mit der erzwungenen Zeile: beide sind Duplikate, die erzwungene stammt aus diesem Lauf."""
+def test_a_forced_row_is_stock_for_the_next_file_of_the_run_as_a_match(db_two_accounts, pending_factory):
+    """Bestand „A“; Datei 1 erzwingt „B“; Datei 2 („A“, „B“) liest den Bestand mit der erzwungenen Zeile: Beide Umsätze treffen ihre Zeile und sind Duplikate, die erzwungene stammt aus diesem Lauf."""
     _seed(db_two_accounts, ["A"])
     files = [_file(["B"], name="eins.xml"), _file(["A", "B"], name="zwei.xml")]
     results = _run(db_two_accounts, pending_factory, files, force={"0": [0]})
     assert [(r["inserted"], r["skipped"], r["skipped_upload"], r.get("forced", 0)) for r in results] == [(1, 0, 0, 1), (0, 2, 1, 0)]
     assert _refs(db_two_accounts) == ["A", "B"]
+
+
+def _texts(db):
+    return [row[2] for row in _bank_bookings(db)]
+
+
+def test_a_row_created_by_force_keeps_its_text_when_a_skipped_duplicate_of_the_file_has_a_longer_one(db_two_accounts, pending_factory):
+    """Bestand „A“ und „C“ mit dem langen Text; die Datei hat „X“ (verdächtig, kurzer Text) und „A“ (Duplikat mit dem langen Text). Das Auffüllen des Textes eines Duplikats ändert nie eine Zeile, die
+    derselbe Beleg angelegt hat: Die erzwungene Zeile „X“ ist ein Präfix des langen Textes, aber ihr Text bleibt."""
+    long_text = "Miete Maerz Wohnung 3"
+    _seed(db_two_accounts, ["A", "C"], text=long_text)
+    file = _file(["X", "A"])
+    file["transactions"][0]["reference"] = "Miete"
+    file["transactions"][1]["reference"] = long_text
+    (card,) = _preview(db_two_accounts, [file])
+    assert [(t["index"], t["dup"], t["forceable"]) for t in card["transactions"]] == [(0, True, True), (1, True, False)]
+    (result,) = _run(db_two_accounts, pending_factory, [file], force={"0": [0]})
+    assert (result["inserted"], result["skipped"], result["forced"], result["text_updated"]) == (1, 1, 1, 0)
+    assert _texts(db_two_accounts) == [long_text, long_text, "Miete"]
+
+
+def test_a_row_forced_by_an_earlier_file_keeps_its_text_too(db_two_accounts, pending_factory):
+    """Dasselbe über zwei Belege: Datei 0 erzwingt „X“ (kurzer Text), Datei 1 hat das Duplikat „A“ mit dem langen Text. Die erzwungene Zeile ist ein eigener Umsatz – ihr Text bleibt."""
+    long_text = "Miete Maerz Wohnung 3"
+    _seed(db_two_accounts, ["A", "C"], text=long_text)
+    files = [_file(["X"], name="null.xml"), _file(["A"], name="eins.xml")]
+    files[0]["transactions"][0]["reference"] = "Miete"
+    files[1]["transactions"][0]["reference"] = long_text
+    results = _run(db_two_accounts, pending_factory, files, force={"0": [0]})
+    assert [(r["inserted"], r["skipped"], r["text_updated"]) for r in results] == [(1, 0, 0), (0, 1, 0)]
+    assert _texts(db_two_accounts) == [long_text, long_text, "Miete"]
+
+
+def test_the_text_of_a_row_the_file_created_still_makes_the_repair_of_an_older_row_ambiguous(db_two_accounts, pending_factory):
+    """Ohne Referenzen: Bestand „Miete“; die Datei hat „Miete Maerz“ (Duplikat) und „Miete“ (neu, angelegt). Zwei Zeilen kommen als Ziel des längeren Textes in Frage – wie bisher wird nichts nachgetragen
+    (mehrere gleiche Beträge am selben Tag wären mehrdeutig), und die angelegte Zeile wird nie überschrieben."""
+    _seed(db_two_accounts, [""], text="Miete")
+    file = _file(["", ""])
+    file["transactions"][0]["reference"] = "Miete Maerz"
+    file["transactions"][1]["reference"] = "Miete"
+    (result,) = _run(db_two_accounts, pending_factory, [file])
+    assert (result["inserted"], result["skipped"], result["text_updated"]) == (1, 1, 0)
+    assert _texts(db_two_accounts) == ["Miete", "Miete"]
+
+
+def test_an_older_row_with_a_cut_text_is_still_repaired_by_the_duplicate(db_two_accounts, pending_factory):
+    _seed(db_two_accounts, [""], text="Miete")
+    file = _file([""])
+    file["transactions"][0]["reference"] = "Miete Maerz"
+    (result,) = _run(db_two_accounts, pending_factory, [file])
+    assert (result["inserted"], result["skipped"], result["text_updated"]) == (0, 1, 1)
+    assert _texts(db_two_accounts) == ["Miete Maerz"]
 
 
 def test_an_import_file_from_before_the_references_behaves_as_before(db_two_accounts, pending_factory):
@@ -578,7 +802,8 @@ def test_a_card_without_a_suspect_row_looks_exactly_as_it_did_without_the_new_ke
 
 def test_the_page_source_knows_the_label_the_box_and_the_field(tmp_db):
     script = _preview_source(tmp_db)
-    assert "ref_differs: 'gleiches Datum und gleicher Betrag, aber andere Bankreferenz – vermutlich ein eigener Umsatz'" in script
+    assert "ref_differs: 'gleiches Datum und gleicher Betrag, aber andere Bankreferenz als die vorhandene Bewegung'" in script
+    assert "vermutlich" not in script[script.index("var WARN_LABELS"):script.index("var FILE_WARN_LABELS")]
     for text in ("class=\"forceBox\"", " trotzdem importieren</label>", "body.append('force'", "function forceOf(", "function updateForce(",
                  "' trotzdem importiert)'"):
         assert text in script, text

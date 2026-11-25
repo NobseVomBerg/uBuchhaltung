@@ -10,8 +10,9 @@ die die Transaktionsseite inline anzeigt.
 
 Die Duplikatprüfung hat EINE Stelle, ``classify_duplicates``: Vorschau, Import
 (``handlers.handle_confirm_import``) und die Prüfung von ``force`` rechnen mit ihr.
-Duplikat = Konto + Buchungsdatum + Betrag, zählbasiert; die Bankreferenz ändert die
-Zählung nie, sie macht nur ein verworfenes Duplikat verdächtig (``ref_differs``).
+Die Zahl der Duplikate ist die Zählung nach Konto, Buchungsdatum und Betrag; die
+Bankreferenz ändert sie nie, sie bestimmt nur, WELCHE Umsätze es sind – und macht
+einen, der nur nach der Zählung ein Duplikat ist, verdächtig (``ref_differs``).
 """
 
 
@@ -98,43 +99,49 @@ def duplicate_rows(transactions, account_id, amounts):
     return rows
 
 
-def bank_stock_for(db, amounts, inserted_ids=()):
+def bank_stock_for(db, amounts, inserted_ids=(), forced_ids=()):
     """``stock_for`` für ``classify_duplicates``: der Bestand der Datenbank zu einem Schlüssel (``Database.bank_stock``), je Schlüssel EINMAL gelesen – beim ersten Zugriff.
 
-    ``[(Quelle, Referenz)]`` nach Buchungs-ID: Quelle ``upload`` für eine Buchung aus ``inserted_ids`` (der Lauf hat sie selbst angelegt), sonst ``db``."""
+    ``[(Quelle, Referenz, erzwungen)]`` nach Buchungs-ID: Quelle ``upload`` für eine Buchung aus ``inserted_ids`` (der Lauf hat sie selbst angelegt), sonst ``db``; ``erzwungen`` für eine aus
+    ``forced_ids`` (der Lauf hat sie trotz Duplikatverdacht angelegt)."""
     cache = {}
 
     def stock_for(key):
         if key not in cache:
             date, _amount, account_id = key
-            cache[key] = [("upload" if booking_id in inserted_ids else "db", ref)
+            cache[key] = [("upload" if booking_id in inserted_ids else "db", ref, booking_id in forced_ids)
                           for booking_id, ref in db.bank_stock(date, amounts[key], account_id)]
         return cache[key]
 
     return stock_for
 
 
-def _claim(stock, used, wanted):
-    """Belegt die erste freie Bestandszeile, deren Referenz ``wanted`` erfüllt (``used`` merkt die belegten): ``True``, wenn es sie gab."""
-    for m, (_source, stock_ref) in enumerate(stock):
-        if not used[m] and wanted(stock_ref):
-            used[m] = True
-            return True
-    return False
+def _claim(stock, used, wanted, counted_only):
+    """Belegt die erste freie Bestandszeile, deren Referenz ``wanted`` erfüllt (``used`` merkt die belegten); ``counted_only`` lässt die erzwungenen Zeilen außen vor. Returns ihre Position
+    oder ``None``."""
+    for position, (_source, stock_ref, forced) in enumerate(stock):
+        if not used[position] and not (counted_only and forced) and wanted(stock_ref):
+            used[position] = True
+            return position
+    return None
 
 
 def classify_duplicates(rows, stock_for):
     """Ordnet die Umsätze EINER Datei ein: ``{index: (dup_source, ref_differs)}``.
 
-    ``rows`` = ``[(index, key, ref)]`` in Dateireihenfolge (``duplicate_rows``), ``stock_for(key)`` = der Bestand zum Schlüssel als ``[(Quelle, Referenz)]`` – Quelle
-    ``db`` vor ``upload`` (``bank_stock_for``; die Vorschau hängt die neuen Umsätze früherer Dateien als ``upload`` an).
+    ``rows`` = ``[(index, key, ref)]`` in Dateireihenfolge (``duplicate_rows``), ``stock_for(key)`` = der Bestand zum Schlüssel als ``[(Quelle, Referenz, erzwungen)]`` – Quelle ``db`` vor
+    ``upload`` (``bank_stock_for``; die Vorschau hängt die neuen Umsätze früherer Dateien als ``upload`` an), ``erzwungen`` für Zeilen, die dieser Lauf mit ``force`` angelegt hat.
 
-    ``dup_source`` ist die Zählung nach Konto, Datum und Betrag und hängt von keiner Referenz ab: Je Schlüssel sind die ersten ``min(Umsätze, Bestand)`` Umsätze Duplikate, ihre
-    Quelle die der Bestandszeile an derselben Position (``db`` | ``upload``); die übrigen sind neu (``None``). Von selbst wird nie anders gezählt.
+    **Die Zahl der Duplikate je Schlüssel** ist die Zählung: ``n = min(Umsätze, nicht erzwungene Bestandszeilen)`` – die Referenz ändert sie nie, eine erzwungene Zeile zählt dafür nicht. **Welche Umsätze**
+    es sind, bestimmt die Bankreferenz, wo es auf beiden Seiten eine gibt:
 
-    ``ref_differs`` markiert nur: Ein Umsatz, den diese Zählung als Duplikat verwirft, trägt es, wenn er eine eigene Referenz hat und nach zwei Durchgängen keine Bestandszeile belegt.
-    Durchgang 1: Jeder Umsatz mit Referenz belegt die erste freie Zeile mit genau dieser Referenz. Durchgang 2, die übrigen in Dateireihenfolge: Ein Umsatz mit Referenz nimmt die
-    erste freie Zeile OHNE Referenz; einer ohne Referenz zuerst die erste freie MIT Referenz, sonst die erste ohne. Ohne Referenz auf einer Seite ist nie ein Umsatz verdächtig.
+    1. Ein Umsatz mit Referenz belegt die erste freie Bestandszeile mit genau dieser Referenz (auch eine erzwungene): Er ist das Duplikat dieser Zeile, ``dup_source`` ihre Quelle.
+    2. Die übrigen Umsätze in Dateireihenfolge, solange weniger als ``n`` Duplikate gefunden sind (Treffer aus 1 zählen mit und dürfen ``n`` übersteigen): Ein Umsatz mit Referenz nimmt die erste freie
+       Zeile OHNE Referenz, einer ohne Referenz zuerst die erste freie MIT Referenz, sonst die erste ohne – nur nicht erzwungene Zeilen.
+    3. Sind es danach weniger als ``n``, werden die ersten noch nicht zugeordneten Umsätze in Dateireihenfolge Duplikate „nur nach Zählung“ (``dup_source`` die Quelle der ersten freien nicht
+       erzwungenen Zeile, ``db`` vor ``upload``). Genau diese sind verdächtig (``ref_differs``): Sie tragen eine eigene Referenz, und keine Bestandszeile passt.
+
+    Alles Übrige ist neu (``None``). Ohne Referenz auf einer Seite ist die Auswahl der Zeilen die der Zählung nach Position (die ersten ``n``, Quelle nach Position) und nie ein Umsatz verdächtig.
     Kein Abgleich über ein anderes Datum oder Konto."""
     by_key = {}
     for index, key, ref in rows:
@@ -143,26 +150,45 @@ def classify_duplicates(rows, stock_for):
     for key, group in by_key.items():
         stock = list(stock_for(key))
         used = [False] * len(stock)
-        no_ref = lambda stock_ref: not stock_ref
-        matched = [bool(ref) and _claim(stock, used, lambda stock_ref: stock_ref == ref) for _index, ref in group]       # Durchgang 1
-        for n, (_index, ref) in enumerate(group):                                                                       # Durchgang 2
-            if not matched[n]:
-                matched[n] = _claim(stock, used, no_ref) if ref else _claim(stock, used, bool) or _claim(stock, used, no_ref)
-        for n, (index, ref) in enumerate(group):
-            dup_source = stock[n][0] if n < len(stock) else None
-            verdicts[index] = (dup_source, dup_source is not None and not matched[n] and bool(ref))
+        wanted_count = min(len(group), sum(1 for _source, _ref, forced in stock if not forced))
+        partner = [None] * len(group)                                 # Position im Bestand, die ein Umsatz belegt
+        for n, (_index, ref) in enumerate(group):                      # 1: dieselbe Referenz
+            if ref:
+                partner[n] = _claim(stock, used, lambda stock_ref: stock_ref == ref, False)
+        found = sum(position is not None for position in partner)
+        for n, (_index, ref) in enumerate(group):                      # 2: Zeilen ohne bzw. mit Referenz
+            if found >= wanted_count:
+                break
+            if partner[n] is None:
+                if ref:
+                    partner[n] = _claim(stock, used, lambda stock_ref: not stock_ref, True)
+                else:
+                    partner[n] = _claim(stock, used, bool, True)
+                    if partner[n] is None:
+                        partner[n] = _claim(stock, used, lambda stock_ref: not stock_ref, True)
+                found += partner[n] is not None
+        by_count = set()                                               # 3: nur nach Zählung
+        for n in range(len(group)):
+            if found >= wanted_count:
+                break
+            if partner[n] is None:
+                partner[n] = _claim(stock, used, lambda stock_ref: True, True)
+                by_count.add(n)
+                found += 1
+        for n, (index, _ref) in enumerate(group):
+            verdicts[index] = (None, False) if partner[n] is None else (stock[partner[n]][0], n in by_count)
     return verdicts
 
 
 class UploadClassifier:
     """Die Duplikatprüfung über die Dateien EINES Uploads, Datei für Datei in ihrer Reihenfolge – so rechnet die Vorschau, und so prüft der Import vorab, ob ``force`` nur nennt,
     was die Vorschau verdächtig nannte (Bestand der Datenbank, nur einmal je Schlüssel gelesen, dazu die neuen Umsätze der früheren Dateien als Quelle ``upload``; über mehrere Dateien gilt
-    damit das Maximum, nicht die Summe). Schreibt nichts."""
+    damit das Maximum, nicht die Summe; eine erzwungene Zeile kennt die Vorschau nicht). Schreibt nichts."""
 
     def __init__(self, db):
         self._amounts = {}                              # Schlüssel -> roher Betrag des ersten Umsatzes damit, über alle Dateien
         self._db_stock = bank_stock_for(db, self._amounts)
-        self._planned = {}                              # Schlüssel -> [('upload', Referenz)]: neu in früheren Dateien
+        self._planned = {}                              # Schlüssel -> [('upload', Referenz, False)]: neu in früheren Dateien
 
     def classify(self, transactions, account_id):
         """Die Umsätze der nächsten Datei einordnen: ``(rows, verdicts)`` – ``duplicate_rows`` und ``classify_duplicates`` dazu. Die neuen Umsätze zählen danach für die folgenden Dateien.
@@ -171,7 +197,7 @@ class UploadClassifier:
         verdicts = classify_duplicates(rows, lambda key: self._db_stock(key) + self._planned.get(key, []))
         for index, key, ref in rows:
             if verdicts[index][0] is None:
-                self._planned.setdefault(key, []).append(("upload", ref))
+                self._planned.setdefault(key, []).append(("upload", ref, False))
         return rows, verdicts
 
 
@@ -198,10 +224,10 @@ def build_import_preview(db, import_data):
     der früheren Dateien passt ("text_differs"; nur ein Hinweis, der Import
     entscheidet allein nach Konto/Datum/Betrag).
 
-    Ein Duplikat bleibt ein Duplikat, auch wenn Umsatz und Bestandszeile verschiedene
-    Bankreferenzen tragen: Es ist dann nur verdächtig ("ref_differs" und "forceable"
-    wahr, Befund "ref_differs"; ``classify_duplicates``) – der Nutzer kann es über das Feld
-    ``force`` von ``/confirm_transactions`` doch anlegen lassen. ``importable`` bleibt falsch.
+    Ein Umsatz, der nur nach der Zählung ein Duplikat ist (eigene Bankreferenz, keine
+    Bestandszeile passt), ist verdächtig: "ref_differs" und "forceable" wahr, Befund
+    "ref_differs" (``classify_duplicates``) – der Nutzer kann ihn über das Feld ``force`` von
+    ``/confirm_transactions`` doch anlegen lassen. ``importable`` bleibt falsch.
 
     Ein Umsatz ohne Datum oder Betrag legt der Import nicht an: Er zählt weder
     als neu noch als Duplikat und trägt den Befund "incomplete".

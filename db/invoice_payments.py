@@ -551,8 +551,8 @@ MOVE_SKIP_REASONS = {
     'overbooked': 'die Bankbewegung ist überbucht',
     'edited': 'die Buchungssätze der Zahlung wurden von Hand geändert oder ergänzt oder tragen einen Beleg',
     'skonto': 'die Zahlung wurde mit Skonto gebucht',
-    'tax_date': ('die Buchungssätze der Zahlung tragen ein anderes Steuerdatum als die Bankbewegung '
-                 '(z. B. nach einem DATEV-Export)'),
+    'exported': 'die Buchungssätze der Zahlung standen schon in einem DATEV-Export',
+    'tax_date': 'die Buchungssätze der Zahlung tragen ein anderes Steuerdatum als die Bankbewegung',
     'revenue_account': 'das Erlöskonto der Zahlung ist nicht das für Steuersatz und Zahlungsdatum hinterlegte',
     'revenue_date': 'zum Datum der Bankbewegung lässt sich kein Erlöskonto bestimmen',
     'multiple': 'die Bankbewegung ist mehrfach zugeordnet',
@@ -2535,7 +2535,10 @@ class InvoicePaymentsMixin:
             return None, 'multiple'
         revenue_coa = self._revenue_coa_if_as_written(conn, old, bank_id, bank, amount, bank_coas[bank[2]])
         if revenue_coa is None:
-            # Weicht allein das Steuerdatum ab (der DATEV-Export stempelt es auf die exportierten Sätze), sagt der
+            # Standen die Sätze der Zuordnung schon in einem DATEV-Stapel (Merkmal „exportiert“, ``BookingExports``), sagt der Hinweis das: Sie bleiben, wie sie in den Export gingen
+            if self.exported_booking_ids(conn, self._payment_children(conn, bank_id, old.number)):
+                return None, 'exported'
+            # Weicht allein das Steuerdatum ab (ein Export von vorher stempelte es nur auf die exportierten Sätze), sagt der
             # Hinweis das – die Zuordnung bleibt trotzdem: Die Sätze stehen so in einem Export
             only_tax_date = self._revenue_coa_if_as_written(conn, old, bank_id, bank, amount, bank_coas[bank[2]],
                                                             ignore_tax_date=True) is not None

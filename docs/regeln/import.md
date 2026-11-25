@@ -63,20 +63,30 @@
 
 ### Duplikate
 
-- Duplikat = Konto + Buchungsdatum + Betrag, **ohne Text und ohne Referenz** (Bestand: `Database.bank_stock`, dieselbe Bedingung wie `check_booking_exists`),
-  zählbasiert **je Datei**: Der Bestand enthält, was frühere Dateien desselben Laufs angelegt haben; über mehrere Dateien gilt das Maximum, nicht die Summe.
-  „Alle importieren“ (`handle_confirm_import`) = Einzelimporte nacheinander; die Vorschau (`build_import_preview`) rechnet dasselbe ohne Schreiben. Die
-  Zählung hat EINE Stelle, `import_preview.classify_duplicates` (Vorschau, Import und die Prüfung von `force`; Quelle `db` vor `upload`). **Die Bankreferenz
-  ändert die Zählung nie:** Von selbst wird nie doppelt importiert, und ein anderes Datum oder Konto gleicht nichts ab.
-- **Verdächtig** (`ref_differs`/`forceable`, Befund `ref_differs`): Ein Umsatz, den die Zählung verwirft, mit eigener Bankreferenz, der nach zwei Durchgängen keine
-  Bestandszeile belegt (1: Zeile mit gleicher Referenz; 2: mit Referenz die erste freie Zeile ohne, ohne Referenz zuerst eine mit). Ohne Referenz auf einer Seite
-  ist nie ein Umsatz verdächtig (PDF, CSV, Bestand ohne Details). Er bleibt `dup` und nicht `importable`; die Karte bietet je solcher Zeile „trotzdem importieren“
-  (nie vorab angehakt, auch bei reinem Geschäftskonto – dort steht die Liste dann offen).
-- `/confirm_transactions` nimmt `force` (`{"<file_index>": [<index>, …]}`, `_import_force`, so streng wie `selection`): Jede Position muss in der frisch gerechneten
-  Einordnung der Belege dieses Laufs verdächtig sein (`_forced_rows_are_suspect`, rechnet wie die Vorschau), sonst `400` „Ungültige Auswahl“ vor dem ersten
-  Schreiben; der Import prüft jede Position beim Schreiben noch einmal gegen seinen Bestand. Erzwungen = `inserted` und `forced` (Schlüssel nur bei Treffern),
-  unabhängig von `selection`; die Zeile zählt für spätere Belege des Laufs als Bestand und ist beim nächsten Import ein gewöhnliches Duplikat mit gleicher Referenz.
-  Ohne `force` entscheidet allein die Zählung, die Bankreferenz ändert am Ergebnis nichts (`tests/test_import_bank_refs.py`).
+- **Die Zahl der Duplikate** je Schlüssel (Konto + Buchungsdatum + Betrag) ist die Zählung, **ohne Text**: `n = min(Umsätze der Datei, nicht erzwungene Bestandszeilen)` (Bestand:
+  `Database.bank_stock`, dieselbe Bedingung wie `check_booking_exists`), je Datei. Der Bestand enthält, was frühere Dateien desselben Laufs angelegt haben; über mehrere
+  Dateien gilt das Maximum, nicht die Summe. Eine Zeile, die dieser Lauf mit `force` angelegt hat, zählt dafür nicht. „Alle importieren“ (`handle_confirm_import`) =
+  Einzelimporte nacheinander; die Vorschau (`build_import_preview`) rechnet dasselbe ohne Schreiben. Die Zählung hat EINE Stelle, `import_preview.classify_duplicates` (Vorschau,
+  Import und die Prüfung von `force`; Quelle `db` vor `upload`). **Die Bankreferenz ändert die Zahl nie:** Von selbst wird nie mehr angelegt, als die Zählung erlaubt; ein anderes
+  Datum oder Konto gleicht nichts ab.
+- **Welche Umsätze** die Duplikate sind, bestimmt die Bankreferenz, wo beide Seiten eine tragen: (1) Ein Umsatz mit Referenz belegt die erste freie Bestandszeile mit genau dieser
+  Referenz (auch eine erzwungene) – er ist ihr Duplikat. (2) Die übrigen Umsätze in Dateireihenfolge, solange die Zahl nicht erreicht ist: mit Referenz die erste freie Zeile
+  ohne, ohne Referenz zuerst eine mit, dann eine ohne (nur nicht erzwungene Zeilen). (3) Fehlt dann noch etwas an `n`, sind die ersten nicht zugeordneten Umsätze Duplikate
+  „nur nach Zählung“. Alles Übrige ist neu. Ohne Referenzen (auf einer Seite) sind die Duplikate die ersten `n` Umsätze, wie die Zählung nach Position sie ergibt; mit
+  Referenzen auf beiden Seiten kann eine andere Zeile das Duplikat sein (Bestand A, Datei B, A: A ist das Duplikat, B wird angelegt). `dup_source` ist die Quelle der belegten
+  Zeile, bei „nur nach Zählung“ die der ersten freien nicht erzwungenen.
+- **Verdächtig** (`ref_differs`/`forceable`, Befund `ref_differs`) sind genau die Umsätze „nur nach Zählung“: Sie tragen eine eigene Referenz, und keine Bestandszeile passt
+  („gleiches Datum und gleicher Betrag, aber andere Bankreferenz als die vorhandene Bewegung“). Ohne Referenz ist nie ein Umsatz verdächtig (PDF, CSV, Bestand ohne Details). Er bleibt
+  `dup` und nicht `importable`; die Karte bietet je solcher Zeile „trotzdem importieren“ (nie vorab angehakt, auch bei reinem Geschäftskonto – dort steht die Liste dann offen).
+- `/confirm_transactions` nimmt `force` (`{"<file_index>": [<index>, …]}`, `_import_force`, so streng wie `selection`): Jede Position muss in der frisch gerechneten Einordnung der
+  Belege dieses Laufs verdächtig sein (`_force_refusal`, rechnet wie die Vorschau und kennt keine erzwungene Zeile), sonst `400` vor dem ersten Schreiben: „Ungültige Auswahl“ bei einem
+  Formfehler oder einem Beleg, den dieser Lauf nicht anlegt; „Die Vorschau ist nicht mehr aktuell – bitte verwerfen und die Datei erneut hochladen.“ (`STALE_PREVIEW`) bei einer Position,
+  die nicht (mehr) verdächtig ist. Der Import prüft jede Position beim Schreiben noch einmal gegen seinen Bestand (eine nicht mehr verdächtige bleibt ein gewöhnliches Duplikat).
+  Erzwungen = `inserted` und `forced` (Schlüssel nur bei Treffern), unabhängig von `selection`; die Zeile legt genau sich selbst zusätzlich an (kein als „neu“ gezeigter Umsatz
+  verdoppelt eine vorhandene Bewegung), zählt für spätere Belege des Laufs nicht für die Zahl, trifft aber bei gleicher Referenz, und ist beim nächsten Import ein gewöhnliches Duplikat
+  mit gleicher Referenz. Beim Einzelimport ist sie Bestand wie jede andere Zeile. Ohne `force` entscheidet allein die Zählung die Zahl (`tests/test_import_bank_refs.py`).
+- Der Text-Backfill (`backfill_import_text`) überschreibt nie den Text einer Zeile, die derselbe Beleg gerade angelegt hat oder die ein `force` angelegt hat (`protected`); sie zählt aber wie
+  jede passende Zeile für die Mehrdeutigkeit. Was ein früherer Beleg desselben Laufs angelegt hat, lässt sich weiter verlängern (kurzer Text zuerst, langer danach).
 - Grenzen: CAMT-Sammelbuchung gegen PDF-Summenzeile (die PDF-Seite hat keine Referenz); zwei verschiedene Auszüge desselben Tags mit je einem echten, gleichen
   Umsatz, wenn nicht beide eine Bankreferenz tragen (mit verschiedenen: verdächtig, erzwingbar). Ein Umsatz ohne Referenz (PDF, CSV) lässt sich nicht erzwingen.
 - `text_differs` (Duplikat aus anderer Datei mit nicht passendem Verwendungszweck): nur Hinweis.

@@ -37,6 +37,7 @@ from tests.entry_form_world import (to_state_2000, to_state_2001, to_state_2002,
 
 NEW_COLUMN = 'MixedTaxRates'
 OLD_INVOICE_COLUMNS = 55                    # Index 0 bis 54 (…, DocumentVersion) bis 2.6.x
+LAST_COLUMNS = [NEW_COLUMN, 'ServiceDateEnd', 'PaymentMeans', 'QuoteStatusBefore']      # ab Index 55: diese Spalte, dahinter die drei von 2.10.0 (test_schema_2010.py)
 
 
 def _reopen(path):
@@ -112,7 +113,7 @@ def test_this_program_is_a_2_7_x_program():
 def test_a_fresh_database_has_the_column_at_index_55(tmp_db):
     names = _names(tmp_db.db_name)
     assert names[OLD_INVOICE_COLUMNS] == NEW_COLUMN and names.index(NEW_COLUMN) == InvoiceCol.MIXED_TAX_RATES == 55
-    assert len(names) == OLD_INVOICE_COLUMNS + 1 + 3                                   # seit 2.10.0 drei Spalten am Ende (test_schema_2010.py)
+    assert names[OLD_INVOICE_COLUMNS:] == LAST_COLUMNS                                 # seit 2.10.0 stehen drei Spalten dahinter, nichts sonst
     assert _info(tmp_db.db_name)[OLD_INVOICE_COLUMNS] == (NEW_COLUMN, 'INTEGER', 0, None, 0)       # ganze Zahl, NULL erlaubt, keine Vorgabe
     assert names[InvoiceCol.DOCUMENT_VERSION] == 'DocumentVersion'
 
@@ -122,7 +123,7 @@ def test_a_fresh_and_a_migrated_database_have_the_same_columns_tables_and_indexe
     Database(db_name=fresh)
     _reopen(stock)
 
-    assert _names(stock)[OLD_INVOICE_COLUMNS] == NEW_COLUMN and len(_names(stock)) == OLD_INVOICE_COLUMNS + 1 + 3     # seit 2.10.0 drei Spalten am Ende (test_schema_2010.py)
+    assert _names(stock)[OLD_INVOICE_COLUMNS:] == LAST_COLUMNS                      # das Ende der Spaltenliste ganz: diese Spalte, dahinter die drei von 2.10.0
     assert _info(stock) == _info(fresh)                                              # Name, Typ, NOT NULL, Vorgabe, PK
     with closing(sqlite3.connect(stock)) as a, closing(sqlite3.connect(fresh)) as b:
         for query in ("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name",
@@ -253,7 +254,7 @@ def test_a_column_that_is_already_there_does_not_stop_the_migration(stock):
     _reopen(stock)
 
     assert installation.user_version(stock) == version.SCHEMA_VERSION
-    assert _names(stock)[OLD_INVOICE_COLUMNS:OLD_INVOICE_COLUMNS + 1] == [NEW_COLUMN]       # nicht doppelt
+    assert _names(stock)[OLD_INVOICE_COLUMNS:] == LAST_COLUMNS                       # nicht doppelt, und dahinter genau die drei von 2.10.0
 
 
 def test_a_database_of_a_newer_version_is_not_opened(stock):

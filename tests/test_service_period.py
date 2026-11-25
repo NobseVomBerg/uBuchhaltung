@@ -188,6 +188,22 @@ def test_the_end_can_be_removed_by_a_correction(world):
     assert (row['OldValue'], row['NewValue']) == (END, None)
 
 
+@pytest.mark.parametrize('sent', [{'deliveryDate': END}, {'deliveryDate': END, 'serviceDateEnd': END}], ids=['nur-der-Beginn', 'Beginn-und-gleiches-Ende'])
+def test_moving_the_start_onto_the_stored_end_leaves_no_period_and_the_end_is_null_with_a_protocol_row(world, sent):
+    """Wird das Leistungsdatum auf das gespeicherte Ende berichtigt, liegt das Ende am Beginn – kein Zeitraum: ``ServiceDateEnd`` steht danach als NULL da (wie bei jedem Ende am Beginn), beide
+    Änderungen stehen im Protokoll."""
+    invoice_id = sent_invoice(world, serviceDateEnd=END)
+
+    answer = save_open(world, invoice_id, **sent)
+
+    assert answer['success'] is True and answer['documentVersion'] == 2
+    stored = columns(world.db, invoice_id)
+    assert (stored['DeliveryDate'], stored['ServiceDateEnd']) == (END, None)
+    assert [(row['Field'], row['OldValue'], row['NewValue'], row['Version']) for row in protocol(world.db, invoice_id, 'correct')] == [
+        ('DeliveryDate', START, END, 2), ('ServiceDateEnd', END, None, 2)]
+    assert world.db.correction_notice(invoice_id).fields == ('Leistungsdatum', 'Leistungszeitraum')
+
+
 def test_a_start_behind_the_stored_end_is_refused_and_nothing_is_moved(world):
     invoice_id = sent_invoice(world, serviceDateEnd=END)
     before = snapshot(world.db)

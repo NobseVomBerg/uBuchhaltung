@@ -185,8 +185,9 @@ class InvoiceVersionsMixin:
         neuen (sonst dem gespeicherten) Beginn und Ende: ein Ende, das kein Datum ist oder vor dem Beginn liegt, ein Zeitraum
         ohne Beginn – auch ein Beginn hinter einem gespeicherten Ende – ist ein :class:`CorrectionInvalid`, vor dem Verschieben.
         Ein unlesbares gespeichertes Ende (kein ISO-Datum) gilt dabei als „kein Zeitraum“, solange die Berichtigung das Ende nicht selbst
-        nennt – abgelehnt wird nur ein Ende, das der Nutzer schickt. Ein Ende am Beginn ist kein Zeitraum und steht danach als NULL da;
-        ist es das, was gespeichert ist, ändert sich nichts.
+        nennt – abgelehnt wird nur ein Ende, das der Nutzer schickt. Ein Ende am Beginn ist kein Zeitraum und steht danach als NULL da – auch
+        wenn die Berichtigung nur das Leistungsdatum auf das gespeicherte Ende setzt (die Änderung steht im Protokoll); ist es das, was gespeichert ist,
+        ändert sich nichts.
 
         Scheitert das Verschieben, das Festhalten der Fassung oder das Speichern, liegen die Dokumente wieder dort,
         wo sie waren, und nichts ist geändert. Raises :class:`InvoiceLocked` (mit Klartext) bei einer gesperrten
@@ -246,6 +247,8 @@ class InvoiceVersionsMixin:
                                 return Correction(False, version, 0)
                         else:
                             open_data['service_date_end'] = end                  # leer und „am Beginn“ stehen als NULL da
+                    elif end != stored_end:
+                        open_data['service_date_end'] = end                      # der neue Beginn liegt auf dem gespeicherten Ende: kein Zeitraum mehr, NULL (mit Protokollzeile)
                 if _as_int(expected_version) != version:
                     raise InvoiceLocked(CHANGED_MESSAGE)
                 new_version = version + 1

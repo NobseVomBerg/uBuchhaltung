@@ -21,7 +21,7 @@ steht in `git log`. Eine Zeile je Punkt; Details gehören in Commit, Issue oder 
 - Zahlungsvorschläge, offen: Teilbeträge, Wahl des Erlöskontos im Kasten, von der Bank mitten in den Ziffern umbrochene Rechnungsnummern, andere Währungen als Euro
 - Zuordnung neu aufbauen, Schritt 2: markierte Zahlungssätze ohne Zuordnung (wiederherstellen oder entfernen, Wahl im Probelauf) und Sätze „Bank an Debitoren“ ohne Forderung
 - Steuerfälle bei Rechnungen und Angeboten: Reverse Charge, innergemeinschaftliche Lieferung und Ausfuhr (eigene E-Rechnungs-Kategorien, USt-IdNr. des Käufers als Pflicht, eigene Erlöskonten); 0 % ohne Eintrag der Stammdaten und ohne § 19 ergibt weiter Kategorie Z ohne Begründung und Konto 4185
-- Merkmal „exportiert“ (`BookingExports`): weitere Wirkungen (Storno von Hand, Zahlung entfernen, Bank-Editor, Festschreiben) und Ablösung des Stempels `DateTax` beim DATEV-Export; bis dahin nennt der Umzug der Zahlungen für exportierte Zahlungssätze den Grund „von Hand geändert oder ergänzt“ statt „anderes Steuerdatum (z. B. nach einem DATEV-Export)“
+- Merkmal „exportiert“ (`BookingExports`): weitere Wirkungen (Storno von Hand, Zahlung entfernen, Bank-Editor, Festschreiben) und Ablösung des Stempels `DateTax` beim DATEV-Export
 - Datei zu einem bestehenden Beleg nachreichen (der Upload der Seite „Belege“ legt je Datei einen neuen Beleg an)
 - Belegerkennung: Texterkennung (OCR) für gescannte PDFs und Fotos – eine Datei ohne Textebene ist „nicht lesbar (kein Text)“
 - Belegerkennung: ein lokales Sprachmodell als optionaler Nachleser für nicht eindeutig gelesene Belege (standardmäßig aus; die Lesung bliebe ein Vorschlag mit Herkunft)

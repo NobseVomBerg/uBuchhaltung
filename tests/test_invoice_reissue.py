@@ -123,8 +123,8 @@ REASON_OVERBOOKED = 'die Bankbewegung ist überbucht'
 REASON_EDITED = 'die Buchungssätze der Zahlung wurden von Hand geändert oder ergänzt oder tragen einen Beleg'
 REASON_UNMARKED = 'die Buchungssätze der Zahlung stammen aus einer älteren Version oder wurden von Hand angelegt'
 REASON_REVENUE = 'das Erlöskonto der Zahlung ist nicht das für Steuersatz und Zahlungsdatum hinterlegte'
-REASON_TAX_DATE = ('die Buchungssätze der Zahlung tragen ein anderes Steuerdatum als die Bankbewegung '
-                   '(z. B. nach einem DATEV-Export)')
+REASON_TAX_DATE = 'die Buchungssätze der Zahlung tragen ein anderes Steuerdatum als die Bankbewegung'
+REASON_EXPORTED = 'die Buchungssätze der Zahlung standen schon in einem DATEV-Export'
 REASON_MULTIPLE = 'die Bankbewegung ist mehrfach zugeordnet'
 REASON_NO_INCOMING = 'keine Bankbewegung mit Zahlungseingang'
 REASON_REBOOK = 'die Zuordnung ließ sich nicht neu buchen'
@@ -1428,6 +1428,21 @@ def test_a_payment_whose_postings_only_carry_another_tax_date_stays_and_the_hint
     s = partly_paid(world, monkeypatch)
     change(world.db, s)
     stays_untouched(s, not_moved(REASON_TAX_DATE))
+    assert allocations(world.db, s.r1) == [(s.booking, 500000, '2026-07-01')]
+
+
+def _exported_by_the_datev_export(db, s):
+    """Der DATEV-Export, wie er jetzt schreibt (``mark_datev_export``): das Steuerdatum UND das Merkmal „exportiert“ auf den Sätzen der Zahlung."""
+    db.mark_datev_export(
+        [row['ID'] for row in query_rows(db, 'SELECT ID FROM Bookings WHERE ParentBooking_ID = ?', s.booking)], '2026-08-03')
+
+
+def test_a_payment_whose_postings_stood_in_a_datev_export_stays_and_the_hint_names_the_export(world, monkeypatch):
+    """Ein Satz, der in einem Stapel stand, trägt das Merkmal „exportiert“: Er zieht nicht um, und der Hinweis nennt den Export – nicht „von Hand geändert“ (das nur gestempelte Steuerdatum
+    eines Bestands von vorher bleibt „anderes Steuerdatum“, siehe oben)."""
+    s = partly_paid(world, monkeypatch)
+    _exported_by_the_datev_export(world.db, s)
+    stays_untouched(s, not_moved(REASON_EXPORTED))
     assert allocations(world.db, s.r1) == [(s.booking, 500000, '2026-07-01')]
 
 

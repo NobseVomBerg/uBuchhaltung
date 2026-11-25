@@ -550,8 +550,8 @@ Fortschreibung), Buchen, Abgang, Erweiterungen, Löschen und der Abgleich mit de
 
 ```
 1. Upload (POST /upload_receipts): PDF, CAMT.053 oder CSV → BankStatement; nur CAMT liefert Zusatzfelder; Ablage als pending_imports/*.json
-2. Vorschau (server/import_preview.py, rein lesend): Konto über die IBAN; Duplikat = Konto + Datum + Betrag (classify_duplicates; Bestand je Schlüssel:
-   Database.bank_stock); „verdächtig“ = eigene Bankreferenz, die keine Bestandszeile belegt
+2. Vorschau (server/import_preview.py, rein lesend): Konto über die IBAN; Duplikate = Konto + Datum + Betrag (classify_duplicates; Bestand je Schlüssel:
+   Database.bank_stock): die Zahl nach der Zählung, welche Umsätze nach der Bankreferenz; „verdächtig“ = nur nach Zählung ein Duplikat (eigene Referenz, keine Zeile passt)
 3. POST /confirm_transactions: je Beleg Bookings mit BookingType='bank' (insert_booking); die Zusatzfelder eines CAMT-Umsatzes → BankTransactionDetails in
    derselben Transaktion; mit force legt der Import ein verdächtiges Duplikat doch an
 4. link_bank_to_entries() (unten)

@@ -336,10 +336,11 @@
   Sätze, Replay-Log-Einträge unverändert), sie zählt als übersprungen, der Versand gelingt; nur ein unerwarteter Datenbankfehler lehnt
   den Versand ab (409, `PaymentMoveFailed` → `_Refusal`, nichts geändert).
 - **Was geschah, nennt `hint`** (`StatusChange.payment_hint`) mit Grund (`MOVE_SKIP_REASONS`: Import, Bankkonto ohne SKR-Nummer,
-  überbuchte Bewegung, Sätze ohne Marke, geänderte/ergänzte Sätze oder Beleg, anderes Erlöskonto als hinterlegt, allein anderes
-  Steuerdatum, mehrfach zugeordnete Bewegung, keine Bankbewegung mit Zahlungseingang, nicht neu buchbar; je Grund einmal, feste
-  Reihenfolge, mit Gesamtbetrag). Ein Zahlungssatz, der in einem DATEV-Export stand, trägt außer dem Steuerdatum das Merkmal
-  „exportiert“ und zählt als „hängt etwas dran“ (`_booking_attachments_exist`): Er zieht nicht um, der genannte Grund ist „geändert/ergänzt“.
+  überbuchte Bewegung, Sätze ohne Marke, geänderte/ergänzte Sätze oder Beleg, anderes Erlöskonto als hinterlegt, Sätze schon in einem
+  DATEV-Export (Merkmal „exportiert“, `exported`), allein anderes Steuerdatum (`tax_date`: ein Export von vorher stempelte nur das Datum),
+  mehrfach zugeordnete Bewegung, keine Bankbewegung mit Zahlungseingang, nicht neu buchbar; je Grund einmal, feste Reihenfolge, mit
+  Gesamtbetrag). Ein Satz mit dem Merkmal „exportiert“ zählt als „hängt etwas dran“ (`_booking_attachments_exist`): Die Zuordnung zieht nicht
+  um, und `_movable_payment` nennt `exported`, sobald ein Satz der Zuordnung (`_payment_children`) das Merkmal trägt (vor `tax_date`).
   Spätes Entfernen der Zahlung von Hand: nichts wandert zurück.
 
 ## Stornobeleg (`Database.cancel_invoice`, `db/invoice_storno.py`)

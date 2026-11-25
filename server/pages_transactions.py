@@ -1257,7 +1257,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             amount: 'Betrag?', date: 'Datum?', daterange: 'Datum weit weg?',
             empty: 'leer', boiler: 'Kopf-/Fußzeile?', huge: 'Betrag zu groß?',
             incomplete: 'ohne Datum/Betrag – wird nicht importiert',
-            ref_differs: 'gleiches Datum und gleicher Betrag, aber andere Bankreferenz – vermutlich ein eigener Umsatz'
+            ref_differs: 'gleiches Datum und gleicher Betrag, aber andere Bankreferenz als die vorhandene Bewegung'
         };
 
         // Befunde, die den ganzen Beleg betreffen (BankStatement.warnings)

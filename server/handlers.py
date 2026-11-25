@@ -98,7 +98,7 @@ def _normalize_ws(s):
     return ' '.join((s or '').split())
 
 
-def backfill_import_text(db, trans_date, trans_amount, account_id, new_text):
+def backfill_import_text(db, trans_date, trans_amount, account_id, new_text, protected=()):
     """Text-Backfill für als Duplikat übersprungene Import-Transaktionen.
 
     Der frühere VBR-Parser schnitt Verwendungszwecke ab; ein Re-Import legt
@@ -112,6 +112,10 @@ def backfill_import_text(db, trans_date, trans_amount, account_id, new_text):
     Parser-Abschnitt nicht unterscheidbar und wird wieder verlängert;
     (b) ein bewusst GELEERTER Text wird neu befüllt. Beides ist gewollt
     konservativ zugunsten der Reparatur abgeschnittener Import-Texte.
+
+    ``protected``: die IDs von Buchungen, deren Text nie überschrieben wird – was dieselbe Datei gerade angelegt hat (ihr Text stammt aus dieser Datei und ist der aktuelle) und was ein ``force`` angelegt
+    hat (ein eigener Umsatz, auch wenn sein kurzer Text ein Präfix des langen Textes eines Duplikats ist). Sie zählen wie jede andere Zeile mit: Mehrere passende Zeilen sind mehrdeutig. Was ein früherer
+    Beleg desselben Laufs angelegt hat, lässt sich dagegen verlängern (derselbe Umsatz, einmal kurz und einmal lang gelesen).
 
     Returns True, wenn ein Text aktualisiert wurde.
     """
@@ -127,13 +131,16 @@ def backfill_import_text(db, trans_date, trans_amount, account_id, new_text):
         if not old_norm or (new_norm.startswith(old_norm)
                             and len(new_norm) > len(old_norm)):
             candidates.append(booking_id)
-    if len(candidates) != 1:
+    if len(candidates) != 1 or candidates[0] in protected:
         return False
     db.update_booking_text(candidates[0], new_text)
     return True
 
 
 INVALID_SELECTION = 'Ungültige Auswahl'
+# ``force`` nennt eine Position, die in der frisch gerechneten Einordnung nicht (mehr) verdächtig ist: Der Bestand hat sich seit der Vorschau geändert (oder die Vorschau rechnete mit einem Beleg, der
+# nicht zuerst importiert wurde)
+STALE_PREVIEW = 'Die Vorschau ist nicht mehr aktuell – bitte verwerfen und die Datei erneut hochladen.'
 SELECTION_NEEDS_MIXED_ACCOUNT = ('Für ein reines Geschäftskonto wird der Auszug vollständig importiert. '
                                  'Bitte die Vorschau verwerfen und die Datei erneut hochladen.')
 
@@ -189,12 +196,14 @@ def _import_force(values, files):
     return None if forced is None else {index: positions for index, positions in forced.items() if positions}
 
 
-def _forced_rows_are_suspect(db, files, accounts, target_indices, force):
-    """Nennt ``force`` nur Umsätze, die die Vorschau als verdächtig markiert (``ref_differs``)? Die Einordnung wird frisch gerechnet – für die Belege dieses Laufs in ihrer
-    Reihenfolge, genau wie die Vorschau (``UploadClassifier``) –, bevor etwas geschrieben wird. Ein Beleg, den dieser Lauf nicht anlegt (außerhalb der Auswahl, ohne Konto, schon
-    importiert), kann nichts erzwingen. Der Import prüft jede Position beim Schreiben noch einmal gegen den Bestand, den er dann liest."""
+def _force_refusal(db, files, accounts, target_indices, force):
+    """Der Klartext, mit dem ``force`` abgelehnt wird, oder ``None``, wenn es nur nennt, was die Vorschau verdächtig nannte (``ref_differs``). Die Einordnung wird frisch gerechnet – für die Belege dieses
+    Laufs in ihrer Reihenfolge, genau wie die Vorschau (``UploadClassifier``, ohne erzwungene Zeilen), bevor etwas geschrieben wird. ``INVALID_SELECTION``: ``force`` nennt einen Beleg, den dieser Lauf nicht
+    anlegt (außerhalb der Auswahl, ohne Konto, schon importiert). ``STALE_PREVIEW``: eine Position eines Belegs dieses Laufs ist nicht (mehr) verdächtig. Der Import prüft jede Position beim Schreiben noch
+    einmal gegen den Bestand, den er dann liest."""
     classifier = UploadClassifier(db)
     unchecked = set(force)
+    stale = False
     for i in target_indices:
         if i < 0 or i >= len(files) or files[i].get('imported'):
             continue
@@ -202,10 +211,11 @@ def _forced_rows_are_suspect(db, files, accounts, target_indices, force):
         if account_id is None:
             continue
         _rows, verdicts = classifier.classify(file_transactions(files[i]), account_id)
-        if any(not verdicts.get(position, (None, False))[1] for position in force.get(i, ())):
-            return False
+        stale = stale or any(not verdicts.get(position, (None, False))[1] for position in force.get(i, ()))
         unchecked.discard(i)
-    return not unchecked
+    if unchecked:
+        return INVALID_SELECTION
+    return STALE_PREVIEW if stale else None
 
 
 def handle_confirm_import(db: Database, post_data):
@@ -224,11 +234,12 @@ def handle_confirm_import(db: Database, post_data):
     Duplikat-Zählung rückt für jede Zeile vor, gewählt oder nicht): Duplikat → ``skipped``, ohne Datum oder Betrag →
     ``skipped_invalid``, nicht gewählt → ``skipped_unselected``, sonst angelegt. Der Beleg gilt danach als importiert.
 
-    Optional ``force`` (JSON-Objekt wie ``selection``, genauso streng geprüft): Ein Umsatz, den die Duplikatprüfung verwirft, der aber verdächtig ist (``ref_differs`` der Vorschau:
-    eigene Bankreferenz, keine Bestandszeile belegt; ``classify_duplicates``), wird auf Wunsch doch angelegt – als ``inserted``, zusätzlich als ``forced`` gezählt (der Schlüssel steht nur
-    im Ergebnis, wenn etwas erzwungen wurde). Jede Position muss in der frisch gerechneten Einordnung verdächtig sein (``_forced_rows_are_suspect``), sonst 400 ``Ungültige Auswahl`` und nichts ist
-    importiert – vor dem ersten Schreiben, für alle Belege. ``force`` gilt auch für ein reines Geschäftskonto und ist von ``selection`` unabhängig. Die Zählung bleibt die von früher: ohne
-    ``force`` ändert die Bankreferenz am Ergebnis nichts; eine angelegte Zeile zählt für die späteren Belege des Laufs als Bestand.
+    Optional ``force`` (JSON-Objekt wie ``selection``, genauso streng geprüft): Ein Umsatz, der nur nach der Zählung ein Duplikat ist, aber eine eigene Bankreferenz trägt, die keine Bestandszeile belegt
+    (verdächtig, ``ref_differs`` der Vorschau; ``classify_duplicates``), wird auf Wunsch doch angelegt – als ``inserted``, zusätzlich als ``forced`` gezählt (der Schlüssel steht nur im Ergebnis, wenn
+    etwas erzwungen wurde). Jede Position muss in der frisch gerechneten Einordnung verdächtig sein (``_force_refusal``): sonst 400, vor dem ersten Schreiben, für alle Belege – ``Ungültige Auswahl`` bei einem
+    Formfehler oder einem Beleg, den dieser Lauf nicht anlegt, ``STALE_PREVIEW`` bei einer Position, die nicht (mehr) verdächtig ist. ``force`` gilt auch für ein reines Geschäftskonto und ist von ``selection``
+    unabhängig. Die Zahl der Duplikate bleibt die der Zählung (``classify_duplicates``): eine angelegte Zeile zählt für die späteren Belege des Laufs als Bestand, eine erzwungene aber nicht für die Zahl –
+    nur für den Treffer mit gleicher Referenz. Den Text einer Zeile, die dieser Beleg angelegt hat oder die ein ``force`` angelegt hat, überschreibt der Text-Backfill nie.
 
     Je Beleg nennt ``results`` ``inserted``, ``skipped`` (Duplikate) und davon
     ``skipped_upload`` (schon durch einen anderen Beleg desselben Laufs da) sowie
@@ -290,8 +301,9 @@ def handle_confirm_import(db: Database, post_data):
         else:
             target_indices = [i for i, fl in enumerate(files) if not fl.get('imported')]
 
-        if force and not _forced_rows_are_suspect(db, files, accounts, target_indices, force):
-            return 400, json.dumps({'ok': False, 'error': INVALID_SELECTION})
+        refusal = _force_refusal(db, files, accounts, target_indices, force) if force else None
+        if refusal:
+            return 400, json.dumps({'ok': False, 'error': refusal})
 
         results = []
         any_inserted = False
@@ -305,8 +317,11 @@ def handle_confirm_import(db: Database, post_data):
         # oder dieselbe Datei zweimal verdoppelt nichts) – „Alle importieren“
         # verhält sich wie die Einzelimporte nacheinander.
         # inserted_ids hält die Buchungen dieses Laufs: ein Duplikat, das auf eine von ihnen
-        # zurückgeht, stammt aus einer anderen Datei dieses Uploads (Quelle „upload“).
+        # zurückgeht, stammt aus einer anderen Datei dieses Uploads (Quelle „upload“). forced_ids sind
+        # die davon, die ``force`` angelegt hat: Sie zählen für spätere Belege nicht zur Zahl der
+        # Duplikate, treffen aber bei gleicher Bankreferenz.
         inserted_ids = set()
+        forced_ids = set()
 
         for i in target_indices:
             if i < 0 or i >= len(files):
@@ -332,6 +347,7 @@ def handle_confirm_import(db: Database, post_data):
             skipped_invalid = 0   # ohne Datum oder Betrag: nicht importierbar, kein Duplikat
             skipped_unselected = 0  # nicht gewählt (nur bei einem Beleg mit Eintrag in ``selection``)
             forced = 0            # davon angelegt: trotz Duplikatverdacht (``force``)
+            created_here = set()  # die Buchungen, die dieser Beleg angelegt hat
             chosen = selection.get(i)   # None = der Beleg wird ganz importiert
             wanted = force.get(i, ())   # Positionen, die der Nutzer trotz Verdacht angelegt haben will
             text_updated = 0
@@ -346,7 +362,7 @@ def handle_confirm_import(db: Database, post_data):
             amounts = {}
             rows = duplicate_rows(transactions, account_id, amounts)
             dup_keys = {index: key for index, key, _ref in rows}
-            verdicts = classify_duplicates(rows, bank_stock_for(db, amounts, inserted_ids))
+            verdicts = classify_duplicates(rows, bank_stock_for(db, amounts, inserted_ids, forced_ids))
             for position, trans in enumerate(transactions):
                 recipient = trans.get('recipient', '') or ''
                 text = trans.get('reference', '') or ''
@@ -373,7 +389,7 @@ def handle_confirm_import(db: Database, post_data):
                     skipped_unselected += 1
                     continue
 
-                inserted_ids.add(db.insert_booking(
+                booking_id = db.insert_booking(
                     date_booking=trans_date,
                     amount=trans_amount,
                     account_id=account_id,
@@ -384,10 +400,13 @@ def handle_confirm_import(db: Database, post_data):
                     booking_type='bank',
                     log_description=f"{bank_code} bank statement import",
                     bank_details={name: trans.get(name) for name in DETAIL_FIELDS}
-                ))
+                )
+                inserted_ids.add(booking_id)
+                created_here.add(booking_id)
                 inserted += 1
                 if dup_source is not None:
                     forced += 1
+                    forced_ids.add(booking_id)
                 any_inserted = True
 
             # Text-Backfill: nur für Schlüssel mit genau EINEM eindeutigen
@@ -396,7 +415,7 @@ def handle_confirm_import(db: Database, post_data):
                 if len(texts) != 1:
                     continue
                 b_date, b_amount, b_account, b_text = backfill_raw[dup_key]
-                if backfill_import_text(db, b_date, b_amount, b_account, b_text):
+                if backfill_import_text(db, b_date, b_amount, b_account, b_text, protected=created_here | forced_ids):
                     text_updated += 1
 
             fl['imported'] = True
