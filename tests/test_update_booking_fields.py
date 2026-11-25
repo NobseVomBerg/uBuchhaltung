@@ -126,9 +126,9 @@ def _new_values(w):
 # ── nur die genannten Spalten ändern sich ────────────────────────────────────
 
 def test_field_names_are_the_ones_of_insert_booking(world):
-    """Alle Felder von ``insert_booking`` (ohne Protokoll, Typ, Spiegel-Kennzeichen und Transaktion)."""
+    """Alle Felder von ``insert_booking`` (ohne Protokoll, Typ, Spiegel-Kennzeichen, Transaktion und die Zusatzfelder einer Bankbewegung – die stehen nicht in ``Bookings``)."""
     insert_fields = set(inspect.signature(Database.insert_booking).parameters) - {
-        'self', 'log_description', 'booking_type', 'auto_mirror', 'tx'}
+        'self', 'log_description', 'booking_type', 'auto_mirror', 'tx', 'bank_details'}
     assert set(_new_values(world)) == insert_fields
 
 

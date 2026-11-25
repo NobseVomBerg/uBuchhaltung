@@ -1,6 +1,6 @@
 # Datenbankmodell uBuchhaltung
 
-**Stand:** Schema 2009 (`version.SCHEMA_VERSION`)
+**Stand:** Schema 2010 (`version.SCHEMA_VERSION`)
 **DBMS:** SQLite 3
 **Datei:** `data/users/<Name>/buch.db`
 
@@ -22,7 +22,7 @@ uBuchhaltung verwaltet die Buchführung kleiner Unternehmen (SKR03/SKR04, ausgel
 | Bereich | Tabellen |
 |---|---|
 | Stammdaten | `ChartOfAccounts`, `Accounts`, `Contacts`, `ContactAddresses`, `CompanyDetails`, `PersonDetails`, `ContactTypeLinks`, `PersonRoles`, `Articles`, `Categories`, `AssetCategories`, `TaxKeys`, `TaxRates` |
-| Geschäftsvorfälle | `Bookings`, `Documents`, `DocumentReadings`, `BookingDocuments` |
+| Geschäftsvorfälle | `Bookings`, `BankTransactionDetails`, `BookingExports`, `Documents`, `DocumentReadings`, `BookingDocuments` |
 | Rechnungswesen | `NumberRanges`, `Invoices` (Rechnungen **und** Angebote, `DocumentType`), `InvoiceItems`, `InvoicePayments`, `InvoiceCorrections`, `InvoiceDocumentVersions` |
 | Zeiterfassung | `WorkTimes`, `Trips` |
 | Anlagen | `Assets`, `AssetDepreciations` |
@@ -270,7 +270,8 @@ Zentrale Tabelle für Bankbewegungen (`BookingType='bank'`) und Buchungssätze (
 | EntryForm | 22 | TEXT | | Form des Satzes (unten); Bankzeilen NULL |
 | DatevKey | 23 | INTEGER | | BU-Schlüssel, den die Quelle mitgebracht hat (1–9999, NULL = keiner, 0 wird nie gespeichert); der Export gibt ihn unverändert aus, sonst leitet er ab. Nur Importe schreiben ihn; er fällt (NULL), wenn sich Konto, Gegenkonto oder Steuersatz ändern |
 
-Indizes: `idx_bookings_type` (BookingType), `idx_bookings_parent` (ParentBooking_ID), `idx_bookings_group` (BookingGroup_ID), `idx_bookings_date` (DateBooking).
+Indizes: `idx_bookings_type` (BookingType), `idx_bookings_parent` (ParentBooking_ID), `idx_bookings_group` (BookingGroup_ID), `idx_bookings_date` (DateBooking),
+`idx_bookings_sourcegroup` (SourceGroup; der Re-Import des WISO-Datenbankimports sucht darüber). Zusatzangaben zu einer Zeile stehen in eigenen Tabellen (9c, 9d): `Bookings` wird positionsbasiert gelesen und bleibt bei 24 Spalten.
 
 **Form eines Buchungssatzes** (`EntryForm`, `db/matching.py`): steht beim Schreiben fest, statt bei jedem Lesen aus der Kontenliste von heute geraten zu werden.
 
@@ -314,6 +315,36 @@ Eine **Zahlungszuordnung** ist genau eine `InvoicePayments`-Zeile plus die Sätz
 `CancelsInvoiceId` = die stornierte Rechnung, Summen und Positionen exakt negiert), bucht die Gegenbuchung der Forderung und setzt die Rechnung auf
 `cancelled`; eine Ersatzrechnung trägt `ReplacesInvoiceId`. Erstattung, Guthaben, Neu ausstellen, Umzug der Zahlungen, Sperre: `docs/regeln/rechnungen.md`
 (Abschnitte Stornobeleg, Erstattung, Neu ausstellen, Umzug).
+
+### 9c. BankTransactionDetails (Zusatzfelder einer Bankbewegung)
+
+Höchstens eine Zeile je Bankbewegung (`BookingType='bank'`) mit den Angaben, die ein CAMT-Auszug zusätzlich liefert. Keine Zeile heißt: keine Zusatzfelder (der ganze Bestand). Die Zeile hängt mit
+`ON DELETE CASCADE` an der Buchung: Wird die Bewegung gelöscht, geht sie mit.
+
+| Spalte | Typ | Constraints | Beschreibung |
+|--------|-----|-------------|--------------|
+| Booking_ID | INTEGER | PRIMARY KEY, FK → Bookings ON DELETE CASCADE | die Bankbewegung |
+| ValueDate | DATE | | Valuta (`Ntry/ValDt`), ISO |
+| EndToEndId | TEXT | | End-to-End-Referenz (`TxDtls/Refs/EndToEndId`) |
+| MandateRef | TEXT | | Mandatsreferenz (`TxDtls/Refs/MndtId`) |
+| CreditorId | TEXT | | Gläubiger-ID (SEPA) |
+| BankRef | TEXT | | Bankreferenz (`Ntry/AcctSvcrRef`) |
+
+Geschrieben in der Transaktion der Bankzeile (`insert_booking(bank_details=…)`): nur bei einer Bankbewegung und nur, wenn mindestens ein Wert lesbar ist; Leeres steht als NULL. Gelesen wird jeder Wert
+erneut über `importers.base.clean_bank_text` bzw. `clean_value_date` (höchstens 35 Zeichen, ohne Steuerzeichen, ohne die Platzhalter `NOTPROVIDED`, `NONREF`, `NOTAVAILABLE`; ein ISO-Datum):
+`Database.get_bank_details` liefert die lesbaren Werte, `Database.bank_stock` den Bestand zu Datum, Betrag und Konto mit der Bankreferenz je Zeile.
+
+### 9d. BookingExports (Sätze, die in einem DATEV-Stapel standen)
+
+Eine Zeile je Buchungssatz, der in einem Buchungsstapel stand – die Marke „exportiert“. Keine Zeile heißt: nicht exportiert (der ganze Bestand). Auch diese Zeile geht mit der Buchung (`ON DELETE CASCADE`).
+
+| Spalte | Typ | Constraints | Beschreibung |
+|--------|-----|-------------|--------------|
+| Booking_ID | INTEGER | PRIMARY KEY, FK → Bookings ON DELETE CASCADE | der Buchungssatz |
+| ExportedAt | DATETIME | NOT NULL | Zeitpunkt des ersten Exports (UTC, `CURRENT_TIMESTAMP`); ein späterer Export ändert ihn nie |
+
+`Database.mark_datev_export` setzt das Steuerdatum und die Marke in EINER Transaktion (`DateTax` wie `update_bookings_date_tax_batch`, die Marke nur beim ersten Mal); `Database.exported_booking_ids` nennt,
+welche Sätze eine Marke tragen. Die Tabelle ist nur die Marke: Sie sperrt nichts.
 
 ### 10. BookingDocuments (n:m)
 
@@ -402,6 +433,10 @@ Momentaufnahme-Prinzip: Verkäufer, Käufer und Bank werden bei der Erstellung k
 | DocumentVersion | 54 | INTEGER | | aktuelle Fassung; NULL = Fassung 1 |
 | **Steuersatz je Position (Schema 2007)** | | | | |
 | MixedTaxRates | 55 | INTEGER | | NULL = ein Satz für den ganzen Beleg (`TaxRate`; der ganze Bestand), 1 = Satz je Position. Geschrieben wird nur NULL oder 1, gelesen streng (nur die ganze Zahl 1, `has_mixed_rates`) |
+| **Leistungszeitraum, Zahlungsart, Angebotsstatus (Schema 2010)** | | | | |
+| ServiceDateEnd | 56 | DATE | | Ende des Leistungszeitraums; NULL = nur das Leistungsdatum (`DeliveryDate`; der ganze Bestand). Ein Zeitraum gilt nur mit zwei ISO-Daten und einem Ende nach dem Beginn, gelesen über `db.invoices.service_period`, geprüft über `normalize_service_end` |
+| PaymentMeans | 57 | TEXT | | Zahlungsart, Code nach UNTDID 4461: NULL = Überweisung (58; der ganze Bestand), sonst `'10'` bar, `'48'` Karte, `'1'` nicht festgelegt. Geschrieben über `stored_payment_means` (die 58 wird NULL), gelesen streng über `payment_means_code` (alles andere gilt als nicht lesbar) |
+| QuoteStatusBefore | 58 | TEXT | | Rechnung aus einem Angebot: dessen Status vor der Umwandlung (`draft`, `sent`, `accepted`); NULL = `accepted` (der ganze Bestand). `convert_quote_to_invoice` schreibt ihn, `delete_draft_invoice` liest ihn über `restored_quote_status`; kein Feld der Maske |
 
 Der Bestand behält in den später angehängten Spalten NULL – nichts wird umgedeutet. Zu diesem Abschnitt gehören die Regeln in
 **`docs/regeln/rechnungen.md`**: Dokumente und E-Rechnung (Skonto-Angabe, Pflichtangaben, Steuernummer/USt-IdNr.), mehrere Steuersätze je Beleg
@@ -565,6 +600,9 @@ Dashboard-Töpfe; „Nicht zugeordnet“ ist die Differenz. Rein lesend. Regeln:
 4. Status: draft → finalized → sent → paid (dazwischen partial_payment, overdue; cancelled)
 5. Versenden bucht die Forderung; Zahlungen lassen sich ab sent zuordnen (9a)
 6. Stornieren: Stornorechnung als eigener Beleg (9b); Erstatten: ausgehende Bankbewegung an der Stornorechnung zuordnen
+7. Dokumente (PDF mit CII, UBL): das Leistungsdatum oder – mit `Invoices.ServiceDateEnd` – der Leistungszeitraum (PDF-Kopf in zwei Zeilen, CII `BillingSpecifiedPeriod`, UBL
+   `cac:InvoicePeriod`); die Zahlungsart `Invoices.PaymentMeans` (NULL = Überweisung 58 mit IBAN, sonst allein der Code); nur diese Stellen lesen die beiden Spalten
+   (`service_period`, `payment_means_code`)
 ```
 
 ### AfA-Berechnung
@@ -594,7 +632,7 @@ der Form des Satzes. **BU-Schlüssel** (Spalte 8):
 3. Rechnungskette (Forderung, Wartekonto an Erlöskonto, Stornogegenbuchung) → Schlüssel 0, der Satz steht in Spalte 40
 ```
 
-Rechnungsdaten (Leistungsdatum, Land) liefert `get_datev_invoice_data` in einer Abfrage, die Wartekonten `OPEN_REVENUE_ACCOUNTS`/`get_waiting_account_numbers`;
+Rechnungsdaten (Leistungsdatum – bei einem Leistungszeitraum dessen Ende –, Land) liefert `get_datev_invoice_data` in einer Abfrage, die Wartekonten `OPEN_REVENUE_ACCOUNTS`/`get_waiting_account_numbers`;
 Berater- und Mandantennummer kommen aus `CompanyDetails`. Regeln zu Zeitraum, Prüfungen, Zusammenlegen der Überträge zwischen eigenen Konten, Hinweisen
 und Bestätigung (`db.matching.settle_transfers`, `Database.check_transfers`, `find_unbooked_bank_movements`, `handlers.handle_datev_export`):
 `docs/regeln/auswertungen.md`, Abschnitt DATEV-Export. **Diese Zählregel nicht lockern – lieber ein Hinweis zu viel.**

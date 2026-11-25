@@ -109,10 +109,11 @@ def test_this_program_is_a_2_7_x_program():
 
 # ── Frisch = migriert ────────────────────────────────────────────────────────
 
-def test_a_fresh_database_has_the_column_last_at_index_55(tmp_db):
+def test_a_fresh_database_has_the_column_at_index_55(tmp_db):
     names = _names(tmp_db.db_name)
-    assert names[-1] == NEW_COLUMN and names.index(NEW_COLUMN) == InvoiceCol.MIXED_TAX_RATES == 55 == len(names) - 1
-    assert _info(tmp_db.db_name)[-1] == (NEW_COLUMN, 'INTEGER', 0, None, 0)            # ganze Zahl, NULL erlaubt, keine Vorgabe
+    assert names[OLD_INVOICE_COLUMNS] == NEW_COLUMN and names.index(NEW_COLUMN) == InvoiceCol.MIXED_TAX_RATES == 55
+    assert len(names) == OLD_INVOICE_COLUMNS + 1 + 3                                   # seit 2.10.0 drei Spalten am Ende (test_schema_2010.py)
+    assert _info(tmp_db.db_name)[OLD_INVOICE_COLUMNS] == (NEW_COLUMN, 'INTEGER', 0, None, 0)       # ganze Zahl, NULL erlaubt, keine Vorgabe
     assert names[InvoiceCol.DOCUMENT_VERSION] == 'DocumentVersion'
 
 
@@ -121,7 +122,7 @@ def test_a_fresh_and_a_migrated_database_have_the_same_columns_tables_and_indexe
     Database(db_name=fresh)
     _reopen(stock)
 
-    assert _names(stock)[-1] == NEW_COLUMN and len(_names(stock)) == OLD_INVOICE_COLUMNS + 1
+    assert _names(stock)[OLD_INVOICE_COLUMNS] == NEW_COLUMN and len(_names(stock)) == OLD_INVOICE_COLUMNS + 1 + 3     # seit 2.10.0 drei Spalten am Ende (test_schema_2010.py)
     assert _info(stock) == _info(fresh)                                              # Name, Typ, NOT NULL, Vorgabe, PK
     with closing(sqlite3.connect(stock)) as a, closing(sqlite3.connect(fresh)) as b:
         for query in ("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name",
@@ -144,7 +145,7 @@ def test_older_stocks_end_with_the_same_column_order_as_a_fresh_database(stock, 
 
     for table in ('Accounts', 'Contacts', 'Bookings', 'CompanyDetails', 'Invoices'):
         assert _info(stock, table) == _info(fresh, table), table
-    assert _names(stock)[-1] == NEW_COLUMN
+    assert _names(stock)[OLD_INVOICE_COLUMNS] == NEW_COLUMN
     assert installation.user_version(stock) == version.SCHEMA_VERSION
 
 
@@ -169,6 +170,8 @@ def test_existing_rows_stay_untouched_and_the_new_value_is_null(stock):
     db = _reopen(stock)
 
     after = _contents(stock)
+    assert all(row[-3:] == (None, None, None) for row in after['Invoices'])        # seit 2.10.0 drei Spalten am Ende, leer (test_schema_2010.py)
+    after['Invoices'] = [row[:-3] for row in after['Invoices']]
     assert all(row[-1] is None for row in after['Invoices'])                       # überall NULL – nichts wird umgedeutet
     assert [row[:-1] for row in after['Invoices']] == before['Invoices']            # jede Spalte jeder Zeile
     assert all(row[-3:] == (None, None, None) for row in after['InvoiceItems'])    # seit 2.8.0 drei Spalten am Ende, leer (test_tax_rates_schema_2008.py)
@@ -217,7 +220,7 @@ def test_a_failing_backup_stops_the_opening_and_leaves_the_stock_at_2006(stock):
     assert NEW_COLUMN not in _names(stock)
     (Path(stock).parent / 'backup').unlink()                                       # Ursache behoben: jetzt klappt es
     _reopen(stock)
-    assert installation.user_version(stock) == version.SCHEMA_VERSION and _names(stock)[-1] == NEW_COLUMN
+    assert installation.user_version(stock) == version.SCHEMA_VERSION and _names(stock)[OLD_INVOICE_COLUMNS] == NEW_COLUMN
 
 
 def test_an_aborted_migration_rolls_the_new_column_back(stock, monkeypatch):
@@ -239,7 +242,7 @@ def test_an_aborted_migration_rolls_the_new_column_back(stock, monkeypatch):
     assert installation.dump(stock) == before                                       # Spalten, Tabellen, Zeilen wie vorher
 
     _reopen(stock)                                                                  # und beim nächsten Start klappt es
-    assert installation.user_version(stock) == version.SCHEMA_VERSION and _names(stock)[-1] == NEW_COLUMN
+    assert installation.user_version(stock) == version.SCHEMA_VERSION and _names(stock)[OLD_INVOICE_COLUMNS] == NEW_COLUMN
 
 
 def test_a_column_that_is_already_there_does_not_stop_the_migration(stock):
@@ -250,7 +253,7 @@ def test_a_column_that_is_already_there_does_not_stop_the_migration(stock):
     _reopen(stock)
 
     assert installation.user_version(stock) == version.SCHEMA_VERSION
-    assert _names(stock)[OLD_INVOICE_COLUMNS:] == [NEW_COLUMN]                      # nicht doppelt
+    assert _names(stock)[OLD_INVOICE_COLUMNS:OLD_INVOICE_COLUMNS + 1] == [NEW_COLUMN]       # nicht doppelt
 
 
 def test_a_database_of_a_newer_version_is_not_opened(stock):
@@ -321,4 +324,4 @@ def test_insert_invoice_with_a_transaction_writes_the_flag_with_it(tmp_db):
         tmp_db.insert_invoice(_head(mixed_tax_rates=1), tx=tx)
         entries = [params for sql, params, _description in tx.log if 'INSERT INTO Invoices' in sql]
 
-    assert _stored(tmp_db) == [1] and entries and entries[0][-1] == 1             # auch im Replay-Log (letzter Parameter)
+    assert _stored(tmp_db) == [1] and entries and entries[0][-4] == 1             # auch im Replay-Log (seit 2.10.0 folgen ihm die drei Parameter ServiceDateEnd, PaymentMeans, QuoteStatusBefore)

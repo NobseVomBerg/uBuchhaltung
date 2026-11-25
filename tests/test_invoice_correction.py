@@ -440,7 +440,7 @@ def _run_save_invoice(world, invoice_id, tmp_path, fields, initial):
         "vm.runInNewContext(fs.readFileSync(process.argv[2], 'utf8') + '\\nsaveInvoice();', sandbox);\n"
         "console.log(JSON.stringify(log));\n", encoding='utf-8')
     base = {'invoice_id': str(invoice_id), 'invoice_locked': 'true', 'document_version': '1', 'payment_terms': 'P',
-            'order_number': '', 'buyer_route_id': '', 'delivery_date': ''}
+            'order_number': '', 'buyer_route_id': '', 'delivery_date': '', 'service_date_end': ''}
     done = subprocess.run([NODE, str(runner), str(source), json.dumps({'fields': {**base, **fields},
                                                                          'initial': initial})],
                           capture_output=True, text=True, timeout=60)

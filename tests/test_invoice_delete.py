@@ -189,7 +189,7 @@ def test_deleting_the_draft_of_a_quote_makes_the_quote_convertible_again(world):
     quote_id, invoice_id = quote_with_invoice(world)
     assert columns(db, quote_id)['Status'] == 'converted'
     assert delete(world, invoice_id) == (303, '/invoice')
-    assert columns(db, quote_id)['Status'] == 'accepted'
+    assert columns(db, quote_id)['Status'] == 'sent'                 # der Status vor der Umwandlung (seit 2.10.0, test_quote_status_restore.py)
     again = db.convert_quote_to_invoice(quote_id)                    # und lässt sich wieder umwandeln
     assert again and again != invoice_id and columns(db, quote_id)['Status'] == 'converted'
 

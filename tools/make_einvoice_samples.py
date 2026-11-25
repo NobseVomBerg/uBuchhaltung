@@ -32,6 +32,10 @@ Ergebnis im Ausgabeordner:
 * ``zugferd-steuerfrei-gemischt.pdf``   – 19 % und steuerfrei auf einem Beleg: die Aufschlüsselung der steuerfreien Gruppe in Kategorie E, Satz 0, mit dem
                                          Befreiungsgrund aus den Stammdaten (BT-120, ohne Code)
 * ``zugferd-steuerfrei.pdf``            – ein ganz steuerfreier Beleg (Eintrag im Kopf, Satz 0): Kategorie E mit Befreiungsgrund (BR-E-10)
+* ``zugferd-zeitraum.pdf``               – Leistungszeitraum (seit 2.10.0): die Rechnung nennt statt des Leistungsdatums einen Zeitraum – die CII ``BillingSpecifiedPeriod``
+                                         (BG-14, ohne ``ActualDeliverySupplyChainEvent``), im PDF zwei Zeilen im Kopf („Leistungszeitraum:“ und „bis …“)
+* ``zugferd-bar.pdf``                   – Zahlungsart bar (Code 10): ``SpecifiedTradeSettlementPaymentMeans`` allein mit dem Code, ohne Konto
+* ``zugferd-nicht-festgelegt.pdf``      – Zahlungsart nicht festgelegt (Code 1), ebenso ohne Konto
 * ``xrechnung-normalfall.xml``          – UBL-XRechnung zur Normalfall-Rechnung
 * ``xrechnung-kleinunternehmer.xml``    – UBL-XRechnung zum Kleinunternehmer-Fall
 * ``xrechnung-berichtigt.xml``          – UBL-XRechnung zur berichtigten Fassung (``cbc:Note``)
@@ -44,6 +48,8 @@ Ergebnis im Ausgabeordner:
 * ``xrechnung-satz-5-5.xml``            – UBL-XRechnung zum Beleg mit 19 % und 5,5 % (zwei ``cac:TaxSubtotal``, die der 5,5 % mit Steuer 0,00)
 * ``xrechnung-steuerfrei-gemischt.xml`` – UBL-XRechnung zum Beleg mit 19 % und steuerfrei (``cbc:TaxExemptionReason`` an der Kategorie E)
 * ``xrechnung-steuerfrei.xml``          – UBL-XRechnung zum ganz steuerfreien Beleg
+* ``xrechnung-zeitraum.xml``            – UBL-XRechnung mit ``cac:InvoicePeriod`` statt ``cac:Delivery``
+* ``xrechnung-bar.xml``, ``xrechnung-nicht-festgelegt.xml`` – UBL-XRechnung mit ``cbc:PaymentMeansCode`` 10 bzw. 1, ohne ``cac:PayeeFinancialAccount``
 
 Die drei Beispiele mit Steuersätzen aus den Stammdaten entstehen wie das mit Steuersatz je Position: Das Werkzeug legt die Einträge in seiner
 Demo-Datenbank an (``Database.insert_tax_rate``, erfundene Bezeichnungen und Gründe, Erlöskonten des Standard-Kontenrahmens) und speichert die Entwürfe über den Weg
@@ -246,6 +252,25 @@ def _entry_drafts(db, invoice_id):
     }
 
 
+# Die Beispiele zu Leistungszeitraum und Zahlungsart (2.10.0): eine Dienstleistung über einen Monat. Keine Karte (48): Die XRechnung verlangt dafür die Ziffern der
+# Kartennummer (BR-DE-24), die die App nicht führt – sie legt dann kein UBL an, und das Werkzeug bricht bei Lücken ab.
+PERIOD_ITEMS = ({'position': 1, 'description': 'Monatliche Betreuung Buchhaltung', 'quantity': 1, 'unit': 'MON', 'unitPrice': 480.0, 'taxRate': 19},)
+
+
+def _period_and_means_drafts(db, invoice_id):
+    """Die drei Beispiele zu Leistungszeitraum und Zahlungsart als Entwürfe über den Weg der Maske (``_form_draft``, Kunde, Firma, Bank und Fristen von der Demo-Rechnung
+    ``invoice_id``): ``zeitraum`` (vom Leistungsdatum der Demo-Rechnung bis 29 Tage später: BG-14 statt Lieferdatum), ``bar`` (Code 10) und ``nicht-festgelegt`` (Code 1) –
+    beide ohne Konto in den Zahlungsangaben. Liefert ``{Name der Dateien: ID}``."""
+    inv = db.get_invoice_by_id(invoice_id)
+    start = str(inv[25] or inv[2])
+    items = [dict(item) for item in PERIOD_ITEMS]
+    return {
+        'zeitraum': _form_draft(db, invoice_id, 'ZR-DEMO-1', items, 'zeitraum', taxRate=0.19, serviceDateEnd=_days_later(start, 29)),
+        'bar': _form_draft(db, invoice_id, 'BAR-DEMO-1', items, 'bar', taxRate=0.19, paymentMeans='10'),
+        'nicht-festgelegt': _form_draft(db, invoice_id, 'NF-DEMO-1', items, 'nicht-festgelegt', taxRate=0.19, paymentMeans='1'),
+    }
+
+
 def _correct_delivery_date(db, invoice_id):
     """Die Rechnung versenden (Fassung 1 entsteht) und das Leistungsdatum berichtigen: Fassung 2 trägt den
     Hinweis. Genau diesen Weg geht die Oberfläche (Status „versendet“, danach Speichern als Berichtigung)."""
@@ -347,6 +372,11 @@ def _day_before(iso_date):
     return (datetime.date.fromisoformat(str(iso_date)[:10]) - datetime.timedelta(days=1)).isoformat()
 
 
+def _days_later(iso_date, days):
+    import datetime
+    return (datetime.date.fromisoformat(str(iso_date)[:10]) + datetime.timedelta(days=days)).isoformat()
+
+
 def _has_tax_snapshot(db, invoice_id):
     """Trägt eine Position des Belegs die Momentaufnahme eines Steuersatzes aus den Stammdaten (``InvoiceItems.TaxRateBp``, Index 11 der Zeile)? Das ist das Merkmal –
     nicht die Art ``'E'`` allein: Die Positionen des Beispiels nach § 19 tragen sie ohne Momentaufnahme."""
@@ -394,9 +424,12 @@ def main(outdir):
     # steuerfrei mit Grund (Satz je Position) und ein ganz steuerfreier Beleg (der Eintrag im Kopf)
     entry_drafts = _entry_drafts(db, normal[0])
 
+    # Leistungszeitraum und Zahlungsart (seit 2.10.0): ein Zeitraum statt des Leistungsdatums, bar und nicht festgelegt
+    period_drafts = _period_and_means_drafts(db, normal[0])
+
     for label, iid in (('normalfall', normal[0]), ('kleinunternehmer', exempt_id), ('skonto', skonto_id),
                        ('steuernummer', tax_number_id), ('steuernummer-kleinunternehmer', tax_number_exempt_id),
-                       ('mischsatz', mixed_id), *entry_drafts.items()):
+                       ('mischsatz', mixed_id), *entry_drafts.items(), *period_drafts.items()):
         result = generate_invoice_documents(db, iid, with_xml=False, overwrite_sent=True)
         if result['error']:
             sys.exit(f'{label}: {result["error"]}')

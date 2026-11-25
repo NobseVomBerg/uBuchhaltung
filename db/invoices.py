@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: 2026 unsix IT Engineering
 # Kommerzielle Lizenz ohne AGPL-Pflichten verfügbar – Kontakt: office@unsix.com
 """Database-Mixin: invoices."""
+import datetime
 import sqlite3
 import os
 import json
@@ -11,6 +12,7 @@ from tax_groups import booking_rate
 from .core import fk_explained
 from .invoice_lock import (CHANGED_MESSAGE, DocumentNotFound, has_storno, invoice_row, REOPEN_ATTACHED_MESSAGE,
                            REOPEN_FOREIGN_MESSAGE, REOPEN_IMPORTED_MESSAGE)
+from .invoice_versions import is_iso_date
 # Was ``db.invoice_payments`` für die Buchungen eines Belegs mit Steuersatz je Position festlegt, reicht dieses Modul weiter – ebenso die Regel der
 # Kleinunternehmer-Erlöse (4185 bis 2025, 4184 ab 2026, nach dem Datum der Bankbewegung)
 from . import invoice_payments as _payments
@@ -44,6 +46,9 @@ class InvoiceCol:
     SENT_AT = 53         # erstmals versendet (UTC, CURRENT_TIMESTAMP); Import: NULL
     DOCUMENT_VERSION = 54    # Nummer der aktuellen Fassung; NULL = Fassung 1
     MIXED_TAX_RATES = 55     # NULL = ein Satz für den ganzen Beleg (Bestand), 1 = Satz je Position (seit 2.7.0); gelesen über ``has_mixed_rates``
+    SERVICE_DATE_END = 56    # Ende des Leistungszeitraums; NULL = nur das Leistungsdatum (Bestand); gelesen über ``service_period``
+    PAYMENT_MEANS = 57       # Zahlungsart (UNTDID 4461); NULL = Überweisung (Bestand); gelesen über ``payment_means_code``
+    QUOTE_STATUS_BEFORE = 58     # Rechnung aus einem Angebot: dessen Status vor der Umwandlung; NULL = ``accepted`` (Bestand); gelesen über ``restored_quote_status``
 
 
 #: Die Standard-Erlöskonten der Sätze, für die es eines gibt – Prozentzahl → Kontonummer (SKR04): 19 % → 4400, 7 % → 4300. ``resolve_revenue_coa`` nimmt sie, wenn
@@ -55,8 +60,66 @@ DEFAULT_REVENUE_ACCOUNT_NUMBERS = {19: 4400, 7: 4300}
 # Aus diesen Status wird ein Angebot in eine Rechnung umgewandelt – einmal: danach ist es „converted“.
 # Ein abgelehntes Angebot wird erst wieder angenommen.
 QUOTE_CONVERTIBLE_STATUSES = ('draft', 'sent', 'accepted')
-# Dorthin geht ein Angebot zurück, wenn der Entwurf seiner Rechnung gelöscht wird
+# Dorthin geht ein Angebot zurück, wenn der Entwurf seiner Rechnung gelöscht wird und die Rechnung ihren früheren Status nicht kennt (Bestand, unlesbar)
 QUOTE_RESTORED_STATUS = 'accepted'
+
+#: Die Zahlungsarten einer Rechnung: Code nach UNTDID 4461 → Bezeichnung in der Maske, Reihenfolge = Auswahl. 58 SEPA-Überweisung (der Standard und der ganze Bestand: ``Invoices.PaymentMeans``
+#: NULL), 10 Barzahlung, 48 Kartenzahlung, 1 nicht festgelegt. Lastschrift (59) gibt es nicht: Die XRechnung verlangt dafür Mandat, Gläubiger-ID und IBAN des Kunden.
+PAYMENT_MEANS = {'58': 'Überweisung', '10': 'Bar', '48': 'Karte', '1': 'nicht festgelegt'}
+PAYMENT_MEANS_DEFAULT = '58'
+PAYMENT_MEANS_INVALID = 'Unbekannte Zahlungsart.'
+SERVICE_PERIOD_MESSAGE = 'Das Ende des Leistungszeitraums muss ein gültiges Datum nach dem Leistungsdatum sein.'
+SERVICE_PERIOD_START_MESSAGE = 'Ein Leistungszeitraum braucht das Leistungsdatum als Beginn.'
+
+
+def payment_means_code(raw):
+    """Die Zahlungsart einer Rechnung (``Invoices.PaymentMeans``) als Code von ``PAYMENT_MEANS`` – die EINE Lesestelle.
+
+    NULL ist die Überweisung (``'58'``, der ganze Bestand). Gelesen wird streng: genau einer der Schlüssel von ``PAYMENT_MEANS`` als Text. Alles andere (leer, ``'59'``, mit Leerraum, eine Zahl,
+    ein Wahrheitswert …) ist nicht lesbar: ``None`` – nichts wird still zur Überweisung."""
+    if raw is None:
+        return PAYMENT_MEANS_DEFAULT
+    return raw if type(raw) is str and raw in PAYMENT_MEANS else None
+
+
+def stored_payment_means(value):
+    """Die Zahlungsart zum Schreiben in ``Invoices.PaymentMeans``: NULL, leer und ``'58'`` werden NULL (die Überweisung steht nie als Wert da), ``'10'``, ``'48'`` und ``'1'`` bleiben, alles andere
+    ist ein ``ValueError`` mit ``PAYMENT_MEANS_INVALID`` (vor jedem Schreiben)."""
+    if value is None or (type(value) is str and value in ('', PAYMENT_MEANS_DEFAULT)):
+        return None
+    if type(value) is str and value in PAYMENT_MEANS:
+        return value
+    raise ValueError(PAYMENT_MEANS_INVALID)
+
+
+def service_period(delivery_date, service_date_end):
+    """Der Leistungszeitraum einer Rechnung als ``(Beginn, Ende)`` (``datetime.date``) – die EINE Lesestelle für PDF, E-Rechnung und DATEV. Beginn ist das Leistungsdatum
+    (``Invoices.DeliveryDate``), Ende ``Invoices.ServiceDateEnd``. Es gibt einen Zeitraum nur, wenn beide ISO-Daten sind und das Ende NACH dem Beginn liegt: ohne Ende, bei gleichem Tag, bei
+    einem Ende vor dem Beginn und bei allem, was sich nicht als Datum lesen lässt, ist es ``None`` – die Rechnung gilt dann mit ihrem Leistungsdatum allein."""
+    if not (is_iso_date(delivery_date) and is_iso_date(service_date_end)):
+        return None
+    start, end = datetime.date.fromisoformat(delivery_date), datetime.date.fromisoformat(service_date_end)
+    return (start, end) if end > start else None
+
+
+def normalize_service_end(start, end):
+    """Das Ende des Leistungszeitraums zum Speichern und Berichtigen (``start``: das Leistungsdatum): ohne Ende (``None``, leer) ``None``; ein Ende, das kein ISO-Datum ist, ein Beginn, der keines ist,
+    oder ein Ende vor dem Beginn ist ein ``ValueError`` mit Klartext (``SERVICE_PERIOD_MESSAGE``, ``SERVICE_PERIOD_START_MESSAGE``); ein Ende am Beginn ist kein Zeitraum (``None``), sonst das Ende."""
+    if end is None or end == '':
+        return None
+    if not is_iso_date(end):
+        raise ValueError(SERVICE_PERIOD_MESSAGE)
+    if not is_iso_date(start):
+        raise ValueError(SERVICE_PERIOD_START_MESSAGE)
+    if end < start:
+        raise ValueError(SERVICE_PERIOD_MESSAGE)
+    return None if end == start else end
+
+
+def restored_quote_status(raw):
+    """Der Status, auf den ein Angebot zurückgeht, wenn der Entwurf seiner Rechnung gelöscht wird (``Invoices.QuoteStatusBefore`` der Rechnung): ``raw``, wenn es genau einer von
+    ``QUOTE_CONVERTIBLE_STATUSES`` ist, sonst ``QUOTE_RESTORED_STATUS`` (Bestand aus 2.9.x: NULL; auch alles Unlesbare)."""
+    return raw if isinstance(raw, str) and raw in QUOTE_CONVERTIBLE_STATUSES else QUOTE_RESTORED_STATUS
 
 
 class QuoteNotConvertible(ValueError):
@@ -178,7 +241,10 @@ class InvoicesMixin:
         Args:
             invoice_data: Dictionary with all invoice fields. ``mixed_tax_rates`` (Standard ``None``) ist das Kennzeichen
                 „Steuersatz je Position“: geschrieben wird nur ``None`` (ein Satz für den ganzen Beleg) oder ``1``, alles
-                andere ist ein ``ValueError`` (vor jedem Schreiben).
+                andere ist ein ``ValueError`` (vor jedem Schreiben). ``payment_means`` (Standard ``None`` = Überweisung) geht durch
+                ``stored_payment_means`` (``ValueError`` bei einem unbekannten Code, vor jedem Schreiben); ``quote_status_before`` (der Status des
+                Angebots vor der Umwandlung) ist ``None`` oder einer von ``QUOTE_CONVERTIBLE_STATUSES``, sonst ``ValueError``;
+                ``service_date_end`` schreibt die Methode, wie sie kommt (geprüft hat es ``normalize_service_end``).
             tx: optionale :class:`db.core.Transaction` – dann wird darin
                 geschrieben und erst mit ihr committet
 
@@ -188,6 +254,10 @@ class InvoicesMixin:
         mixed = invoice_data.get('mixed_tax_rates')
         if mixed is not None and not has_mixed_rates(mixed):
             raise ValueError('mixed_tax_rates darf nur None oder 1 sein')
+        payment_means = stored_payment_means(invoice_data.get('payment_means'))
+        quote_status_before = invoice_data.get('quote_status_before')
+        if quote_status_before is not None and not (isinstance(quote_status_before, str) and quote_status_before in QUOTE_CONVERTIBLE_STATUSES):
+            raise ValueError('quote_status_before darf nur None oder der Status eines umwandelbaren Angebots sein')
         conn = tx.conn if tx else self._get_connection()
         cursor = conn.cursor()
         
@@ -201,10 +271,11 @@ class InvoicesMixin:
                 BankAccountId, BankName, BankIBAN, BankBIC,
                 TaxCategory, TaxRate, SumNet, TaxAmount, SumGross, AmountDue,
                 Status, PDFPath, XMLPath,
-                DocumentType, ValidUntil, IntroText, ClosingText, SourceQuoteId, MixedTaxRates
+                DocumentType, ValidUntil, IntroText, ClosingText, SourceQuoteId, MixedTaxRates,
+                ServiceDateEnd, PaymentMeans, QuoteStatusBefore
             ) VALUES (
                 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?, ?
+                ?, ?, ?, ?, ?, ?, ?, ?, ?
             )
         '''
 
@@ -257,6 +328,9 @@ class InvoicesMixin:
             invoice_data.get('closing_text'),
             invoice_data.get('source_quote_id'),
             mixed,
+            invoice_data.get('service_date_end'),
+            payment_means,
+            quote_status_before,
         )
         
         refs = {'OwnCompanyId': invoice_data.get('own_company_id'),
@@ -383,18 +457,20 @@ class InvoicesMixin:
         PDF soll nicht spurlos verschwinden können. Die Rechnungsnummer geht an den Nummernkreis
         zurück (``release_invoice_number``) – außer die Rechnung war schon einmal versendet
         (``was_sent_before``): Dann bleibt die Lücke. Stammt der Entwurf aus einem
-        Angebot und gibt es keine weitere Rechnung dazu, ist das Angebot wieder umwandelbar.
+        Angebot und gibt es keine weitere Rechnung dazu, geht das Angebot auf den Status vor der Umwandlung zurück
+        (``Invoices.QuoteStatusBefore`` des Entwurfs, gelesen über ``restored_quote_status``; Bestand und Unlesbares:
+        ``accepted``) und ist wieder umwandelbar.
 
         Die abgelegten Dokumente des Entwurfs räumt der Aufrufer nach dem Commit weg; was in
         „Fassungen“ liegt, nie."""
         with self.transaction() as tx:
             conn = tx.conn
             conn.execute('BEGIN IMMEDIATE')
-            row = conn.execute('SELECT InvoiceNumber, Status, DocumentType, SourceQuoteId '
+            row = conn.execute('SELECT InvoiceNumber, Status, DocumentType, SourceQuoteId, QuoteStatusBefore '
                                'FROM Invoices WHERE ID = ?', (invoice_id,)).fetchone()
             if row is None or (row[2] or 'invoice') != 'invoice':
                 raise DocumentNotFound('Rechnung nicht gefunden.')
-            number, status, _, quote_id = row
+            number, status, _, quote_id, quote_status_before = row
             status = status or 'draft'
             if status != 'draft':
                 raise InvoiceNotDeletable(
@@ -419,7 +495,7 @@ class InvoicesMixin:
                     "UPDATE Invoices SET Status = ?, UpdatedAt = CURRENT_TIMESTAMP "
                     "WHERE ID = ? AND DocumentType = 'quote' AND Status = 'converted' "
                     "AND NOT EXISTS (SELECT 1 FROM Invoices o WHERE o.SourceQuoteId = ?)",
-                    (QUOTE_RESTORED_STATUS, quote_id, quote_id))
+                    (restored_quote_status(quote_status_before), quote_id, quote_id))
     def delete_quote(self, quote_id):
         """Ein Angebot löschen (inkl. Positionen via CASCADE).
 
@@ -510,6 +586,9 @@ class InvoicesMixin:
                 'source_quote_id': quote_id,
                 # die Positionen kommen mit ihren Sätzen (unten): Das Kennzeichen „Steuersatz je Position“ geht mit
                 'mixed_tax_rates': 1 if has_mixed_rates(quote[InvoiceCol.MIXED_TAX_RATES]) else None,
+                # der Status des Angebots vor dieser Umwandlung (oben gelesen, vor dem UPDATE; das UPDATE hat bestätigt, dass er einer von
+                # ``QUOTE_CONVERTIBLE_STATUSES`` ist): Löscht jemand den Entwurf, geht das Angebot dorthin zurück
+                'quote_status_before': quote[InvoiceCol.STATUS] or 'draft',
             }
             new_invoice_id = self.insert_invoice(invoice_data, tx=tx)
 
@@ -1257,15 +1336,18 @@ class InvoicesMixin:
         """Liefert für den DATEV-Export, was die Rechnungskette von der Rechnung braucht, in EINER Abfrage über alle
         Rechnungen (nicht je Buchung): ``{Rechnungsnummer: (Leistungsdatum, Land des Käufers)}`` – ohne Angebote.
         Zahlungen und Umbuchungen gehören oft zu einer Rechnung früherer Zeiträume, deshalb nicht nur die des
-        Exportzeitraums."""
+        Exportzeitraums. Hat die Rechnung einen Leistungszeitraum (``service_period``), steht das Ende des Zeitraums
+        als ISO-Datum an der Stelle des Leistungsdatums: Eine Leistung über einen Zeitraum ist mit dessen Ende
+        ausgeführt; ohne Zeitraum (auch bei einem Ende, das keiner ist) ist es das Leistungsdatum, wie gespeichert."""
         conn = self._get_connection()
         try:
             rows = conn.execute(
-                "SELECT InvoiceNumber, DeliveryDate, BuyerCountry FROM Invoices "
+                "SELECT InvoiceNumber, DeliveryDate, BuyerCountry, ServiceDateEnd FROM Invoices "
                 "WHERE DocumentType = 'invoice' OR DocumentType IS NULL").fetchall()
         finally:
             conn.close()
-        return {number: (delivery, country) for number, delivery, country in rows}
+        return {number: (period[1].isoformat() if (period := service_period(delivery, end)) else delivery, country)
+                for number, delivery, country, end in rows}
 
     @staticmethod
     def _is_app_receivable(source_group, counter, waiting_ids):

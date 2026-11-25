@@ -18,7 +18,7 @@
     (16/5/19/7 %). Kein Satz, 0 % und jeder andere Satz → 0 (auch AfA); bei Umsatzsteuer steht der Satz in Spalte 40. Solche Zeilen zählt
     der Export (`export_to_datev(rates_without_key=…)`, `DatevStack.hint`; fester Hinweis `DATEV_RATE_NOTE` unter dem Formular).
 - **Rechnungskette** (Forderung, „Wartekonto an Erlöskonto“, Gegenbuchung einer Stornorechnung; `booking_kind`): kein Schlüssel, in Spalte 40
-  der Satz an jeder Umsatzsteuer-Zeile mit Satz über 0. Leistungsdatum (114) nur an der Forderung; Land (119) an der Kette (leer/D/Deutschland
+  der Satz an jeder Umsatzsteuer-Zeile mit Satz über 0. Leistungsdatum (114) nur an der Forderung – das Ende des Leistungszeitraums der Rechnung, sonst ihr Leistungsdatum (`get_datev_invoice_data`, `service_period`); Land (119) an der Kette (leer/D/Deutschland
   = DE, ohne Rechnung DE); Spalte 115 leer (`DateTax` setzt der Handler).
 - Belegfeld 1 ohne Leerzeichen, bis 36 Zeichen. Buchungstext (Spalte 13): Steuerzeichen vor dem Kürzen auf 60 Zeichen zu Leerzeichen.
 - Vorlauf: Berater- und Mandantennummer der eigenen Firma (`CompanyDetails.DatevConsultantNo`/`DatevClientNo`, ASCII-Ziffern ohne führende

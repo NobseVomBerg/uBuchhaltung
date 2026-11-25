@@ -374,7 +374,7 @@ class InvoiceStornoMixin:
     def _storno_head(row, number, storno_date):
         """Die Angaben der Stornorechnung für ``insert_invoice``: der Kopf der Ursprungsrechnung ``row`` (Absender,
         Kunde samt Anschrift-Momentaufnahme, Käufer-USt-IdNr., Leitweg-ID, Bestellnummer, Bank, Währung, Steuer,
-        Leistungsdatum) mit neuer Nummer, dem Stornodatum als Rechnungsdatum, ohne Fälligkeit und Skonto, mit dem
+        Leistungsdatum und -zeitraum, Zahlungsart) mit neuer Nummer, dem Stornodatum als Rechnungsdatum, ohne Fälligkeit und Skonto, mit dem
         Zahlungstext der Stornorechnung und den Summen der Ursprungsrechnung – exakt negiert, nichts neu
         gerechnet. Rest = Brutto, Status „versendet“."""
         def euro(minor):
@@ -393,7 +393,7 @@ class InvoiceStornoMixin:
     def _replacement_head(row, number, day):
         """Die Angaben der Ersatzrechnung für ``insert_invoice``: der Kopf der stornierten Rechnung ``row`` (wie bei der
         Stornorechnung: Absender, Kunde samt Anschrift-Momentaufnahme, Käufer-USt-IdNr., Leitweg-ID, Bestellnummer, Bank,
-        Währung, Steuer, Leistungsdatum) mit neuer Nummer, dem heutigen Tag als Rechnungsdatum, Zahlungshinweis und Skonto
+        Währung, Steuer, Leistungsdatum und -zeitraum, Zahlungsart) mit neuer Nummer, dem heutigen Tag als Rechnungsdatum, Zahlungshinweis und Skonto
         der Rechnung, der Fälligkeit um dasselbe Zahlungsziel verschoben (``_shifted_due_date``) und den Summen der
         stornierten Rechnung – positiv, nichts neu gerechnet. Rest = Brutto, Status „Entwurf“."""
         return {
@@ -525,7 +525,8 @@ def _copied_head(row):
     """Was Stornorechnung und Ersatzrechnung vom Kopf der Ursprungsrechnung ``row`` (Spalte → Wert) übernehmen: der
     Absender mit seiner Firma, der Kunde samt Anschrift-Momentaufnahme, Käufer-USt-IdNr., Leitweg-ID, Bestellnummer,
     Bankverbindung, Währung, Steuersatz und -kategorie, das Kennzeichen „Steuersatz je Position“ (die Positionen tragen
-    ihre Sätze mit) und das Leistungsdatum – ohne Nummer, Datum, Zahlungsbedingungen, Summen, Status und Dokumente."""
+    ihre Sätze mit), das Leistungsdatum samt Leistungszeitraum und die Zahlungsart – ohne Nummer, Datum, Zahlungsbedingungen, Summen,
+    Status und Dokumente."""
     return {
         'own_company_id': row['OwnCompanyId'],
         'seller_name': row['SellerName'], 'seller_company': row['SellerCompany'],
@@ -540,7 +541,7 @@ def _copied_head(row):
         'buyer_vat_id': row['BuyerVATID'], 'buyer_reference': row['BuyerReference'],
         'buyer_route_id': row['BuyerRouteID'],
         'order_number': row['OrderNumber'], 'currency': row['Currency'],
-        'delivery_date': row['DeliveryDate'],
+        'delivery_date': row['DeliveryDate'], 'service_date_end': row['ServiceDateEnd'], 'payment_means': row['PaymentMeans'],
         'bank_account_id': row['BankAccountId'], 'bank_name': row['BankName'],
         'bank_iban': row['BankIBAN'], 'bank_bic': row['BankBIC'],
         'tax_category': row['TaxCategory'], 'tax_rate': row['TaxRate'],

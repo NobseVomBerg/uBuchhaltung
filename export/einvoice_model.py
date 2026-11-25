@@ -33,7 +33,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from typing import List, Optional, Tuple
 
 from db.invoice_lock import STORNO_KIND
-from db.invoices import has_mixed_rates
+from db.invoices import has_mixed_rates, payment_means_code, service_period
 from money import SCALE, format_de, to_minor
 from richtext import sanitize_richtext
 from tax_groups import (MAX_RATE_BP, MAX_REASON_LENGTH, MIN_RATE_BP, RateGroup, bp_pct, item_groups, item_rate_of, pct_text, rate_groups,
@@ -50,7 +50,7 @@ _INV = dict(
     payment_terms=26, payment_due_date=27, skonto_days=28, skonto_percent=29, bank_name=31, bank_iban=32,
     bank_bic=33, tax_category=34, tax_rate=35, sum_net=36, tax_amount=37,
     sum_gross=38, amount_due=39, invoice_kind=50, cancels_invoice_id=51, replaces_invoice_id=52, document_version=54,
-    mixed_tax_rates=55,
+    mixed_tax_rates=55, service_date_end=56, payment_means=57,
 )
 # Spaltenindizes der InvoiceItems-Zeile (11 und 12: die Momentaufnahme eines Steuersatzes aus den Stammdaten, Schema 2008)
 _ITM = dict(position=2, description=4, quantity=5, unit=6, price=7, total_net=8,
@@ -359,6 +359,7 @@ class EInvoice:
     buyer_reference: str = ''            # BT-10 (Leitweg-ID)
     order_reference: str = ''            # BT-13
     delivery_date: Optional[date] = None
+    service_end: Optional[date] = None   # BT-74: Ende des Leistungszeitraums (Beginn BT-73 ist ``delivery_date``); ``None`` = kein Zeitraum
     due_date: Optional[date] = None
     payment_terms: str = ''
     bank_name: str = ''
@@ -370,6 +371,8 @@ class EInvoice:
     warnings: List[str] = field(default_factory=list)
     skonto: Optional[Skonto] = None                    # nie bei einer Stornorechnung
     skonto_unreadable: bool = False                    # gespeicherte Werte unbrauchbar: kein Skonto, dafür eine Lücke
+    payment_means: Optional[str] = '58'                # BT-81: '58' Überweisung (NULL in der Datenbank), '10', '48', '1'; ``None`` = nicht lesbar
+    payment_means_unreadable: bool = False             # die gespeicherte Zahlungsart ist unbrauchbar: nichts wird geschrieben, dafür eine Lücke
 
     @property
     def is_exempt(self) -> bool:
@@ -790,6 +793,10 @@ def build_einvoice(db, invoice, items) -> EInvoice:
         notes = [note for note in (replacement_note(db, invoice), correction_note_text(notice) if notice else None)
                  if note]
     issue_date = _iso_date(col('date')) or date.today()
+    # Der Leistungszeitraum: Beginn ist das Leistungsdatum, das Ende ``Invoices.ServiceDateEnd`` – ein Zeitraum nur mit zwei Daten und einem Ende nach dem Beginn
+    # (``db.invoices.service_period``, dieselbe Stelle wie PDF und DATEV); alles andere gilt als Leistungsdatum allein
+    period = service_period(col('delivery_date'), col('service_date_end'))
+    means = payment_means_code(col('payment_means'))
     # Eine Stornorechnung hat nie Skonto, auch nicht, wenn in ihrer Zeile ein Altwert steht – ebenso kein Beleg über höchstens
     # 0 (Gutschrift, 0-€-Rechnung): Dort gibt es nichts abzuziehen, und das ist keine Lücke
     skonto, skonto_unreadable = ((None, False) if storno or grand <= 0
@@ -804,13 +811,15 @@ def build_einvoice(db, invoice, items) -> EInvoice:
         buyer_reference=_text(col('buyer_route_id')) or _text(col('buyer_reference')),
         order_reference=_text(col('order_number')),
         delivery_date=_iso_date(col('delivery_date')),
+        service_end=period[1] if period else None,
         due_date=_iso_date(col('payment_due_date')),
         payment_terms=_text(col('payment_terms')),
         bank_name=_text(col('bank_name')),
         iban=_text(col('bank_iban')).replace(' ', ''),
         bic=_text(col('bank_bic')).replace(' ', ''),
         notes=notes, preceding_invoice_number=preceding_number, preceding_invoice_date=preceding_date,
-        warnings=warnings, skonto=skonto, skonto_unreadable=skonto_unreadable)
+        warnings=warnings, skonto=skonto, skonto_unreadable=skonto_unreadable,
+        payment_means=means, payment_means_unreadable=means is None)
 
 
 @dataclass
@@ -932,6 +941,10 @@ def log_snapshot_findings(document, items, head_rate) -> None:
 # prüft den Fall mit Zeilenanfang oder mit Skonto-Zeile ohnehin als Fehler. Die CII im PDF bleibt davon unberührt.
 HASH_IN_PAYMENT_TERMS_GAP = ('Zahlungshinweis ohne ‚#‘ (das Zeichen ist in der XRechnung der Skonto-Angabe vorbehalten – '
                              'Skonto bitte in die Skonto-Felder eintragen)')
+# Zahlungsart: Eine Karte verlangt in der XRechnung die Ziffern der Kartennummer (BR-DE-24, BG-18/BT-87), die die App nicht führt – das UBL entsteht dann nicht, die CII
+# im PDF schon (EN 16931 verlangt BG-18 dafür nicht). Ein gespeicherter Wert, der keine Zahlungsart ist (SQL-Konsole), schreibt nichts und ist eine Lücke auch der CII
+CARD_XRECHNUNG_GAP = 'Kartenzahlung: Die XRechnung verlangt Ziffern der Kartennummer – das unterstützt die App nicht'
+PAYMENT_MEANS_UNREADABLE_GAP = 'Zahlungsart (der gespeicherte Wert ist nicht lesbar)'
 SCOPE_XRECHNUNG = 'xrechnung'     # nur das UBL der XRechnung ist betroffen (die Regeln BR-DE und PEPPOL)
 SCOPE_EN16931 = 'en16931'         # auch die CII im PDF (ZUGFeRD, Profil EN 16931) ist betroffen
 
@@ -957,7 +970,10 @@ def einvoice_gaps(inv: EInvoice) -> List[Gap]:
 
     seller, buyer = inv.seller, inv.buyer
     need(inv.buyer_reference, 'Leitweg-ID (Käuferreferenz)')                        # BR-DE-15
-    need(inv.iban, 'Bankverbindung (IBAN)')                                         # BR-DE-1
+    if inv.payment_means == '58':                                                   # nur die Überweisung braucht ein Konto
+        need(inv.iban, 'Bankverbindung (IBAN)')                                     # BR-DE-1
+    elif inv.payment_means == '48':
+        gaps.append(Gap(CARD_XRECHNUNG_GAP, SCOPE_XRECHNUNG))                       # BR-DE-24
     need(seller.postal_code, 'PLZ der eigenen Firma')                               # BR-DE-4
     need(seller.city, 'Ort der eigenen Firma')                                      # BR-DE-3
     need(seller.contact_name, 'Ansprechpartner der eigenen Firma')                  # BR-DE-2, BR-DE-5
@@ -975,6 +991,8 @@ def einvoice_gaps(inv: EInvoice) -> List[Gap]:
          'Grund der Steuerbefreiung', SCOPE_EN16931)                                # BR-E-10
     if inv.skonto_unreadable:
         gaps.append(Gap('Skonto (die gespeicherten Werte sind nicht lesbar)', SCOPE_EN16931))
+    if inv.payment_means_unreadable:
+        gaps.append(Gap(PAYMENT_MEANS_UNREADABLE_GAP, SCOPE_EN16931))
     return gaps
 
 

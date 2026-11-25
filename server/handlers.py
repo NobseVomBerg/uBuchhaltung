@@ -36,7 +36,8 @@ from db.bookings import RELATION_DEFAULT, RELATION_TYPES, LinkRefused
 from db.contacts import VAT_METHOD_ERROR, ContactRefused, vat_method
 from db.core import fk_explained, ForeignKeyError
 from db.invoices import (InvoiceCol, InvoiceNotDeletable, QUOTE_STAYS_CONVERTED_MESSAGE,
-                         QUOTE_STAYS_CONVERTED_SQL, QuoteNotConvertible, QuoteStatusLocked, is_storno_row)
+                         QUOTE_STAYS_CONVERTED_SQL, QuoteNotConvertible, QuoteStatusLocked, is_storno_row, normalize_service_end,
+                         stored_payment_means)
 from db.invoice_lock import (DocumentNotFound, EDITABLE_STATUSES, InvoiceLocked, STATUS_LABELS,
                              buyer_snapshot, status_group)
 from db.invoice_storno import NO_COUNTER_BOOKING_HINT
@@ -3837,13 +3838,13 @@ def handle_invoice_save(post_body: bytes):
 def _open_invoice_fields(data):
     """Die Felder einer versendeten oder stornierten Rechnung, die sich noch ändern lassen. Das
     Formular schickt für sie nur, was der Nutzer geändert hat (kein ``items``): Zahlungshinweis,
-    Bestellnummer, Leitweg-ID, Leistungsdatum. Die Anschrift bleibt, wie sie steht – nur mit
+    Bestellnummer, Leitweg-ID, Leistungsdatum, Ende des Leistungszeitraums. Die Anschrift bleibt, wie sie steht – nur mit
     ``refreshAddress`` wird sie neu aus den Stammdaten desselben Kunden übernommen (das erledigt
     ``Database.correct_invoice``). Ein Entwurf oder eine unbekannte Rechnung wird so nicht gespeichert:
     Dort gilt das komplette Formular."""
     fields = {}
     for key, field in (('paymentTerms', 'payment_terms'), ('orderNumber', 'order_number'),
-                       ('deliveryDate', 'delivery_date')):
+                       ('deliveryDate', 'delivery_date'), ('serviceDateEnd', 'service_date_end')):
         if key in data:
             fields[field] = data[key]
     if 'buyerReference' in data:
@@ -3900,6 +3901,8 @@ def _invoice_fields(db, data, stored):
     # XRechnung optional fields
     order_number = data.get('orderNumber')
     delivery_date = data.get('deliveryDate')
+    service_end = data.get('serviceDateEnd')
+    payment_means = data.get('paymentMeans')
     discount_percentage = data.get('discountPercentage')
     discount_days = data.get('discountDays')
 
@@ -3916,6 +3919,15 @@ def _invoice_fields(db, data, stored):
     if not delivery_date and not frozen:
         raise _SaveRefused('Leistungsdatum fehlt – Pflichtangabe nach § 14 UStG '
                            '(Datum der Lieferung/Leistung).')
+    # Das Ende des Leistungszeitraums und die Zahlungsart eines Entwurfs: ungültig oder ein Ende vor dem Beginn wird abgelehnt (400), bevor etwas geschrieben
+    # ist; die Überweisung und ein Ende am Beginn stehen als NULL da. Bei einer eingefrorenen Rechnung prüft die Berichtigung (Ende) bzw. die Sperre
+    # (Zahlungsart) selbst: Beide Werte gehen so, wie sie kommen, an ``Database.correct_invoice``
+    if not frozen:
+        try:
+            service_end = normalize_service_end(delivery_date, service_end)
+            payment_means = stored_payment_means(payment_means)
+        except ValueError as invalid:
+            raise _SaveRefused(str(invalid), 400) from None
 
     # Phase 2: Summen serverseitig exakt neu berechnen – den vom Client
     # gelieferten net/tax/gross-Werten wird bewusst nicht vertraut. Bei
@@ -3975,6 +3987,8 @@ def _invoice_fields(db, data, stored):
         'order_number': order_number,
         'currency': currency,
         'delivery_date': delivery_date,
+        'service_date_end': service_end,
+        'payment_means': payment_means,
         'payment_terms': payment_terms,
         'payment_due_date': due_date,
         'skonto_days': discount_days,

@@ -10,6 +10,9 @@ Datenbank-Zeile wird nur noch dort übersetzt. Für ZUGFeRD/Factur-X (CII) siehe
 Eine Rechnung (Typ 380) ist ein ``Invoice``, eine Stornorechnung (Typ 381) ein ``CreditNote`` – mit
 ``CreditNoteTypeCode``, ``BillingReference`` auf die Ursprungsrechnung, ohne ``DueDate`` und mit
 ``CreditNoteLine``/``CreditedQuantity``. Der Rest ist derselbe Code.
+
+Ein Leistungszeitraum steht in ``cac:InvoicePeriod`` (BG-14: ``cbc:StartDate`` BT-73, ``cbc:EndDate`` BT-74) statt in
+``cac:Delivery`` (BT-72); die Zahlungsart ist die der Rechnung (BT-81), mit dem Konto nur bei der Überweisung (58).
 """
 import threading
 import xml.etree.ElementTree as ET
@@ -102,6 +105,10 @@ class XRechnungGenerator:
         _sub(root, _CBC, 'DocumentCurrencyCode', cur)
         if inv.buyer_reference:
             _sub(root, _CBC, 'BuyerReference', inv.buyer_reference)
+        if inv.service_end:                                    # BG-14; im Schema nach BuyerReference, vor OrderReference (auch bei der CreditNote)
+            period = _sub(root, _CAC, 'InvoicePeriod')
+            _sub(period, _CBC, 'StartDate', inv.delivery_date.isoformat())
+            _sub(period, _CBC, 'EndDate', inv.service_end.isoformat())
         if inv.order_reference:
             order = _sub(root, _CAC, 'OrderReference')
             _sub(order, _CBC, 'ID', inv.order_reference)
@@ -114,11 +121,11 @@ class XRechnungGenerator:
         self._party(root, 'AccountingSupplierParty', inv.seller, seller=True)
         self._party(root, 'AccountingCustomerParty', inv.buyer, seller=False)
 
-        if inv.delivery_date:
+        if inv.delivery_date and not inv.service_end:          # mit einem Leistungszeitraum steht der Beginn in BG-14, nie als BT-72 daneben
             delivery = _sub(root, _CAC, 'Delivery')
             _sub(delivery, _CBC, 'ActualDeliveryDate', inv.delivery_date.isoformat())
 
-        if inv.iban:
+        if inv.payment_means == '58' and inv.iban:             # nur die Überweisung nennt das Konto; ohne IBAN gibt es kein Element, wie immer
             pay = _sub(root, _CAC, 'PaymentMeans')
             _sub(pay, _CBC, 'PaymentMeansCode', '58')          # SEPA-Überweisung
             account = _sub(pay, _CAC, 'PayeeFinancialAccount')
@@ -126,6 +133,8 @@ class XRechnungGenerator:
             if inv.bic:
                 branch = _sub(account, _CAC, 'FinancialInstitutionBranch')
                 _sub(branch, _CBC, 'ID', inv.bic)
+        elif inv.payment_means in ('10', '48', '1'):           # bar, Karte, nicht festgelegt: allein der Code, kein Konto; eine nicht lesbare Zahlungsart schreibt nichts
+            _sub(_sub(root, _CAC, 'PaymentMeans'), _CBC, 'PaymentMeansCode', inv.payment_means)
 
         terms_text = payment_terms_text(inv)
         if terms_text:

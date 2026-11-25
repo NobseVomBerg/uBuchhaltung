@@ -314,6 +314,8 @@ def test_existing_rows_stay_untouched_and_the_new_values_are_null(stock):
     assert {row[9] for row in after['InvoiceItems']} == {'S'}                                      # keine Art wird zu 'E'
     assert all(row[-1] is None for row in after['InvoicePayments'])                                # seit 2.9.0 eine Spalte am Ende, leer (test_skonto_schema_2009.py)
     after['InvoicePayments'] = [row[:-1] for row in after['InvoicePayments']]
+    assert all(row[-3:] == (None, None, None) for row in after['Invoices'])                        # seit 2.10.0 drei Spalten am Ende, leer (test_schema_2010.py)
+    after['Invoices'] = [row[:-3] for row in after['Invoices']]
     for table, rows in before.items():
         if table != 'InvoiceItems':
             assert after[table] == rows, table                                                     # alle anderen Tabellen, Zeile für Zeile

@@ -32,8 +32,8 @@ Spaltenbelegung (0-basiert, 124 Spalten gesamt):
  40  EU-Steuersatz            – der Steuersatz ("19,00") an einer Umsatzsteuer-Zeile, sonst leer
 105  Skontosperre             – 0
 113  Festschreibung           – 0
-114  Leistungsdatum           – DDMMYYYY, nur an der Forderung einer Rechnung (Leistungsdatum der Rechnung, sonst
-                                Buchungsdatum)
+114  Leistungsdatum           – DDMMYYYY, nur an der Forderung einer Rechnung (Leistungsdatum der Rechnung, bei einem
+                                Leistungszeitraum dessen Ende, sonst Buchungsdatum)
 115  Datum Zuord. Steuerperiode – leer (WISO belegt sie nicht)
 119  Land                     – ISO-Code, nur an der Rechnungskette
 

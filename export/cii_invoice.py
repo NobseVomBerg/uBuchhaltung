@@ -5,7 +5,9 @@
 
 Profil EN 16931 (Guideline ``urn:cen.eu:en16931:2017``). Liest nur das
 neutrale Modell aus :mod:`export.einvoice_model`; eine Stornorechnung ist Typ 381 mit dem Bezug auf die
-Ursprungsrechnung (``ram:InvoiceReferencedDocument``) und positiven Beträgen. Kundendaten werden vom
+Ursprungsrechnung (``ram:InvoiceReferencedDocument``) und positiven Beträgen. Ein Leistungszeitraum steht in
+``ram:BillingSpecifiedPeriod`` (BG-14: Beginn BT-73, Ende BT-74) statt im Lieferdatum (BT-72); die Zahlungsart ist die der
+Rechnung (BT-81), mit dem Konto nur bei der Überweisung (58). Kundendaten werden vom
 XML-Serializer der Standardbibliothek escaped; Steuerzeichen, die in XML 1.0
 nicht vorkommen dürfen, werden vorher entfernt.
 """
@@ -151,13 +153,13 @@ def build_cii(inv: EInvoice) -> bytes:
              _RAM, 'IssuerAssignedID', inv.order_reference)
 
     delivery = _sub(trade, _RAM, 'ApplicableHeaderTradeDelivery')
-    if inv.delivery_date:
+    if inv.delivery_date and not inv.service_end:              # mit einem Leistungszeitraum steht der Beginn in BG-14, nie als BT-72 daneben
         event = _sub(delivery, _RAM, 'ActualDeliverySupplyChainEvent')
         _date(event, 'OccurrenceDateTime', inv.delivery_date)
 
     settle = _sub(trade, _RAM, 'ApplicableHeaderTradeSettlement')
     _sub(settle, _RAM, 'InvoiceCurrencyCode', cur)
-    if inv.iban:
+    if inv.payment_means == '58' and inv.iban:                 # nur die Überweisung nennt das Konto; ohne IBAN gibt es kein Element, wie immer
         means = _sub(settle, _RAM, 'SpecifiedTradeSettlementPaymentMeans')
         _sub(means, _RAM, 'TypeCode', '58')                    # SEPA-Überweisung
         account = _sub(means, _RAM, 'PayeePartyCreditorFinancialAccount')
@@ -165,6 +167,8 @@ def build_cii(inv: EInvoice) -> bytes:
         if inv.bic:
             _sub(_sub(means, _RAM, 'PayeeSpecifiedCreditorFinancialInstitution'),
                  _RAM, 'BICID', inv.bic)
+    elif inv.payment_means in ('10', '48', '1'):               # bar, Karte, nicht festgelegt: allein der Code, kein Konto; eine nicht lesbare Zahlungsart schreibt nichts
+        _sub(_sub(settle, _RAM, 'SpecifiedTradeSettlementPaymentMeans'), _RAM, 'TypeCode', inv.payment_means)
     for t in inv.tax_breakdown:
         tax = _sub(settle, _RAM, 'ApplicableTradeTax')
         _sub(tax, _RAM, 'CalculatedAmount', _amt(t.amount))
@@ -174,6 +178,10 @@ def build_cii(inv: EInvoice) -> bytes:
         _sub(tax, _RAM, 'BasisAmount', _amt(t.basis))
         _sub(tax, _RAM, 'CategoryCode', t.category)
         _sub(tax, _RAM, 'RateApplicablePercent', _rate(t.rate))
+    if inv.service_end:                                        # BG-14; im Schema nach den Steueraufschlüsselungen, vor den Zahlungsbedingungen
+        period = _sub(settle, _RAM, 'BillingSpecifiedPeriod')
+        _date(period, 'StartDateTime', inv.delivery_date)
+        _date(period, 'EndDateTime', inv.service_end)
     terms_text = payment_terms_text(inv)
     if terms_text or inv.due_date:
         terms = _sub(settle, _RAM, 'SpecifiedTradePaymentTerms')

@@ -14,15 +14,15 @@ steht in `git log`. Eine Zeile je Punkt; Details gehören in Commit, Issue oder 
 - Rechnungen mit mehreren Steuersätzen oder mit einem Erlöskonto aus den Stammdaten „Steuersätze“: Zahlungsumzug auf eine Ersatzrechnung und „Zuordnung neu aufbauen“ (Gründe `mixed`, `tax_entry`) lassen sie aus – je Satz bzw. mit dem Konto des Eintrags neu buchen, mit denselben Bedingungen wie bei einem Satz
 - Steuersätze aus den Stammdaten, offen: Wartekonto für weitere Sätze (feste Kontonummer je Satz); BU-Schlüssel für weitere Sätze und steuerfreie Umsätze im DATEV-Export; Befreiungscode der E-Rechnung (BT-121); eigene Steuerkonten für 5 % und 16 % (zweites Halbjahr 2020)
 - WISO-Datenbank-Import: Rechnungen mit mehreren Steuersätzen je Position übernehmen (heute ein Satz im Kopf, die Prüfliste nennt sie `unflagged_rate_mix`)
-- Leistungszeitraum (von–bis) als Alternative zum Leistungsdatum – PDF-Kopf und E-Rechnung (CII BillingSpecifiedPeriod / UBL InvoicePeriod); braucht Schemaänderung
+- Leistungszeitraum im Angebot (heute nur in der Rechnung)
+- Lastschrift (59) in der E-Rechnung: Mandatsreferenz, Gläubiger-ID und IBAN des Kunden (BR-DE-25, -30, -31) – heute gibt es keine Zahlungsart 59
+- Karte in der XRechnung: Ziffern der Kartennummer (BT-87, BR-DE-24) – heute lässt die Karte das UBL aus, die CII im PDF entsteht
 - Skonto bei der Zahlungszuordnung, offen: Rechnungen mit Steuersatz je Position oder Satz aus den Stammdaten, andere Kopfsätze als 19 %, 7 % und 0 %; Kleindifferenzen und Nachlässe ohne Skonto-Bedingung; Darstellung im DATEV-Stapel (zweite Bankzeile) vor der ersten Weitergabe mit dem Steuerbüro klären
 - Kleinunternehmer-Erlöse (4184 ab 2026), offen: ausgewiesene 0 % ohne Eintrag der Stammdaten buchen weiter auf 4185; ältere Zahlungen ab 2026 auf 4185 bleiben dort (Umstellung mit Probelauf fehlt)
 - Zahlungsvorschläge, offen: Teilbeträge, Wahl des Erlöskontos im Kasten, von der Bank mitten in den Ziffern umbrochene Rechnungsnummern, andere Währungen als Euro
 - Zuordnung neu aufbauen, Schritt 2: markierte Zahlungssätze ohne Zuordnung (wiederherstellen oder entfernen, Wahl im Probelauf) und Sätze „Bank an Debitoren“ ohne Forderung
 - Steuerfälle bei Rechnungen und Angeboten: Reverse Charge, innergemeinschaftliche Lieferung und Ausfuhr (eigene E-Rechnungs-Kategorien, USt-IdNr. des Käufers als Pflicht, eigene Erlöskonten); 0 % ohne Eintrag der Stammdaten und ohne § 19 ergibt weiter Kategorie Z ohne Begründung und Konto 4185
-- Zahlungsart der Rechnung speichern: Die E-Rechnung sagt fest „58, SEPA-Überweisung“ und nur mit IBAN; braucht eine Spalte (Schemaänderung)
 - Zurückholen einer versendeten Rechnung entfernt die Forderung auch nach einem DATEV-Export: Hinweis oder Sperre ab dem Export (braucht ein Merkmal „exportiert“ je Buchung)
-- Löschen des Entwurfs einer Rechnung aus einem Angebot setzt das Angebot auf „angenommen“ statt auf den früheren Status – diesen am Angebot merken (Schemaänderung)
 - Datei zu einem bestehenden Beleg nachreichen (der Upload der Seite „Belege“ legt je Datei einen neuen Beleg an)
 - Belegerkennung: Texterkennung (OCR) für gescannte PDFs und Fotos – eine Datei ohne Textebene ist „nicht lesbar (kein Text)“
 - Belegerkennung: ein lokales Sprachmodell als optionaler Nachleser für nicht eindeutig gelesene Belege (standardmäßig aus; die Lesung bliebe ein Vorschlag mit Herkunft)
@@ -104,7 +104,6 @@ Heute ist nur SKR04 ausgebaut, und auch dort nur eine Grundauswahl; die Auswahl 
 - SQL-Protokoll: `log_sql` fasst Leerraum auch innerhalb von Zeichenketten zusammen – ein Text mit Zeilenumbruch oder doppelten Leerzeichen steht im Protokoll anders als in der Datenbank (auch bei der SQL-Konsole)
 - WISO-Datenbank-Import: Eine Änderung innerhalb einer weiter bestehenden Buchungsgruppe (anderer Betrag, entfallene Teilbuchung) bemerkt der Re-Import nicht
 - WISO-Datenbank-Import: In WISO gelöschte oder neu angelegte Buchungen, Altbestand auf dem Basiskonto eines Unterkontos, Zeilen aus 2.0.x auf 1000–1099 und ein neu gerechneter AfA-Plan unter neuer Gruppe lassen sich nur von Hand bereinigen – ein Werkzeug mit Probelauf und Sicherung fehlt
-- Index auf `Bookings.SourceGroup` anlegen (Schemaänderung): Der Re-Import des WISO-Datenbankimports sucht darüber
 - Eigene Firma als Person hat keine Felder für DATEV-Berater- und Mandantennummer (nur das Firmenformular führt sie); der WISO-Import übernimmt sie dann nicht (nur ein Hinweis)
 - Anlagenformular einer Erweiterung verlangt weiter Nutzungsdauer und Methode, obwohl die der Hauptanlage gelten
 - Invoices-Zeilen werden per Spaltenindex gelesen (viele Stellen in `server/pages_invoice.py`; `InvoiceCol` gibt es, genutzt in `server/pages.py`) – bricht bei Schemaänderungen, besser Spaltennamen

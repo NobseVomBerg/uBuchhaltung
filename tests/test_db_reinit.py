@@ -54,6 +54,7 @@ def test_a_new_file_at_a_known_path_gets_its_tables(db_path):
 def test_an_older_file_swapped_in_is_migrated_without_a_restart(db_path):
     """Wie nach dem Zurückspielen einer Sicherung aus einer älteren Version."""
     conn = sqlite3.connect(db_path)
+    conn.execute("DROP INDEX IF EXISTS idx_bookings_sourcegroup")    # den Index auf der Spalte gibt es erst seit Schema 2010
     conn.execute("ALTER TABLE Bookings DROP COLUMN SourceGroup")     # Stand vor Schema 6
     conn.execute("PRAGMA user_version = 5")
     conn.commit()

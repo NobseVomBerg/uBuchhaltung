@@ -243,6 +243,9 @@ def test_existing_rows_stay_untouched_and_the_new_table_is_empty(stock):
     after = _contents(stock)
     assert after.pop(NEW_TABLE) == []
     after.pop('TaxRates')                                                             # seit 2.8.0 angelegt und vorbelegt: test_tax_rates_schema_2008.py
+    assert after.pop('BankTransactionDetails') == [] and after.pop('BookingExports') == []        # seit 2.10.0 angelegt, leer: test_schema_2010.py
+    assert all(row[-3:] == (None, None, None) for row in after['Invoices'])           # seit 2.10.0 drei Spalten am Ende, leer (test_schema_2010.py)
+    after['Invoices'] = [row[:-3] for row in after['Invoices']]
     assert after == before                                                            # jede Zeile jeder Tabelle
 
 

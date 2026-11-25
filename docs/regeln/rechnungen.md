@@ -13,6 +13,17 @@
   neuer Prüfsumme ändern); das Werkzeug bricht bei Lücken ab (Prüfung und Mustang müssen übereinstimmen).
 - **Leistungsdatum ist Pflicht** (§ 14 UStG): `handle_invoice_save` lehnt ohne ab (nicht bei Angeboten, versendeten Rechnungen,
   Importen); Angebot → Rechnung setzt es auf das Rechnungsdatum.
+- **Leistungszeitraum** (`Invoices.ServiceDateEnd`, NULL = nur das Leistungsdatum): Beginn ist das Leistungsdatum, das Ende steht in der Spalte. Einen Zeitraum gibt es nur mit zwei ISO-Daten und
+  einem Ende NACH dem Beginn – gelesen an EINER Stelle (`db.invoices.service_period`, für PDF, E-Rechnung und DATEV), geprüft beim Speichern (`normalize_service_end`: Ende vor dem Beginn oder
+  kein Datum = 400 mit festem Klartext, ein Ende am Beginn wird NULL); was die Datenbank sonst enthält (SQL-Konsole), gilt als „kein Zeitraum“. Das Feld „bis:“ der Maske steht unter dem
+  Leistungsdatum. PDF-Kopf in zwei Zeilen: „Leistungszeitraum:“ mit dem Beginn, darunter „bis <Ende>“, ISO wie die übrigen Kopfdaten (eine Zeile „von – bis“ passte nicht in die Wertspalte).
+  E-Rechnung: CII `BillingSpecifiedPeriod` und UBL `cac:InvoicePeriod` (BG-14: Beginn BT-73, Ende BT-74) statt des Lieferdatums – BT-72 entfällt dann; ohne Zeitraum bleibt alles, wie es war.
+  DATEV: Spalte 114 = das Ende (`auswertungen.md`). Stornorechnung und Ersatzrechnung übernehmen ihn (`_copied_head`), „Als neu kopieren“ füllt das Feld; im Angebot gibt es keinen.
+  `tests/test_service_period.py`
+- **Zahlungsart** (`Invoices.PaymentMeans`, Code nach UNTDID 4461): NULL = Überweisung (58), `'10'` bar, `'48'` Karte, `'1'` nicht festgelegt – geschrieben über `stored_payment_means` (die 58 wird NULL,
+  jeder andere Wert 400), gelesen streng über `payment_means_code` (alles andere ist nicht lesbar: nichts wird still zur Überweisung). Die Überweisung steht wie immer mit Code 58 und IBAN in CII und UBL
+  (ohne IBAN kein Element), jeder andere Code als der Code allein, ohne Konto; eine nicht lesbare Zahlungsart schreibt nichts. Das PDF ändert sich nicht. Auswahl in der Maske im Fuß unter der Bankverbindung.
+  Lastschrift (59) gibt es nicht. `tests/test_payment_means.py`
 - Kopfblock im PDF folgt der Maske (`tests/test_pdf_header_block.py`); was fehlt, bekommt keine Zeile.
 - **Dateinamen-Kollision:** gehört der Zielpfad der Datei eines anderen Belegs, bekommt der Name `(ID n)` (`invoice_file_path(…, db)`);
   der Rückfall über das Schema nimmt nie die Datei eines anderen Belegs. **Das Dokument zeigt nie den Stand der Zahlungen** (`prepaid` = 0).
@@ -216,12 +227,13 @@
   bei Brutto > 0 und gültigem Rechnungsdatum; Frist nicht nach der Fälligkeit. PDF: Absatz nach dem Zahlungshinweis (Abzug in EINEM
   Schritt halb auf den Cent, `skonto_amount`). E-Rechnung: erste Zeile der Zahlungsbedingungen (`#SKONTO#TAGE=7#PROZENT=2.00#` +
   Zeilenumbruch). Die Stornorechnung trägt nie Skonto. Gebucht: `zahlungen.md`.
-- **Lückenprüfung** (`einvoice_gaps`): Fehlen Angaben, die die XRechnung verlangt (Leitweg-ID/Käuferreferenz, IBAN, PLZ/Ort,
+- **Lückenprüfung** (`einvoice_gaps`): Fehlen Angaben, die die XRechnung verlangt (Leitweg-ID/Käuferreferenz, IBAN – nur bei der Überweisung, PLZ/Ort,
   Kontaktname, Telefon und E-Mail der eigenen Firma, E-Mail des Kunden, Zahlungshinweis ohne „#“), wird die UBL-Datei **nicht
   geschrieben** (ein abgelegtes XML eines Entwurfs wird entfernt – nur `.xml`, nie das PDF); das PDF mit CII entsteht immer. Ergebnis
   trägt den Klartext („XRechnung (XML) nicht erstellt – es fehlt: …“); die Rechnungsseite zeigt die Lücken, vor dem Versenden fragt sie
   nach. UBL entsteht nur bei Leitweg-ID/Käuferreferenz (`wants_xrechnung`; Bestellnummer allein nicht). Kontoname (BT-85) wird nicht
-  geschrieben.
+  geschrieben. **Zahlungsart:** Eine Karte (48) ist eine Lücke der XRechnung (BR-DE-24 verlangt die Ziffern der Kartennummer, die die App nicht führt): kein UBL, die CII im PDF
+  entsteht; eine nicht lesbare Zahlungsart ist eine Lücke auch der CII.
 
 ## Sperre versendeter Rechnungen (`db/invoice_lock.py`)
 
@@ -229,9 +241,9 @@
   bei versendeter nur aus `correct_invoice`) und Statuswechsel (`Database.set_invoice_status`) – nie `update_invoice_status`
   (ungeprüft, für Seed/Tests; Angebote `set_quote_status`).
 - Bearbeitbar alles bei `draft`/`finalized`. Bei `sent`/`overdue`/`partial_payment`/`partial`/`paid` gesperrt: Nummer, Rechnungsdatum,
-  Kunde, eigene Firma, Positionen, Steuer, Summen, Fälligkeit, Skonto, Bank, Währung, Käufer-USt-IdNr. (`/invoice/save`: **409** mit
-  Klartext, nichts geschrieben). Nur als **Berichtigung** änderbar: Zahlungshinweis (`PaymentTerms`), Anschrift, Bestellnummer,
-  Leitweg-ID, Leistungsdatum. `cancelled` und Stornorechnung (`row_group`: `InvoiceKind='storno'` gilt als abgeschlossen): gar nichts.
+  Kunde, eigene Firma, Positionen, Steuer, Summen, Fälligkeit, Skonto, Bank, Zahlungsart, Währung, Käufer-USt-IdNr. (`/invoice/save`: **409** mit
+  Klartext, nichts geschrieben; die Überweisung gilt in jeder Schreibweise als dieselbe – NULL, leer, `'58'`). Nur als **Berichtigung** änderbar: Zahlungshinweis (`PaymentTerms`), Anschrift, Bestellnummer,
+  Leitweg-ID, Leistungsdatum, Leistungszeitraum. `cancelled` und Stornorechnung (`row_group`: `InvoiceKind='storno'` gilt als abgeschlossen): gar nichts.
   Unbekannter Status gilt als gesperrt.
 - Geprüft gegen den gespeicherten Stand **in der Transaktion** (`BEGIN IMMEDIATE`, `UPDATE` trägt die Statusgruppe im `WHERE`).
   Unverändert Zurückgeschicktes ist kein Verstoß (Minor Units, Positionen Feld für Feld, `unit_display`, 0,19 = 19).
@@ -248,6 +260,9 @@
 - Keine eigene Schreibroute: `/invoice/save` mit Teil-Payload (Knopf „Berichtigen“, nach Rückfrage). Gesperrte Felder zuerst
   abgelehnt; ohne Abweichung passiert nichts (auch ohne `documentVersion`). **Das Leistungsdatum bleibt ein Datum:** unter den
   geänderten Angaben ISO, sonst `CorrectionInvalid` (400, vor dem Verschieben der Dokumente); unverändert (auch leer) ist kein Verstoß.
+  Das Ende des Leistungszeitraums gilt mit dem Beginn, neu oder gespeichert (`normalize_service_end`): ein Ende, das kein Datum ist oder vor dem Beginn liegt, ein Beginn hinter dem
+  gespeicherten Ende und ein Ende ohne Beginn sind ebenso `CorrectionInvalid`; ein Ende am Beginn ist kein Zeitraum (NULL, bei gleichem gespeicherten Wert ändert sich nichts).
+  Protokoll „Leistungszeitraum (bis)“, Hinweis der Fassung „Leistungszeitraum“.
 - In EINER Transaktion (`BEGIN IMMEDIATE`, Rechnung neu gelesen): geladene Fassung (`documentVersion`; `Invoices.DocumentVersion`, NULL =
   1) muss die aktuelle sein, sonst 409 (fehlt/veraltet: nichts geschrieben); PDF/XML nach `Fassungen/<ID>/` (`archive_sent_documents`)
   samt Fassung, Pfad (relativ zu `invoices/`), SHA-256 in `InvoiceDocumentVersions`, Pfade in der Rechnung geleert; je geändertes Feld
@@ -326,8 +341,8 @@
 - **Route** `POST /invoice/cancel`, JSON `{"invoiceId", "date"}` (`invoiceId` streng Ganzzahl), in `_JSON_PATHS` und
   `_POST_ONLY_JSON_PATHS` (CSRF und Herkunft, GET 405). Knopf „Stornieren …“ nur bei Brutto > 0, mit Rückfrage und Stornodatum
   (vorbelegt heute, nicht vor Rechnungsdatum, nicht nach heute).
-- **Stornorechnung:** Nummer aus dem Kreis des **Jahres des Stornodatums** (`allocate_invoice_number`), Kopf der Ursprungsrechnung ohne
-  Fälligkeit und Skonto, `PaymentTerms` = `STORNO_PAYMENT_TEXT`, `InvoiceKind='storno'`, `CancelsInvoiceId`, Status `sent` mit `SentAt`,
+- **Stornorechnung:** Nummer aus dem Kreis des **Jahres des Stornodatums** (`allocate_invoice_number`), Kopf der Ursprungsrechnung (auch Leistungszeitraum und
+  Zahlungsart) ohne Fälligkeit und Skonto, `PaymentTerms` = `STORNO_PAYMENT_TEXT`, `InvoiceKind='storno'`, `CancelsInvoiceId`, Status `sent` mit `SentAt`,
   **Summen exakt negiert** (Minor Units × −1, nichts neu gerechnet), Positionen mit negativer Menge und positivem Einzelpreis,
   `AmountDue` = negatives Brutto. Die Ursprungsrechnung wird `cancelled`.
 - Alles in EINER Transaktion (`BEGIN IMMEDIATE`: Prüfung, Nummer, Beleg, Positionen, Status, je eine Protokollzeile für beide Belege,
@@ -400,7 +415,7 @@
 - `POST /invoice/reissue`, JSON `{"invoiceId"}`, in `_JSON_PATHS` und `_POST_ONLY_JSON_PATHS`. „Stornieren und neu ausstellen …“ schickt
   `reissue: true` an `/invoice/cancel`; ein Wert, der kein Wahrheitswert ist, ist eine ungültige Anfrage, bevor etwas geschieht.
 - Zu einer stornierten Rechnung **mit** Stornorechnung entsteht ein Entwurf: Kopf und Positionen der stornierten (positiv, nichts neu
-  gerechnet; Leistungsdatum, Zahlungshinweis, Skonto übernommen), Nummer aus dem Kreis des Jahres von heute (`_today()`), heutiges Datum,
+  gerechnet; Leistungsdatum und -zeitraum, Zahlungsart, Zahlungshinweis, Skonto übernommen), Nummer aus dem Kreis des Jahres von heute (`_today()`), heutiges Datum,
   Fälligkeit um dasselbe Zahlungsziel verschoben (sonst leer), Status `draft`, `Invoices.ReplacesInvoiceId`; kein Protokolleintrag.
 - **Höchstens eine Ersatzrechnung je stornierter Rechnung** (Prüfung in der `BEGIN IMMEDIATE`-Transaktion, kein eindeutiger Index).
   Abgelehnt, nichts geschrieben, kein Zähler verbraucht: unbekannte ID/Angebot (404); Stornorechnung, nicht stornierte, stornierte ohne
@@ -439,7 +454,8 @@
 ## Entwurf löschen, Angebot umwandeln
 
 - **Entwurf löschen** (`POST /invoice/delete?id=`, `Database.delete_draft_invoice`): nur `draft`, ohne zugeordnete Zahlung und Forderung,
-  in einer Transaktion; Ablehnung mit Grund (`err`). Ein Quellangebot `converted` ohne weitere Rechnung geht auf `accepted` zurück. PDF/XML
+  in einer Transaktion; Ablehnung mit Grund (`err`). Ein Quellangebot `converted` ohne weitere Rechnung geht auf den Status vor der Umwandlung zurück (`Invoices.QuoteStatusBefore` des Entwurfs, gelesen über
+  `restored_quote_status`; Bestand und Unlesbares: `accepted`). PDF/XML
   räumt `handlers.handle_delete_invoice` danach weg – nur im Dokumentordner, nur wenn kein anderer Beleg darauf verweist, nie in
   „Fassungen“ (`remove_document_file`). Ein abgeschlossener Entwurf wird erst auf Entwurf zurückgesetzt.
 - **Angebot → Rechnung** (`convert_quote_to_invoice`): einmal je Angebot, nur aus Entwurf/versendet/angenommen (`UPDATE … WHERE Status IN

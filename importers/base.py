@@ -22,12 +22,45 @@ Ein Importmodul erbt von :class:`StatementImporter`, erkennt seine Belege über
 ``detect()`` und liefert in ``parse()`` den fertigen ``BankStatement``. Mehr
 schuldet es der Anwendung nicht.
 """
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import List, Optional
 
 #: Spalten einer importierten Bankbewegung (Reihenfolge = Anzeigereihenfolge)
 CANONICAL_FIELDS = ('date', 'amount', 'recipient', 'reference', 'foreign_iban')
+
+#: Länge, bis zu der ein Referenzfeld der Bank gilt (ISO 20022: Max35Text); ein längerer Wert ist kein Referenzfeld
+MAX_BANK_TEXT = 35
+
+#: Platzhalter, mit denen eine Bank „keine Referenz“ sagt (kleingeschrieben verglichen); sie sind keine Referenz
+BANK_REF_PLACEHOLDERS = frozenset({'notprovided', 'nonref', 'notavailable'})
+
+_ISO_DATE = re.compile(r'[0-9]{4}-[0-9]{2}-[0-9]{2}')
+
+
+def clean_bank_text(value) -> str:
+    """Ein Referenzfeld der Bank (Bankreferenz, End-to-End-Referenz, Mandatsreferenz, Gläubiger-ID) als Text, wie die App es speichert und anzeigt – oder ``''``.
+
+    Leer bleibt, was kein Text ist, was nach dem Kürzen des Leerraums leer ist, länger als ``MAX_BANK_TEXT`` Zeichen ist, ein Steuerzeichen enthält (nicht druckbar) oder einer der
+    Platzhalter der Banken ist (``BANK_REF_PLACEHOLDERS``, egal in welcher Schreibweise). Die EINE Regel für Leser, Speichern und Anzeigen: was sie nicht sicher lesen kann, bleibt leer."""
+    if not isinstance(value, str):
+        return ''
+    value = value.strip()
+    if not value or len(value) > MAX_BANK_TEXT or not value.isprintable() or value.casefold() in BANK_REF_PLACEHOLDERS:
+        return ''
+    return value
+
+
+def clean_value_date(value) -> str:
+    """Die Valuta einer Bankbewegung als ISO-Datum ``JJJJ-MM-TT`` – ein Kalendertag, der existiert, ohne Leerraum und ohne andere Schreibweise –, sonst ``''``."""
+    if not isinstance(value, str) or not _ISO_DATE.fullmatch(value):
+        return ''
+    try:
+        datetime.strptime(value, '%Y-%m-%d')
+    except ValueError:
+        return ''
+    return value
 
 
 @dataclass

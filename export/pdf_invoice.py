@@ -16,6 +16,7 @@ import html
 import os
 from db import Database
 from db.invoice_lock import STORNO_KIND
+from db.invoices import service_period
 from money import to_minor
 from .pdf_core import (load_image_xobject, build_multi_page_pdf, resolve_logo_path)
 from .cii_invoice import build_cii
@@ -161,7 +162,12 @@ def generate_invoice_pdf(db: Database, invoice_id: int):
 
     # Reihenfolge und Bezeichnungen wie im Eingabeformular (``pages_invoice``): die beiden Daten zusammen, dann die Nummern
     meta_rows = [("Rechnungsdatum:", invoice_date)]
-    if invoice[25]:
+    # Ein Leistungszeitraum steht in zwei Zeilen (die Wertspalte ist 75 pt breit, „2026-03-01 – 2026-03-31“ brauchte 113): „Leistungszeitraum:“ mit dem Beginn, darunter
+    # „bis“ mit dem Ende – im ISO-Format wie die übrigen Kopfdaten; die Zeile ohne Bezeichnung zeichnet ``draw_letterhead`` wie jede andere
+    period = service_period(invoice[25], invoice[56] if len(invoice) > 56 else None)
+    if period:
+        meta_rows += [("Leistungszeitraum:", invoice[25]), ("", f"bis {period[1].isoformat()}")]
+    elif invoice[25]:
         meta_rows.append(("Leistungsdatum:", invoice[25]))
     meta_rows.append(("Rechnungs-Nr.:", invoice_number))
     if buyer_customer_number:

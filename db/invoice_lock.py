@@ -17,8 +17,8 @@ Statusgruppen:
   schon einmal versendet war (``was_sent_before``).
 * **gesperrt** (``sent``, ``overdue``, ``partial_payment``, ``partial``, ``paid``): Finanzangaben –
   Nummer, Rechnungsdatum, Kunde, eigene Firma, Positionen, Steuer, Summen, Fälligkeit, Skonto,
-  Bank und Käufer-USt-IdNr. – sind gesperrt. Weiter änderbar bleiben Zahlungshinweis, Anschrift des
-  Kunden, Bestellnummer, Leitweg-ID und Leistungsdatum – aber nur als Berichtigung, mit neuer Fassung
+  Bank, Zahlungsart und Käufer-USt-IdNr. – sind gesperrt. Weiter änderbar bleiben Zahlungshinweis, Anschrift des
+  Kunden, Bestellnummer, Leitweg-ID, Leistungsdatum und Leistungszeitraum – aber nur als Berichtigung, mit neuer Fassung
   und Protokoll.
 * **abgeschlossen** (``cancelled``): nichts mehr änderbar.
 * Eine **Stornorechnung** (``InvoiceKind = 'storno'``) ist ganz gesperrt, was auch ihr Status sagt: wie eine
@@ -97,6 +97,7 @@ FIELDS = (
     ('skonto_percent', 'SkontoPercent', LOCKED_INPUT, 'Skonto'),
     ('tax_rate', 'TaxRate', LOCKED_INPUT, 'Steuersatz'),
     ('currency', 'Currency', LOCKED_INPUT, 'Währung'),
+    ('payment_means', 'PaymentMeans', LOCKED_INPUT, 'Zahlungsart'),
     ('seller_name', 'SellerName', LOCKED_DERIVED, None),
     ('seller_company', 'SellerCompany', LOCKED_DERIVED, None),
     ('seller_street', 'SellerStreet', LOCKED_DERIVED, None),
@@ -121,6 +122,7 @@ FIELDS = (
     ('buyer_reference', 'BuyerReference', OPEN_INPUT, 'Leitweg-ID'),
     ('buyer_route_id', 'BuyerRouteID', OPEN_INPUT, 'Leitweg-ID'),
     ('delivery_date', 'DeliveryDate', OPEN_INPUT, 'Leistungsdatum'),
+    ('service_date_end', 'ServiceDateEnd', OPEN_INPUT, 'Leistungszeitraum'),
     ('buyer_name', 'BuyerName', OPEN_DERIVED, None),
     ('buyer_company', 'BuyerCompany', OPEN_DERIVED, None),
     ('buyer_street', 'BuyerStreet', OPEN_DERIVED, None),
@@ -279,12 +281,20 @@ def _currency(value):
     return _text(value) or 'EUR'
 
 
+def _means(value):
+    """Zahlungsart: NULL, leer und ``'58'`` sind dieselbe Überweisung (das Formular schickt die Überweisung leer, die Datenbank hält sie als NULL); ein
+    Code bleibt er selbst, und jeder unlesbare Wert steht für sich – gleich nur sich selbst, nie einem lesbaren."""
+    from .invoices import payment_means_code            # ``invoices`` liest dieses Modul schon beim Laden
+    code = payment_means_code(None if value == '' else value)
+    return code if code is not None else ('?', _text(value))
+
+
 _NORMALIZE = {
     'invoice_number': _text, 'invoice_date': _date, 'own_company_id': _id, 'customer_id': _id,
     'bank_account_id': _id, 'payment_due_date': _date, 'skonto_days': _number,
     'skonto_percent': _number, 'tax_rate': _rate, 'currency': _currency,
     'payment_terms': _text, 'order_number': _text, 'buyer_reference': _text,
-    'buyer_route_id': _text, 'delivery_date': _date,
+    'buyer_route_id': _text, 'delivery_date': _date, 'service_date_end': _date, 'payment_means': _means,
 }
 
 
@@ -355,7 +365,7 @@ def _items_differ(stored_rows, items):
 
 def changed_open_fields(row, changes):
     """Von den Angaben in ``changes`` die änderbaren (Zahlungshinweis, Bestellnummer, Leitweg-ID,
-    Leistungsdatum, Anschrift), deren Wert vom gespeicherten abweicht. Verglichen wird genau
+    Leistungsdatum, Leistungszeitraum, Anschrift), deren Wert vom gespeicherten abweicht. Verglichen wird genau
     (leer und ``None`` sind dasselbe): Ein unverändertes Speichern schreibt keine Spalte – auch
     nicht den Leerwert an die Stelle von ``NULL`` –, eine Änderung nur am Zeilenumbruch aber schon."""
     def text(value):
