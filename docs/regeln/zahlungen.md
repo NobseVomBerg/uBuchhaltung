@@ -217,12 +217,18 @@
   `refreshTable()` erneuert ihn nach Import; nicht im Bereich, den `openEditForm` austauscht); Maske einer Bankbewegung mit freiem Rest
   (Vorschläge zuerst in „Rechnung“, „Übernehmen“ setzt nur den Wert); Rechnungsseite (Vorschläge zuerst). Scheitert eine Abfrage, bleibt die
   Seite stehen (leer, Fehler im Server-Log).
-- **Eindeutig** (`payment_matching.is_certain`, rein): Die Rechnungsnummer steht im Verwendungszweck UND der Betrag stimmt (`REASON_NUMBER` und `REASON_AMOUNT`), das Paar ist nicht `ambiguous`
-  und kein `skonto` – nichts anderes. Betrag und Kunde ohne Nummer, die Nummer mit abweichendem Betrag und der Betrag nach Skonto bleiben Vorschläge mit Einzelklick.
+- **Eindeutig** (`payment_matching.is_certain`, rein): Die Rechnungsnummer steht im Verwendungszweck UND der Betrag stimmt (`REASON_NUMBER` und `REASON_AMOUNT`), das Paar ist nicht `ambiguous`, nicht `contested` und kein `skonto` – nichts
+  anderes. Betrag und Kunde ohne Nummer, die Nummer mit abweichendem Betrag und der Betrag nach Skonto bleiben Vorschläge mit Einzelklick.
+  - **`contested`** (nur `pair_up`): Für DIESE Bewegung oder DIESE Rechnung gibt es ein weiteres Kandidatenpaar mit `REASON_NUMBER` oder `REASON_AMOUNT`, gleich mit welcher Punktzahl und auch, wenn es nicht in die Eins-zu-eins-Liste kam
+    (der Text nennt zwei Rechnungen, `R26001` steht in `R26001A`, zwei gleich hohe Zahlungen für eine Rechnung, eine zweite Rechnung mit Betrag und Kunde). Gezählt wird aus denselben Paaren, die die Liste ordnet (ein Durchlauf); ein Paar aus `linked` und eines nur mit Skonto-Signal zählt nicht. `ambiguous` und die Begründung bleiben unverändert.
   - **„Alle eindeutigen zuordnen (n)“** im Kasten, nur mit mindestens zwei eindeutigen Zeilen im Kasten (n = deren Zahl; dazu der Satz „Eindeutig: …“ im Hinweis). Jede Zeile trägt `data-invoice`/`data-booking`
-    (Zahlen), eine eindeutige `data-certain="1"`. `payAssignAll` fragt über `appConfirm` und ordnet dann NACHEINANDER je Zeile über den bestehenden Weg `POST /invoice/link-payment` zu
-    (`{invoice_id, transaction_id}`, nie `skonto`, keine eigene Route); solange es läuft, sind alle Knöpfe des Kastens gesperrt.
-  - Alles gelungen: neu laden wie `payAssign`. Sonst verschwinden die gelungenen Zeilen, die Knöpfe sind frei (der Sammelknopf zählt die übrigen Zeilen neu und entfällt unter zwei), und `appMsg` nennt „<a> zugeordnet, <b> nicht: <erste Meldung>“ (nur als Text).
+    (Zahlen), `data-amount` (der freie Betrag der Bewegung, wie ihn die Route als `amount_paid` liest), eine eindeutige `data-certain="1"`. `payAssignAll` fragt über `appConfirm` und ordnet dann NACHEINANDER je Zeile über den bestehenden Weg
+    `POST /invoice/link-payment` zu (`{invoice_id, transaction_id, amount_paid, exact: true}`, nie `skonto`, keine eigene Route); solange es läuft, sind alle Knöpfe des Kastens gesperrt.
+  - **`exact`** (`assign_invoice_payment(…, exact=True)`, braucht `amount`): `_assign_in_tx` lehnt IN der Transaktion mit `PAYMENT_STATE_CHANGED` ab, wenn der Betrag, der zugeordnet würde, nicht der angeforderte ist (Rest der Rechnung oder freier Rest der Bewegung sind inzwischen kleiner) –
+    nichts geschrieben, eine gewöhnliche Ablehnung der Route (400). Die Route liest `exact` streng als Wahrheitswert (fehlt = `false`), nur zusammen mit `amount_paid` und nie an einer Stornorechnung (sonst 400 „Ungültige Parameter“). Der Einzelknopf schickt es nie.
+  - Alles gelungen: neu laden wie `payAssign`. Sonst verschwinden die gelungenen Zeilen, die Knöpfe sind frei (der Sammelknopf zählt die übrigen Zeilen neu und entfällt unter zwei), `appMsg` nennt „<a> zugeordnet, <b> nicht: <erste Meldung>“ (nur als Text),
+    und `refreshTable()` – wo die Seite es kennt – holt Liste, Abzeichen und Kasten neu.
+  - Der Verwendungszweck der Bewegung steht als `title` an der Auftraggeber-Zelle der Zeile (maskiert, höchstens 300 Zeichen, ohne Text kein `title`).
 - **Abzeichen „Rechnung?“** an einer offenen Bankbewegung ohne Kind in der Buchungsliste, zu der die Übersicht einen Vorschlag hat (Titel „Passt zur offenen Rechnung <Nr>“, Nummer maskiert): nur ein Hinweis, auch nach
   `refreshTable()`. Die Übersicht wird EINMAL je Seite gelesen (`PAY_BADGE_LIMIT` = 500 Paare; der Kasten zeigt davon die ersten `PAY_SUGGEST_LIMIT`). Scheitert die Abfrage: kein Kasten, keine Abzeichen, die Seite steht (Fehler im Server-Log).
 - **Fehlerweg der Maske:** Scheitert die Zuordnung nach dem Speichern, bleibt der Nutzer bei der Buchung (303 auf

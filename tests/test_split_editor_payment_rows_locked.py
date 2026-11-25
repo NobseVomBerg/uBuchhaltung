@@ -21,7 +21,7 @@ import pytest
 
 from db.invoice_payments import PAYMENT_MARK
 from money import to_minor
-from server.handlers import handle_add_transaction, link_booking_to_invoice_capped
+from server.handlers import (INVALID_REQUEST, PAYMENT_ROW_READONLY, handle_add_transaction, handle_delete_transaction, link_booking_to_invoice_capped)
 from server.pages_transactions import PageTransactions
 from tests.dom_helpers import Dom
 from tests.entry_form_helpers import bank_account, coa, execute, query
@@ -412,3 +412,178 @@ def test_the_suggestion_replaces_the_free_rows_but_never_removes_a_locked_row(db
     done = subprocess.run([NODE, '-e', HARNESS], input=json.dumps({'source': function}), capture_output=True, text=True, encoding='utf-8', timeout=60)
     assert done.returncode == 0, done.stderr
     assert json.loads(done.stdout) == ['locked:splitRow splitLocked', 'new:splitRow', 'template:splitTemplate']
+
+
+# ── Die Einzelmaske eines Zahlungssatzes (2.9.2, Nacharbeit) ─────────────────
+
+def test_the_sentence_for_the_single_mask_is_the_planned_one():
+    assert PAYMENT_ROW_READONLY == ('Dieser Buchungssatz gehört zu einer Rechnungszahlung und lässt sich hier nicht ändern. '
+                                    'Bitte die Zuordnung an der Rechnung entfernen und neu zuordnen.')
+
+
+def test_the_single_mask_of_a_payment_row_refuses_every_change_and_writes_nothing(db):
+    """Die Maske eines einzelnen Buchungssatzes (``/transactions/edit?id=<Satz>``, geöffnet über ✎ an einer Kindzeile der Liste) schrieb den Satz bisher an der Sperre des Editors vorbei."""
+    invoice, bank, marked, ordinary = _paid_with_an_ordinary_row(db)
+    _with_a_datev_key(db, marked)
+    before = snapshot(db)
+    payments = query(db, 'SELECT * FROM InvoicePayments ORDER BY ID')
+    for row_id in marked:
+        post, _options = open_form(db, row_id)
+        assert handle_add_transaction(db, post) == (400, PAYMENT_ROW_READONLY)                         # auch unverändert abgeschickt
+        changed = dict(post, amount=['1.00'], text=['von Hand'], coa_id=[str(coa(db, 6300))], tax_rate=['7'], tax_amount=['0.07'], document_nr=['X-1'], recipient=['Anderer'],
+                       date=['2026-03-03'], currency=['USD'])
+        assert handle_add_transaction(db, changed) == (400, PAYMENT_ROW_READONLY)
+    assert snapshot(db) == before                                                                       # alle Spalten, auch Form und BU-Schlüssel
+    assert query(db, 'SELECT * FROM InvoicePayments ORDER BY ID') == payments
+
+
+def test_the_single_mask_refuses_before_it_reads_anything_else_of_the_form(db):
+    """Auch ein Formular mit unbrauchbaren Feldern bekommt denselben festen Satz – und die Rechnung, die es mitbringt, wird nicht angefasst."""
+    invoice, bank, marked, ordinary = _paid_with_an_ordinary_row(db)
+    before = snapshot(db)
+    post, _options = open_form(db, marked[0])
+    assert handle_add_transaction(db, dict(post, invoice_id=[str(invoice)])) == (400, PAYMENT_ROW_READONLY)
+    assert snapshot(db) == before
+
+
+def test_the_single_mask_of_an_ordinary_row_still_saves(db):
+    _invoice_id, bank, marked, ordinary = _paid_with_an_ordinary_row(db)
+    before = snapshot(db)
+    post, _options = open_form(db, ordinary)
+    assert handle_add_transaction(db, dict(post, text=['Porto'])) == (303, '/transactions')
+    assert _changed(before, snapshot(db)) == [ordinary] and snapshot(db)[ordinary]['Text'] == 'Porto'
+
+
+def test_the_single_mask_page_of_a_payment_row_shows_the_sentence_and_has_neither_the_update_button_nor_the_suggestion(db):
+    _invoice_id, bank, marked, ordinary = _paid_with_an_ordinary_row(db)
+    for row_id in marked:
+        page = PageTransactions(db, edit_transaction_id=row_id)
+        assert f'<p class="warnColor">{PAYMENT_ROW_READONLY}</p>' in page
+        assert 'value="Aktualisieren"' not in page and 'onclick="applySuggestion()"' not in page and 'name="suggest_range_id"' not in page
+        assert 'Abbrechen' in page                                                                      # der Weg zurück bleibt
+        assert not [attrs for tag, attrs in Dom(page).tags if tag == 'input' and attrs.get('type') == 'submit']
+    page = PageTransactions(db, edit_transaction_id=ordinary)                                           # der gewöhnliche Satz: wie bisher
+    assert 'value="Aktualisieren"' in page and 'onclick="applySuggestion()"' in page and PAYMENT_ROW_READONLY not in page
+    page = PageTransactions(db, edit_transaction_id=bank)                                               # die Bankbewegung: wie bisher
+    assert 'value="Aktualisieren"' in page and PAYMENT_ROW_READONLY not in page
+
+
+def test_deleting_a_payment_row_from_the_list_stays_what_it_was(db):
+    invoice, bank, marked, ordinary = _paid_with_an_ordinary_row(db)
+    assert handle_delete_transaction(db, marked[0]) == (303, '/transactions')
+    assert _children(db, bank) == [ordinary] and query(db, 'SELECT COUNT(*) FROM InvoicePayments') == [(0,)]       # die ganze Zuordnung geht mit
+
+
+# ── Der Editor liest nur gleich lange Feldlisten ─────────────────────────────
+
+LISTS = ['split_id', 'split_coa', 'split_text', 'split_docnr', 'split_counter_coa', 'split_tax_rate', 'split_tax_amount']
+
+
+@pytest.mark.parametrize('name', LISTS)
+@pytest.mark.parametrize('how', ['kuerzer', 'laenger'])
+def test_a_list_of_another_length_than_the_amounts_refuses_the_whole_request(db, name, how):
+    """Gelesen wird über den Index: Eine Liste mit anderer Länge ließe Felder zur falschen Zeile gehören – abgelehnt, nichts gespeichert."""
+    _invoice_id, bank, marked, ordinary = _paid_with_an_ordinary_row(db)
+    before = snapshot(db)
+    post, _options = open_form(db, bank)
+    post = {key: list(values) for key, values in post.items()}
+    post[name] = post[name][:-1] if how == 'kuerzer' else post[name] + ['']
+    assert handle_add_transaction(db, post) == (400, INVALID_REQUEST)
+    assert snapshot(db) == before
+
+
+@pytest.mark.parametrize('how', ['fehlt', 'leer'])
+@pytest.mark.parametrize('name', LISTS)
+def test_a_missing_or_empty_list_is_not_refused_by_the_length_check(db, name, how):
+    """Ältere Aufrufer schicken manche Felder gar nicht: Eine fehlende oder leere Liste lehnt die Längenprüfung nicht ab (was sie sonst bedeutet, regeln die übrigen Prüfungen)."""
+    _invoice_id, bank, marked, ordinary = _paid_with_an_ordinary_row(db)
+    post, _options = open_form(db, bank)
+    post = {key: list(values) for key, values in post.items() if not (key == name and how == 'fehlt')}
+    if how == 'leer':
+        post[name] = []
+    assert handle_add_transaction(db, post) != (400, INVALID_REQUEST)
+
+
+@pytest.mark.parametrize('how', ['fehlt', 'leer'])
+@pytest.mark.parametrize('name', ['split_tax_rate', 'split_tax_amount', 'split_counter_coa'])
+def test_the_fields_that_older_forms_do_not_send_leave_everything_as_it_is(db, name, how):
+    _invoice_id, bank, marked, ordinary = _paid_with_an_ordinary_row(db)
+    before = snapshot(db)
+    post, _options = open_form(db, bank)
+    post = {key: list(values) for key, values in post.items() if not (key == name and how == 'fehlt')}
+    if how == 'leer':
+        post[name] = []
+    submit(db, post)
+    assert snapshot(db) == before
+
+
+def test_lists_of_the_same_length_save_as_before(db):
+    _invoice_id, bank, marked, ordinary = _paid_with_an_ordinary_row(db)
+    before = snapshot(db)
+    post, _options = open_form(db, bank)
+    submit(db, post)
+    assert snapshot(db) == before
+    submit(db, _edit(post, ordinary, split_text='Porto'))
+    assert _changed(before, snapshot(db)) == [ordinary]
+
+
+def test_a_new_bank_movement_is_checked_the_same_way(db):
+    post, _options = open_form(db, _movement(db, '10.00'))
+    post = {key: list(values) for key, values in post.items()}
+    post['transaction_id'] = ['0']
+    post['split_text'] = post['split_text'] + ['zu viel']
+    before = snapshot(db)
+    assert handle_add_transaction(db, post) == (400, INVALID_REQUEST) and snapshot(db) == before
+
+
+# ── Das ✕ einer gesperrten Zeile fragt nach ──────────────────────────────────
+
+REMOVE_HARNESS = r"""
+const vm = require('vm');
+const input = JSON.parse(require('fs').readFileSync(0, 'utf8'));
+const calls = {confirm: [], removed: [], recalc: 0};
+function makeRow(name, classes) {
+  const row = {name, classes, dataset: {}, classList: {contains: name => classes.includes(name)}, remove: () => { calls.removed.push(name); },
+               querySelector: () => ({value: ''}), closest: () => row};
+  return row;
+}
+const rows = [makeRow('locked', ['splitRow', 'splitLocked']), makeRow('free', ['splitRow'])];
+const summary = {textContent: '', className: ''};
+const sandbox = {
+  document: {querySelectorAll: () => rows, getElementById: () => summary, querySelector: () => null},
+  parseFloat, Math,
+  appConfirm: (text, onOk) => { calls.confirm.push(text); if (input.confirm) { onOk(); } },
+};
+vm.createContext(sandbox);
+vm.runInContext(input.source, sandbox);                              // der ganze Block des Editors, er läuft bis zur Summenzeile am Ende
+const recalc = sandbox.splitRecalc;
+sandbox.splitRecalc = () => { calls.recalc += 1; return recalc(); };
+const row = rows.find(r => r.name === input.row);
+sandbox.splitRemove({closest: () => row});
+console.log(JSON.stringify(calls));
+"""
+
+
+def run_remove(db, bank, row, confirm):
+    blocks = [block for block in Dom(PageTransactions(db, edit_transaction_id=bank)).scripts if 'SPLIT_BANK_TEXT' in block]
+    assert len(blocks) == 1
+    done = subprocess.run([NODE, '-e', REMOVE_HARNESS], input=json.dumps({'source': blocks[0], 'row': row, 'confirm': confirm}), capture_output=True, text=True,
+                          encoding='utf-8', timeout=60)
+    assert done.returncode == 0, done.stderr
+    return json.loads(done.stdout)
+
+
+@NO_NODE
+def test_the_x_of_a_locked_row_asks_first_and_removes_the_row_only_after_the_answer(db):
+    _invoice_id, bank, _marked, _ordinary = _paid_with_an_ordinary_row(db)
+    asked = run_remove(db, bank, 'locked', confirm=False)
+    assert asked['confirm'] == ['Beim Speichern wird die ganze Zuordnung dieser Zahlung entfernt.'] and asked['removed'] == []        # ohne Bestätigung bleibt die Zeile
+    confirmed = run_remove(db, bank, 'locked', confirm=True)
+    assert confirmed['confirm'] == asked['confirm'] and confirmed['removed'] == ['locked'] and confirmed['recalc'] == 1                  # danach verschwindet sie, die Summe wird neu gerechnet
+
+
+@NO_NODE
+def test_the_x_of_an_ordinary_row_does_not_ask(db):
+    _invoice_id, bank, _marked, _ordinary = _paid_with_an_ordinary_row(db)
+    removed = run_remove(db, bank, 'free', confirm=False)
+    assert removed['confirm'] == [] and removed['removed'] == ['free'] and removed['recalc'] == 1

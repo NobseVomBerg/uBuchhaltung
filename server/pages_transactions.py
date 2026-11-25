@@ -12,8 +12,9 @@ from db import Database
 from money import fmt_eur, format_plain, from_minor, round_minor, to_minor
 from db.matching import bank_effect, is_bank_effective, is_mirror_row, purpose_in_counter
 from db.invoices import InvoiceCol
-from db.invoice_payments import PAYABLE_STATUSES, has_mixed_rates
+from db.invoice_payments import PAYABLE_STATUSES, PAYMENT_MARK, has_mixed_rates
 from db.payment_matching import is_certain, reason_text
+from .handlers import PAYMENT_ROW_READONLY
 from .pages import Header1, Header2, Header3, Footer, script_json
 from .pages_invoice import SKONTO_JS, revenue_coa_choice, skonto_check_html
 from .period import period_filter_widget
@@ -46,6 +47,8 @@ RECEIVABLE_HINT = ('Forderung an einen Kunden: kein Geldeingang und noch keine E
 # Der Editor schreibt so einen Satz nie (``handlers._plan_split_rows``); das ✕ entfernt die ganze Zuordnung.
 SPLIT_LOCKED_HINT = 'Rechnungszahlung – hier nicht änderbar'
 SPLIT_LOCKED_REMOVE_TITLE = 'Zuordnung der Zahlung entfernen – alle Sätze dieser Zahlung gehen mit'
+# Die Rückfrage, die das ✕ einer gesperrten Zeile stellt (``appConfirm``): Erst nach der Bestätigung verschwindet die Zeile. Sie steht als JSON im Skript des Editors (``SPLIT_LOCKED_CONFIRM``).
+SPLIT_LOCKED_REMOVE_CONFIRM = 'Beim Speichern wird die ganze Zuordnung dieser Zahlung entfernt.'
 
 
 # Hinweistext am Abzeichen einer Bankbewegung über 0,00 € ohne Buchungssatz (seit 2.8.4): Es gibt nichts zu verbuchen, sie gilt nicht als offen.
@@ -183,6 +186,7 @@ PAY_SUGGEST_LIMIT = 20          # so viele Zeilen zeigt der Kasten höchstens; d
 PAY_BADGE_LIMIT = 500           # so viele Paare liest die Übersicht je Seite höchstens – EINMAL, für den Kasten (davon die ersten ``PAY_SUGGEST_LIMIT``) und für die Abzeichen der Liste
 PAY_FAILED = 'Die Zahlung konnte nicht zugeordnet werden.'
 PAY_CERTAIN_MIN = 2             # ab so vielen eindeutigen Zeilen im Kasten steht der Knopf „Alle eindeutigen zuordnen“
+PAY_PURPOSE_LIMIT = 300         # so viele Zeichen des Verwendungszwecks stehen höchstens als ``title`` an der Zelle des Auftraggebers
 
 # „Zuordnen“ ruft den bestehenden Weg (POST /invoice/link-payment, ohne Betrag: so viel wie möglich); das Skript der Fußzeile hängt das CSRF-Token
 # an. Erfolg: die Seite unter derselben Adresse neu laden – der Vorschlag ist dann weg. Fehler: der Klartext der Antwort über appMsg (textContent),
@@ -190,8 +194,10 @@ PAY_CERTAIN_MIN = 2             # ab so vielen eindeutigen Zeilen im Kasten steh
 # „Zuordnen“ der Knopf „Mit Skonto zuordnen“ – er ruft ``payAssign(…, true)`` und schickt ``skonto: true``, sonst nie; der Klick ist die Entscheidung. Beide Knöpfe der Zeile sind
 # gesperrt, solange die Anfrage läuft (ein Doppelklick ordnet nicht doppelt zu, auch nicht über den anderen Knopf).
 # **„Alle eindeutigen zuordnen“ (seit 2.9.2):** ``payAssignAll`` fragt über ``appConfirm`` nach und ordnet dann die Zeilen mit ``data-certain="1"`` NACHEINANDER über denselben Weg zu
-# (``payLink``, nie mit Skonto); solange es läuft, sind alle Knöpfe des Kastens gesperrt. Gelingt alles, lädt die Seite neu wie bei ``payAssign``; sonst verschwinden die gelungenen Zeilen,
-# die Knöpfe sind wieder frei (der Sammelknopf zählt die übrigen Zeilen neu und entfällt unter zwei), und ``appMsg`` nennt, wie viele zugeordnet wurden, wie viele nicht und den ersten Grund (nur als Text).
+# (``payLink``, nie mit Skonto, mit dem gezeigten Betrag ``data-amount`` als ``amount_paid`` und ``exact: true``: Hat sich der Stand inzwischen geändert, lehnt der Server die Zeile ab, statt weniger
+# zuzuordnen); solange es läuft, sind alle Knöpfe des Kastens gesperrt. Gelingt alles, lädt die Seite neu wie bei ``payAssign``; sonst verschwinden die gelungenen Zeilen, die Knöpfe sind wieder frei
+# (der Sammelknopf zählt die übrigen Zeilen neu und entfällt unter zwei), ``appMsg`` nennt, wie viele zugeordnet wurden, wie viele nicht und den ersten Grund (nur als Text), und ``refreshTable()`` – wo die
+# Seite es kennt – holt Liste, Abzeichen und Kasten neu.
 PAY_SUGGEST_JS = r'''function payReload() {
     // ohne eine alte Meldung in der Adresse neu laden (``err`` eines früheren, gescheiterten Speicherns)
     var query = new URLSearchParams(window.location.search);
@@ -203,10 +209,11 @@ function payLock(buttons, locked) {
     var i;
     for (i = 0; i < buttons.length; i++) { buttons[i].disabled = locked; }
 }
-function payLink(invoiceId, bookingId, skonto) {
-    // ordnet zu und liefert den Grund einer Ablehnung als Text, bei Erfolg ''; scheitert nie
+function payLink(invoiceId, bookingId, skonto, exactAmount) {
+    // ordnet zu und liefert den Grund einer Ablehnung als Text, bei Erfolg ''; scheitert nie. Mit exactAmount nur genau dieser Betrag (der gezeigte): Hat sich der Stand geändert, lehnt der Server ab
     var request = {invoice_id: invoiceId, transaction_id: bookingId};
     if (skonto === true) { request.skonto = true; }
+    if (exactAmount !== undefined) { request.amount_paid = exactAmount; request.exact = true; }
     return fetch('/invoice/link-payment', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
@@ -227,7 +234,8 @@ function payAssign(invoiceId, bookingId, button, skonto) {
 function payAssignRows(rows, index, outcome) {
     if (index >= rows.length) { return Promise.resolve(outcome); }
     var row = rows[index];
-    return payLink(parseInt(row.getAttribute('data-invoice'), 10), parseInt(row.getAttribute('data-booking'), 10), false).then(function (problem) {
+    return payLink(parseInt(row.getAttribute('data-invoice'), 10), parseInt(row.getAttribute('data-booking'), 10), false,
+                   parseFloat(row.getAttribute('data-amount'))).then(function (problem) {
         if (problem) { outcome.failed += 1; outcome.first = outcome.first || problem; } else { outcome.done.push(row); }
         return payAssignRows(rows, index + 1, outcome);
     });
@@ -246,6 +254,7 @@ function payAssignAll(button) {
             if (outcome.failed < 2) { button.parentNode.removeChild(button); } else { button.textContent = button.textContent.replace(/\d+/, String(outcome.failed)); }
             payLock(buttons, false);
             appMsg(outcome.done.length + ' zugeordnet, ' + outcome.failed + ' nicht: ' + outcome.first, 'error');
+            if (typeof refreshTable === 'function') { refreshTable(); }      // die Liste und die Abzeichen (und dieser Kasten) sind danach frisch
         });
     });
 }
@@ -286,7 +295,8 @@ def _payment_suggestions_html(overview):
     ``PAY_SUGGEST_LIMIT`` Zeilen, darunter „… und n weitere“. Leer, wenn es keine Vorschläge gibt oder die Abfrage scheiterte (``None``; dann gibt es auch keinen Kasten). Jeder Wert aus der
     Datenbank ist maskiert, die IDs stehen nur als Zahl. Es wird nur vorgeschlagen; zugeordnet wird erst mit dem Klick.
 
-    Jede Zeile trägt ``data-invoice`` und ``data-booking`` (die IDs als Zahl), eine eindeutige (``db.payment_matching.is_certain``) zusätzlich ``data-certain="1"``. Stehen mindestens
+    Jede Zeile trägt ``data-invoice`` und ``data-booking`` (die IDs als Zahl) und ``data-amount`` (der freie Betrag der Bewegung, ``format_plain``: der Wert, den ``POST /invoice/link-payment`` als ``amount_paid`` liest),
+    eine eindeutige (``db.payment_matching.is_certain``) zusätzlich ``data-certain="1"``. Stehen mindestens
     ``PAY_CERTAIN_MIN`` eindeutige Zeilen im Kasten, steht über der Tabelle der Knopf „Alle eindeutigen zuordnen (n)“ (``payAssignAll``) und im Hinweis ein Satz dazu."""
     if overview is None or not overview.items:
         return ''
@@ -306,9 +316,12 @@ def _payment_suggestions_html(overview):
         certain = is_certain(suggestion)
         certain_rows += certain
         certain_attribute = ' data-certain="1"' if certain else ''
+        # Der Verwendungszweck der Bewegung steht als ``title`` an der Zelle des Auftraggebers (maskiert, höchstens ``PAY_PURPOSE_LIMIT`` Zeichen); ohne Text gibt es keinen ``title``
+        purpose = str(movement.get('text') or '')[:PAY_PURPOSE_LIMIT]
+        purpose_attribute = f' title="{esc(purpose)}"' if purpose.strip() else ''
         rows += (
-            f'<tr data-invoice="{int(invoice["id"])}" data-booking="{int(movement["id"])}"{certain_attribute}>'
-            f'<td>{esc(movement["date"] or "–")}</td><td>{esc(movement["recipient"] or "")}</td>'
+            f'<tr data-invoice="{int(invoice["id"])}" data-booking="{int(movement["id"])}" data-amount="{format_plain(movement["amount_minor"])}"{certain_attribute}>'
+            f'<td>{esc(movement["date"] or "–")}</td><td{purpose_attribute}>{esc(movement["recipient"] or "")}</td>'
             f'<td class="num">{esc(fmt_eur(from_minor(movement["amount_minor"])))}</td>'
             f'<td><a href="/invoice/edit?id={int(invoice["id"])}">{esc(invoice["number"] or invoice["id"])}</a></td>'
             f'<td>{esc(invoice["label"])}</td><td class="num">{esc(fmt_eur(from_minor(invoice["open_minor"])))}</td>'
@@ -508,6 +521,11 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
     submit_text = "Transaktion aktualisieren" if edit_trans else "Transaktion hinzufügen"
     transaction_id = edit_trans[0] if edit_trans else 0
 
+    # Ein Satz einer Rechnungszahlung (Marke) lässt sich in der Maske eines einzelnen Satzes nicht ändern (``handlers.PAYMENT_ROW_READONLY``, der Server lehnt ab): Die Seite zeigt den Satz als
+    # Hinweis und lässt „Aktualisieren“ samt Vorschlag weg – „Abbrechen“ bleibt, das Löschen in der Liste auch.
+    payment_row = bool(edit_trans and edit_trans[19] == PAYMENT_MARK)                    # 19 = Status
+    payment_row_note = f'<p class="warnColor">{_html.escape(PAYMENT_ROW_READONLY)}</p>' if payment_row else ''
+
     prefill_note = ''
     if prefill:
         prefill_note = (
@@ -605,7 +623,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
     <div class="gridRightCol gridMiddle" style="order:2">
         <div class="rectRounded" style="order:2">
         <h2>{form_title}</h2>
-        {prefill_note}
+        {prefill_note}{payment_row_note}
         <form method="POST" action="/transactions/add">
                 <table class="form-table">
                     {id_display}
@@ -716,7 +734,9 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
         ' \u00fcbernehmen, n\u00e4chste Beleg-Nr. eintragen (speichert nicht)">'
         '\U0001FA84 Vorschlag</button>'
         '<input type="hidden" name="suggest_range_id" id="suggestRangeId" value="">')
-    if edit_trans:
+    if payment_row:
+        form_buttons = '<button type="button" onclick="window.location.href=\'/transactions\'" class="coloredButton btn-sm bg-gray">Abbrechen</button>'
+    elif edit_trans:
         form_buttons = ('<input type="submit" value="Aktualisieren" class="coloredButton btn-sm bg-green">'
                         f'{suggest_button}'
                         '<button type="button" onclick="window.location.href=\'/transactions\'" class="coloredButton btn-sm bg-gray">Abbrechen</button>')
@@ -893,6 +913,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                 var SPLIT_BANK_AMOUNT = {bank_amount};
                 var SPLIT_BANK_DOCNR = {bank_docnr_js};
                 var SPLIT_BANK_TEXT = {bank_text_js};
+                var SPLIT_LOCKED_CONFIRM = {script_json(SPLIT_LOCKED_REMOVE_CONFIRM)};
                 var SPLIT_SUFFIX = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 
                 function splitRows() {{
@@ -953,8 +974,11 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                     splitRecalc();
                 }}
                 function splitRemove(link) {{
-                    link.closest('tr').remove();
-                    splitRecalc();
+                    const row = link.closest('tr');
+                    const drop = () => {{ row.remove(); splitRecalc(); }};
+                    // Das Speichern entfernt mit einer gesperrten Zeile (Zahlungssatz) die ganze Zuordnung: erst nach der Rückfrage verschwindet die Zeile
+                    if (row.classList.contains('splitLocked')) {{ appConfirm(SPLIT_LOCKED_CONFIRM, drop); }}
+                    else {{ drop(); }}
                 }}
                 function splitAdopt() {{
                     // Bestehende Buchung per ID zuordnen: Zeile mit ihrer ID

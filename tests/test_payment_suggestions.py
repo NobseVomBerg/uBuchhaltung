@@ -958,8 +958,8 @@ def mixed_world(db):
 def test_every_row_of_the_box_carries_the_ids_as_numbers_and_a_certain_one_the_mark(tmp_db):
     w = a_world(tmp_db)
     assert box_row_tags(period_page(tmp_db)) == [
-        {'data-invoice': str(w['one']), 'data-booking': str(w['first']), 'data-certain': '1'},
-        {'data-invoice': str(w['two']), 'data-booking': str(w['second']), 'data-certain': '1'}]
+        {'data-invoice': str(w['one']), 'data-booking': str(w['first']), 'data-amount': '119.00', 'data-certain': '1'},
+        {'data-invoice': str(w['two']), 'data-booking': str(w['second']), 'data-amount': '238.00', 'data-certain': '1'}]
 
 
 def test_with_two_certain_rows_the_box_offers_the_button_for_all_of_them_and_the_sentence_in_the_hint(tmp_db):
@@ -1010,22 +1010,71 @@ def test_the_button_counts_the_certain_rows_of_the_box_not_those_behind_the_limi
     assert [unescape(label) for label in ALL_BUTTON.findall(box_of(page))] == ['Alle eindeutigen zuordnen (20)'] and '… und 3 weitere' in box_of(page)
 
 
+def test_a_row_carries_the_free_amount_of_the_movement_in_the_plain_format_the_route_reads(tmp_db):
+    """``data-amount``: der Betrag, den der Kasten zeigt – der freie Rest der Bewegung, nicht der offene Betrag der Rechnung (hier der Betrag nach Skonto); ``payAssignAll`` schickt ihn als ``amount_paid``."""
+    account, _buyer, invoice_id = discount_world(tmp_db)
+    payment = add_payment(tmp_db, account, 116.62, '2026-03-10', 'Käufer AG', 'Danke')
+    (tag,) = box_row_tags(period_page(tmp_db))
+    assert (tag['data-invoice'], tag['data-booking'], tag['data-amount']) == (str(invoice_id), str(payment), '116.62') and 'data-certain' not in tag
+
+
+def test_a_second_candidate_with_the_amount_takes_the_certain_mark_from_the_row(tmp_db):
+    """Eine zweite offene Rechnung desselben Kunden mit demselben Betrag: Die Zahlung mit der Nummer hätte auch zu ihr gepasst – nicht eindeutig, also kein Sammelknopf (es bleibt nur eine eindeutige Zeile)."""
+    w = a_world(tmp_db)
+    add_invoice(tmp_db, 'R26009', 119.00, name='Käufer AG', customer_id=w['buyer'])
+    page = period_page(tmp_db)
+    assert [(tag['data-booking'], tag.get('data-certain')) for tag in box_row_tags(page)] == [(str(w['first']), None), (str(w['second']), '1')]
+    assert 'payAssignAll' not in box_of(page) and CERTAIN_SENTENCE not in box_of(page)
+
+
+def test_a_text_that_names_a_longer_number_takes_the_certain_mark_from_the_row(tmp_db):
+    """``R26001`` steht auch in ``R26001A``: Nennt der Verwendungszweck die längere Nummer, ist die Zahlung für die kürzere Rechnung nicht eindeutig."""
+    account, buyer = bank_account(tmp_db), customer(tmp_db)
+    add_invoice(tmp_db, 'R26001', 119.00, customer_id=buyer)
+    add_invoice(tmp_db, 'R26001A', 238.00, customer_id=buyer)
+    add_payment(tmp_db, account, 119.00, '2026-03-10', 'Käufer AG', 'Rechnung R26001A')
+    page = period_page(tmp_db)
+    assert [tag.get('data-certain') for tag in box_row_tags(page)] == [None] and 'payAssignAll' not in box_of(page)
+
+
+def test_the_purpose_of_the_movement_is_the_title_of_the_payer_cell_masked_and_cut_at_300_characters(tmp_db):
+    account, buyer = bank_account(tmp_db), customer(tmp_db)
+    add_invoice(tmp_db, 'R26001', 119.00, customer_id=buyer)
+    purpose = f'Rechnung R26001 "><img src=x onerror=alert(1)> & \'Rest\' ' + 'x' * 400
+    add_payment(tmp_db, account, 119.00, '2026-03-10', 'Käufer AG', purpose)
+    page = period_page(tmp_db)
+    box = box_of(page)
+    (title,) = re.findall(r'<td title="([^"]*)">Käufer AG</td>', box)
+    assert unescape(title) == purpose[:300] and len(unescape(title)) == 300
+    assert '<img src=x' not in box and Dom(page).all('img') == [] and '"><img' not in box              # nichts davon bricht das Attribut auf
+    assert all('onerror' not in attrs for _tag, attrs in Dom(box).tags)
+
+
+def test_a_movement_without_a_purpose_has_no_title_on_the_payer_cell(tmp_db):
+    w = a_world(tmp_db)
+    run_sql(tmp_db, 'UPDATE Bookings SET Text = NULL WHERE ID = ?', w['first'])
+    run_sql(tmp_db, "UPDATE Bookings SET Text = '   ' WHERE ID = ?", w['second'])
+    box = box_of(period_page(tmp_db))
+    assert '<td>Käufer AG</td>' in box and '<td>Müller GmbH</td>' in box and 'title="' not in box.split('<table')[1].split('<button')[0]
+
+
 # ── Das Skript „Alle eindeutigen zuordnen“ (Node, ohne Browser) ──────────────
 
 ALL_HARNESS = r"""
 const vm = require('vm');
 const input = JSON.parse(require('fs').readFileSync(0, 'utf8'));
 const scenario = input.scenario;
-const calls = {fetch: [], msg: [], confirm: [], navigations: [], removed: [], inFlight: 0, maxInFlight: 0, buttonRemoved: false};
+const calls = {fetch: [], msg: [], confirm: [], navigations: [], removed: [], inFlight: 0, maxInFlight: 0, buttonRemoved: false, refreshed: 0};
 const location = {pathname: scenario.pathname, search: scenario.search};
 Object.defineProperty(location, 'href', {set: value => { calls.navigations.push(value); }});
 const tbody = {removeChild: row => { calls.removed.push(row.index); }};
-const rows = scenario.rows.map(([invoice, booking], index) => ({index, parentNode: tbody, getAttribute(name) { return {'data-invoice': String(invoice), 'data-booking': String(booking)}[name]; }}));
+const rows = scenario.rows.map(([invoice, booking, amount], index) => ({index, parentNode: tbody,
+  getAttribute(name) { return {'data-invoice': String(invoice), 'data-booking': String(booking), 'data-amount': amount}[name]; }}));
 const allButton = {disabled: false, textContent: scenario.label, parentNode: {removeChild: node => { calls.buttonRemoved = node === allButton; }}};
 const buttons = [...rows.map(() => ({disabled: false})), allButton];
 const box = {querySelectorAll: selector => (selector === 'tr[data-certain="1"]' ? rows : selector === 'button' ? buttons : [])};
 const context = {
-  window: {location}, URLSearchParams, JSON, Promise, parseInt, String, setTimeout,
+  window: {location}, URLSearchParams, JSON, Promise, parseInt, parseFloat, String, setTimeout,
   document: {getElementById: id => (id === 'paySuggest' ? box : null)},
   appConfirm: (text, onOk) => { calls.confirm.push(text); if (scenario.confirm !== false) { onOk(); } },
   appMsg: (text, type) => calls.msg.push([text, type]),
@@ -1040,6 +1089,7 @@ const context = {
     }, 2));
   },
 };
+if (scenario.refresh) { context.refreshTable = () => { calls.refreshed += 1; }; }       // die Seite *Buchungen* kennt ``refreshTable``, das Skript allein nicht
 vm.createContext(context);
 vm.runInContext(input.source, context);
 context.payAssignAll(allButton);
@@ -1052,6 +1102,7 @@ setTimeout(finish, 20000);
 """
 
 OK_ANSWER = {'success': True}
+THREE = [[11, 21, '116.62'], [12, 22, '238.00'], [13, 23, '1190.50']]             # (Rechnung, Bewegung, ``data-amount``) der Zeilen des Kastens
 
 
 def run_all(rows, answers, **scenario):
@@ -1064,26 +1115,28 @@ def run_all(rows, answers, **scenario):
 
 @NO_NODE
 def test_assign_all_asks_first_and_then_assigns_one_row_after_the_other_over_the_existing_route_and_loads_the_page_again():
-    calls = run_all([[11, 21], [12, 22], [13, 23]], [OK_ANSWER] * 3)
+    calls = run_all(THREE, [OK_ANSWER] * 3)
     assert calls['confirm'] == ['3 Zahlungseingänge den genannten Rechnungen zuordnen?']
     assert [(fetched['url'], fetched['method']) for fetched in calls['fetch']] == [('/invoice/link-payment', 'POST')] * 3
-    assert [json.loads(fetched['body']) for fetched in calls['fetch']] == [{'invoice_id': 11, 'transaction_id': 21}, {'invoice_id': 12, 'transaction_id': 22},
-                                                                          {'invoice_id': 13, 'transaction_id': 23}]       # nie ``skonto``, in der Reihenfolge der Zeilen
+    assert [json.loads(fetched['body']) for fetched in calls['fetch']] == [
+        {'invoice_id': 11, 'transaction_id': 21, 'amount_paid': 116.62, 'exact': True}, {'invoice_id': 12, 'transaction_id': 22, 'amount_paid': 238, 'exact': True},
+        {'invoice_id': 13, 'transaction_id': 23, 'amount_paid': 1190.5, 'exact': True}]                       # der gezeigte Betrag, nur genau dieser – nie ``skonto``, in der Reihenfolge der Zeilen
     assert all(fetched['headers'] == {'Content-Type': 'application/json'} for fetched in calls['fetch'])
     assert calls['maxInFlight'] == 1                                                                # nacheinander: Die nächste Anfrage beginnt erst nach der Antwort
     assert all(fetched['allDisabled'] for fetched in calls['fetch'])                                # alle Knöpfe des Kastens sind gesperrt, solange es läuft
     assert calls['navigations'] == ['/transactions?from=2026-01-01&to=2026-12-31'] and calls['msg'] == [] and calls['removed'] == []      # neu laden wie ``payAssign``
+    assert calls['refreshed'] == 0                                                                  # bei Erfolg lädt die ganze Seite neu
 
 
 @NO_NODE
 def test_assign_all_drops_an_old_message_from_the_address_when_it_loads_the_page_again():
-    calls = run_all([[11, 21], [12, 22]], [OK_ANSWER] * 2, search='?from=2026-01-01&err=Alte+Meldung')
+    calls = run_all(THREE[:2], [OK_ANSWER] * 2, search='?from=2026-01-01&err=Alte+Meldung')
     assert calls['navigations'] == ['/transactions?from=2026-01-01']
 
 
 @NO_NODE
 def test_assign_all_does_nothing_when_the_question_is_not_confirmed():
-    calls = run_all([[11, 21], [12, 22]], [OK_ANSWER] * 2, confirm=False)
+    calls = run_all(THREE[:2], [OK_ANSWER] * 2, confirm=False)
     assert calls['confirm'] == ['2 Zahlungseingänge den genannten Rechnungen zuordnen?']
     assert calls['fetch'] == [] and calls['msg'] == [] and calls['navigations'] == [] and calls['disabledAtEnd'] == [False] * 3
 
@@ -1096,7 +1149,7 @@ def test_assign_all_without_certain_rows_does_not_even_ask():
 
 @NO_NODE
 def test_assign_all_tries_every_row_removes_the_assigned_ones_frees_the_buttons_and_names_the_first_reason():
-    calls = run_all([[11, 21], [12, 22], [13, 23], [14, 24]],
+    calls = run_all(THREE + [[14, 24, '10.00']],
                     [OK_ANSWER, {'success': False, 'error': 'Die Rechnung ist nicht (mehr) zahlbar.'}, OK_ANSWER, {'success': False, 'error': 'Das Bankkonto hat keine SKR-Nummer.'}])
     assert len(calls['fetch']) == 4 and calls['maxInFlight'] == 1                                   # ein Fehler hält die übrigen nicht auf
     assert calls['removed'] == [0, 2]                                                               # nur die gelungenen Zeilen verschwinden
@@ -1106,23 +1159,36 @@ def test_assign_all_tries_every_row_removes_the_assigned_ones_frees_the_buttons_
 
 
 @NO_NODE
+def test_assign_all_refreshes_the_list_and_the_box_after_a_partial_failure_when_the_page_has_the_function():
+    """Die Liste und die Abzeichen sind danach frisch (``refreshTable`` holt die Seite neu); ohne die Funktion – das Skript allein – bleibt es bei den lokalen Änderungen."""
+    failure = {'success': False, 'error': 'Der Stand hat sich geändert – bitte die Seite neu laden.'}
+    with_it = run_all(THREE, [OK_ANSWER, failure, OK_ANSWER], refresh=True)
+    assert with_it['refreshed'] == 1 and with_it['msg'] == [['2 zugeordnet, 1 nicht: Der Stand hat sich geändert – bitte die Seite neu laden.', 'error']]
+    assert with_it['navigations'] == [] and with_it['removed'] == [0, 2]
+    without = run_all(THREE, [OK_ANSWER, failure, OK_ANSWER])
+    assert without['refreshed'] == 0 and without['msg'] == with_it['msg'] and without['removed'] == [0, 2]
+    nothing = run_all(THREE[:2], [failure, failure], refresh=True)
+    assert nothing['refreshed'] == 1 and nothing['msg'][0][0].startswith('0 zugeordnet, 2 nicht')
+
+
+@NO_NODE
 @pytest.mark.parametrize('answer', ['reject', 'badJson', {'success': False}, None], ids=['kein-Netz', 'kein-JSON', 'ohne-Grund', 'null'])
 def test_assign_all_names_a_failure_without_a_reason_with_the_fixed_sentence(answer):
-    calls = run_all([[11, 21], [12, 22]], [answer, OK_ANSWER])
+    calls = run_all(THREE[:2], [answer, OK_ANSWER])
     assert calls['msg'] == [[f'1 zugeordnet, 1 nicht: {PAY_FAILED}', 'error']] and calls['removed'] == [1] and calls['navigations'] == []
 
 
 @NO_NODE
 def test_assign_all_takes_the_button_away_when_fewer_than_two_rows_are_left():
     """Ein einzelner Rest hat seinen eigenen „Zuordnen“-Knopf – der Sammelknopf gälte nur bis zu zwei Zeilen, wie ihn die Seite zeigt."""
-    calls = run_all([[11, 21], [12, 22], [13, 23]], [OK_ANSWER, {'success': False, 'error': 'Die Rechnung ist nicht (mehr) zahlbar.'}, OK_ANSWER])
+    calls = run_all(THREE, [OK_ANSWER, {'success': False, 'error': 'Die Rechnung ist nicht (mehr) zahlbar.'}, OK_ANSWER])
     assert calls['removed'] == [0, 2] and calls['buttonRemoved'] is True and calls['label'] == 'Alle eindeutigen zuordnen (3)'
     assert calls['msg'] == [['2 zugeordnet, 1 nicht: Die Rechnung ist nicht (mehr) zahlbar.', 'error']] and calls['disabledAtEnd'][:3] == [False] * 3
 
 
 @NO_NODE
 def test_assign_all_with_nothing_assigned_says_so_and_keeps_every_row():
-    calls = run_all([[11, 21], [12, 22]], [{'success': False, 'error': 'Erster Grund'}, {'success': False, 'error': 'Zweiter Grund'}])
+    calls = run_all(THREE[:2], [{'success': False, 'error': 'Erster Grund'}, {'success': False, 'error': 'Zweiter Grund'}])
     assert calls['msg'] == [['0 zugeordnet, 2 nicht: Erster Grund', 'error']] and calls['removed'] == [] and calls['disabledAtEnd'] == [False] * 3
 
 

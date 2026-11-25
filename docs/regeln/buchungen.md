@@ -109,7 +109,12 @@
   (`_assigned_bank_change_blocker`, `BankChangeRefused` → 400 mit Klartext; bei Erstattungen mit der Stornorechnung) – mit und ohne Editor.
   - Verglichen wird mit dem Stand vom Transaktionsbeginn (Minor Units); ein unverändert zurückgeschickter Wert ist kein Verstoß; Empfänger, Text, Währung, Steuerdatum bleiben frei.
   - Geprüft wird NACH den Schreibschritten: Wer im selben Speichern alle Zeilen der Zahlung entfernt, darf den Betrag mit ändern (`tests/test_bank_change_assigned_payment.py`).
+- **Der Editor liest nur gleich lange Feldlisten:** Jede mitgeschickte, nicht leere Liste von `split_id`, `split_coa`, `split_text`, `split_docnr`, `split_counter_coa`, `split_tax_rate` und `split_tax_amount` hat so viele Einträge wie `split_amount`
+  (gelesen wird über den Index), sonst lehnt `_plan_split_rows` mit `INVALID_REQUEST` ab (400, nichts gespeichert); eine fehlende Liste bleibt erlaubt.
 - **Die Sätze einer Zahlung sind im Editor schreibgeschützt:** Ein bestehender Satz unter DIESER Bankbewegung mit der Marke `invoice_payment` (`PAYMENT_MARK`, gelesen aus dem gespeicherten Stand, nie aus einem Formularfeld) bekommt Betrag, Konto, Gegenkonto, Steuersatz, Steuerbetrag, Text, Beleg-Nr. und Währung vom Editor nie geschrieben – ein Unsinn in diesen Feldern lehnt nicht ab, sie werden nicht gelesen (`handlers._plan_split_rows`; Form und `DatevKey` bleiben).
-  Datum, Steuerdatum und Empfänger folgen der Bankbewegung wie bei jedem Satz („geteilt“-Regel). Das ✕ entfernt weiter die ganze Zuordnung (Schutzprüfungen wie bei jedem Satz).
+  Datum, Steuerdatum und Empfänger folgen der Bankbewegung wie bei jedem Satz („geteilt“-Regel). Das ✕ entfernt weiter die ganze Zuordnung (Schutzprüfungen wie bei jedem Satz); die Seite fragt vorher über `appConfirm`
+  („Beim Speichern wird die ganze Zuordnung dieser Zahlung entfernt.“), erst danach verschwindet die Zeile.
+  - **Auch die Maske eines einzelnen Satzes** (`/transactions/edit?id=<Satz>`) schreibt ihn nie: `handle_add_transaction` lehnt vor jedem Schreiben ab (400 `PAYMENT_ROW_READONLY`: Zuordnung an der Rechnung entfernen und neu zuordnen). Die Seite zeigt den Satz als Hinweis,
+    ohne „Aktualisieren“ und 🪄; Löschen aus der Liste bleibt.
   - Die Seite zeigt die Zeile gesperrt (`splitRow splitLocked`, Eingaben `readonly`, Konto `disabled` plus verstecktes `split_coa`: jede Zeile führt alle Felder, gelesen wird über den Index; Hinweis „Rechnungszahlung – hier nicht änderbar“). Die Marke kennt sie über `Database.payment_row_ids`, nicht über die Tupel von `get_child_bookings_for_bank`.
   - Skripte der Maske beschreiben eine gesperrte Zeile nie (🪄 ersetzt nur die änderbaren Zeilen), die Summenzeile rechnet sie mit. `tests/test_split_editor_payment_rows_locked.py`

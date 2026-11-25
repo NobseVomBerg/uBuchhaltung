@@ -33,7 +33,7 @@ ist dann möglich). Trifft SKONTO zu, trägt der Vorschlag ``skonto`` – die Se
 Skonto ausgebucht) wird allein auf Klick. ``rank_invoices`` und ``rank_movements`` bringen die Paare EINER Bewegung bzw. EINER Rechnung in eine Rangfolge (höchstens
 ``MAX_SUGGESTIONS``); ``pair_up`` macht daraus die Eins-zu-eins-Liste für die Übersicht – jede Bewegung und jede Rechnung höchstens einmal, die
 zeitlich nächste zuerst, deterministisch. Schon zugeordnete Paare (``linked``) sind nie ein Vorschlag. ``is_certain`` nennt den Teil, den die Übersicht mit einem Klick auf einmal zuordnen darf: NUMMER und
-BETRAG, nicht mehrdeutig, kein Skonto.
+BETRAG, nicht mehrdeutig, nicht bestritten (``contested``: ein weiteres Kandidatenpaar mit Nummer oder Betrag für dieselbe Bewegung oder Rechnung, gleich mit welcher Punktzahl), kein Skonto.
 
 Laufzeit: je Paar mit brauchbarer Nummer ein billiger Test (die normalisierte Nummer steht in den normalisierten Feldern der Bewegung, ein ``in``);
 nur bei einem Treffer läuft der genaue reguläre Ausdruck, und der ist linear. Die Paare aus Betrag und Kunde entstehen über einen Index nach dem
@@ -76,7 +76,8 @@ class PaymentSuggestion:
     """Ein Vorschlag: die Bewegung, die Rechnung, die Punkte, die Begründungen (feste Sätze: Nummer, Betrag, Kunde), der Abstand in Tagen
     (Buchungsdatum minus Rechnungsdatum, negativ = davor; ``None``, wenn eines der beiden Daten fehlt oder kein ISO-Datum ist) und – nur in
     der Liste von ``pair_up`` – ob es für diese Bewegung ODER diese Rechnung ein weiteres Paar mit derselben Punktzahl gab (``ambiguous``). ``skonto``: Der Betrag der Bewegung ist der
-    offene Betrag der Rechnung nach Abzug ihres Skontos (das Signal SKONTO) – die Seiten bieten dann „Mit Skonto zuordnen“ an."""
+    offene Betrag der Rechnung nach Abzug ihres Skontos (das Signal SKONTO) – die Seiten bieten dann „Mit Skonto zuordnen“ an. ``contested``: ebenfalls nur aus ``pair_up`` – für diese Bewegung ODER diese Rechnung gibt es ein
+    weiteres Kandidatenpaar, das ``REASON_NUMBER`` oder ``REASON_AMOUNT`` trägt, gleich mit welcher Punktzahl und auch, wenn es nicht in die Eins-zu-eins-Liste kam (``is_certain`` verlangt, dass es nicht bestritten ist)."""
     movement_id: int
     invoice_id: int
     score: int
@@ -84,6 +85,7 @@ class PaymentSuggestion:
     day_distance: int | None
     ambiguous: bool = False
     skonto: bool = False
+    contested: bool = False
 
 
 def reason_text(suggestion: PaymentSuggestion) -> str:
@@ -94,11 +96,13 @@ def reason_text(suggestion: PaymentSuggestion) -> str:
 
 def is_certain(suggestion: PaymentSuggestion) -> bool:
     """Ist der Vorschlag eindeutig – gut genug für „Alle eindeutigen zuordnen“ in der Übersicht? Nur dann, wenn die Rechnungsnummer im Verwendungszweck steht UND der Betrag stimmt
-    (``REASON_NUMBER`` und ``REASON_AMOUNT`` unter den Begründungen), das Paar nicht mehrdeutig ist (``ambiguous``) und kein Skonto-Vorschlag (``skonto``). Nichts anderes ist „eindeutig“:
-    Betrag und Kunde ohne Nummer, eine Nummer mit abweichendem Betrag (Teil- oder Überzahlung) und ein Betrag nach Skonto bleiben Vorschläge, die der Nutzer einzeln entscheidet. EINE Stelle
-    für die Seiten; rein wie der Rest des Moduls."""
+    (``REASON_NUMBER`` und ``REASON_AMOUNT`` unter den Begründungen), das Paar nicht mehrdeutig ist (``ambiguous``), kein weiteres Kandidatenpaar mit Nummer oder Betrag es bestreitet
+    (``contested``: derselbe Text nennt eine zweite Rechnung, eine längere Nummer, eine zweite Zahlung hätte denselben Betrag …) und es kein Skonto-Vorschlag ist (``skonto``). Nichts anderes
+    ist „eindeutig“: Betrag und Kunde ohne Nummer, eine Nummer mit abweichendem Betrag (Teil- oder Überzahlung) und ein Betrag nach Skonto bleiben Vorschläge, die der Nutzer einzeln
+    entscheidet. ``ambiguous`` und ``contested`` setzt nur ``pair_up`` – für die Paare von ``rank_invoices`` und ``rank_movements`` sind beide ``False``, die Seiten fragen dort nicht danach.
+    EINE Stelle für die Seiten; rein wie der Rest des Moduls."""
     return (REASON_NUMBER in suggestion.reasons and REASON_AMOUNT in suggestion.reasons
-            and not suggestion.ambiguous and not suggestion.skonto)
+            and not suggestion.ambiguous and not suggestion.contested and not suggestion.skonto)
 
 
 _NOT_ALPHANUMERIC = re.compile(r'[^a-z0-9]+')
@@ -266,6 +270,11 @@ def _pairs(movements: list[_Movement], invoices: list[_Invoice], linked) -> Iter
                     yield suggestion
 
 
+def _has_number_or_amount(suggestion: PaymentSuggestion) -> bool:
+    """Trägt das Paar ``REASON_NUMBER`` oder ``REASON_AMOUNT``? Nur solche Paare bestreiten ein anderes (``contested``) – ein Paar, das nur den Betrag nach Skonto trägt, nicht."""
+    return REASON_NUMBER in suggestion.reasons or REASON_AMOUNT in suggestion.reasons
+
+
 def _distance(suggestion: PaymentSuggestion) -> int:
     return _NO_DISTANCE if suggestion.day_distance is None else abs(suggestion.day_distance)
 
@@ -289,19 +298,26 @@ def pair_up(movements: Iterable[dict], invoices: Iterable[dict], linked=frozense
     Rechnung)`` geordnet und der Reihe nach genommen, solange weder die Bewegung noch die Rechnung schon vergeben ist. Bei einem Kunden mit zwei
     gleich hohen Rechnungen und zwei gleich hohen Zahlungen (ohne Nummer im Text) bekommt so jede Rechnung die zeitlich nächste Zahlung –
     deterministisch, ohne Zufall. Jedes Ergebnis trägt ``ambiguous``: Es gab für diese Bewegung ODER diese Rechnung ein weiteres Paar (auch eines, das
-    wegen einer schon vergebenen Bewegung oder Rechnung nicht in die Liste kam) mit derselben Punktzahl. ``linked``: wie bei ``rank_invoices``."""
+    wegen einer schon vergebenen Bewegung oder Rechnung nicht in die Liste kam) mit derselben Punktzahl – und ``contested``: Es gab für diese Bewegung ODER diese Rechnung ein weiteres Paar, das
+    ``REASON_NUMBER`` oder ``REASON_AMOUNT`` trägt, gleich mit welcher Punktzahl (auch eines, das nicht in die Liste kam; ein Paar aus ``linked`` zählt nie). Beides wird aus denselben Paaren gezählt, die
+    die Liste ohnehin ordnet – je Bewegung und je Rechnung ein Zähler, ein Durchlauf, nichts je Ergebnis über alle Paare. ``linked``: wie bei ``rank_invoices``."""
     pairs = sorted(_pairs(_movements(movements), _invoices(invoices), linked),
                    key=lambda suggestion: (-suggestion.score, _distance(suggestion), suggestion.movement_id, suggestion.invoice_id))
     per_movement = Counter((suggestion.movement_id, suggestion.score) for suggestion in pairs)
     per_invoice = Counter((suggestion.invoice_id, suggestion.score) for suggestion in pairs)
+    strong_per_movement = Counter(suggestion.movement_id for suggestion in pairs if _has_number_or_amount(suggestion))
+    strong_per_invoice = Counter(suggestion.invoice_id for suggestion in pairs if _has_number_or_amount(suggestion))
     taken_movements, taken_invoices, result = set(), set(), []
     for suggestion in pairs:
         if suggestion.movement_id in taken_movements or suggestion.invoice_id in taken_invoices:
             continue
         taken_movements.add(suggestion.movement_id)
         taken_invoices.add(suggestion.invoice_id)
-        if (per_movement[(suggestion.movement_id, suggestion.score)] > 1
-                or per_invoice[(suggestion.invoice_id, suggestion.score)] > 1):
-            suggestion = dataclasses.replace(suggestion, ambiguous=True)
+        ambiguous = (per_movement[(suggestion.movement_id, suggestion.score)] > 1
+                     or per_invoice[(suggestion.invoice_id, suggestion.score)] > 1)
+        own = 1 if _has_number_or_amount(suggestion) else 0                     # das Paar selbst zählt in den Zählern mit
+        contested = strong_per_movement[suggestion.movement_id] > own or strong_per_invoice[suggestion.invoice_id] > own
+        if ambiguous or contested:
+            suggestion = dataclasses.replace(suggestion, ambiguous=ambiguous, contested=contested)
         result.append(suggestion)
     return result
