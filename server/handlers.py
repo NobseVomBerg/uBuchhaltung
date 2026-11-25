@@ -41,7 +41,7 @@ from db.invoice_lock import (DocumentNotFound, EDITABLE_STATUSES, InvoiceLocked,
                              buyer_snapshot, status_group)
 from db.invoice_storno import NO_COUNTER_BOOKING_HINT
 from db.invoice_versions import CorrectionInvalid
-from db.invoice_payments import RECEIVABLE_STATUSES, SKONTO_REFUND, BankChangeRefused, PaymentRemovalRefused, has_mixed_rates
+from db.invoice_payments import PAYMENT_MARK, RECEIVABLE_STATUSES, SKONTO_REFUND, BankChangeRefused, PaymentRemovalRefused, has_mixed_rates
 from db.invoice_repair import REBUILD_WARNING
 from db.numbering import NumberRangeError, number_format_error
 from db.matching import FORM_LIQUID_FIRST, FORM_TRANSFER, is_bank_effective, is_mirror_row, purpose_in_counter, read_entry_form
@@ -619,6 +619,15 @@ def _loaded_split_ids(post_data):
     return ids
 
 
+def _follow_bank(fields, old_row, bank_row):
+    """Datum, Steuerdatum und Empfänger eines Satzes unter der Bankbewegung folgen ihrer Änderung nur, wenn er den Wert vorher mit ihr geteilt hat (derselbe Wert wie die
+    Bankbewegung bis jetzt trägt; leer = leer), je Feld für sich: Hat er einen eigenen – eine zugeordnete Bestandsbuchung, ein verknüpfter Beleg –, bleibt der, und das Feld
+    fällt aus ``fields``. ``old_row``/``bank_row``: gespeicherte Zeilen (``get_booking_by_id``). Die EINE Stelle dieser Regel."""
+    for name, column in (('date_booking', 1), ('date_tax', 2), ('recipient_client', 6)):
+        if (old_row[column] or None) != (bank_row[column] or None):
+            del fields[name]
+
+
 def _plan_split_rows(db, bank_id, post_data, account_coa_id, date, date_tax,
                      recipient, currency):
     """Buchungssätze einer Bankbewegung aus dem Editor lesen und prüfen (schreibt nichts).
@@ -653,6 +662,12 @@ def _plan_split_rows(db, bank_id, post_data, account_coa_id, date, date_tax,
     bleibt der gespeicherte Wert. Sonst gilt, was in der Zeile steht; leer heißt
     keine Steuer. Auf dem Server wird sie nie nachgerechnet.
 
+    **Die Sätze einer Rechnungszahlung sind schreibgeschützt:** Ein bestehender Satz unter DIESER Bankbewegung (nicht zugeordnet), der die Marke ``PAYMENT_MARK`` trägt – gelesen
+    aus dem gespeicherten Stand, nie aus einem Formularfeld –, bekommt Betrag, Konto, Gegenkonto, Steuersatz, Steuerbetrag, Text, Beleg-Nr. und Währung vom Editor nie geschrieben;
+    diese Felder seiner Zeile werden nicht einmal gelesen (ein Unsinn darin lehnt nicht ab, die Prüfung auf dasselbe Konto entfällt). Datum, Steuerdatum und Empfänger folgen der
+    Bankbewegung wie bei jedem Satz (``_follow_bank``). Keine Ablehnung: Gespeichert bleibt, was gespeichert ist. Das Entfernen der Zeile gilt wie bei jedem Satz – die ganze
+    Zuordnung geht mit (siehe unten).
+
     Erst werden ALLE Zeilen gelesen und geprüft, dann geschrieben: Eine ungültige
     Zahl in einer späteren Zeile bricht ab, bevor eine frühere gespeichert ist. Das
     gilt auch für die Zeilen, die der Nutzer entfernt hat: Würde dabei die Zahlung einer
@@ -665,6 +680,8 @@ def _plan_split_rows(db, bank_id, post_data, account_coa_id, date, date_tax,
     Geplant wird in ``Database.save_bank_with_rows``, innerhalb der Schreibsperre und
     vor dem ersten Schreiben: Die Prüfung dort ist die maßgebliche, der Stand ändert
     sich bis zum Schreiben nicht mehr.
+
+    Alle Feldlisten einer Zeile haben so viele Einträge wie ``split_amount`` (eine fehlende oder leere Liste ausgenommen): Eine andere Länge ist ``_Refused(INVALID_REQUEST)``, bevor eine Zeile gelesen ist.
 
     Das Feld ``split_loaded`` nennt die Sätze, die die Maske beim Öffnen gezeigt hat (``_loaded_split_ids``): Hängt unter der Bankbewegung
     inzwischen einer, den sie nie gesehen hat (ein zweites Fenster hat eine Zahlung zugeordnet, der Import oder der Abgleich hat einen
@@ -683,6 +700,10 @@ def _plan_split_rows(db, bank_id, post_data, account_coa_id, date, date_tax,
     def _at(seq, i, default=''):
         return seq[i] if i < len(seq) else default
 
+    # Gelesen wird über den Index: Jede mitgeschickte Liste muss so lang sein wie die der Beträge – sonst gehörten Felder zu der falschen Zeile. Eine ganz fehlende oder leere Liste bleibt erlaubt (ältere
+    # Aufrufer schicken manche Felder nicht, ``_at`` nimmt dann den Vorgabewert).
+    if any(values and len(values) != len(amounts) for values in (ids, coas, texts, docnrs, counters, rates, tax_amounts)):
+        raise _Refused(INVALID_REQUEST)
     loaded = _loaded_split_ids(post_data)         # ein ungültiges Feld lehnt ab, bevor eine Zeile gelesen ist – auch bei einer neuen Bewegung
     bank_coa_ids = db.get_bank_coa_ids()
     payment_coa_ids = db.get_payment_coa_ids()
@@ -706,9 +727,16 @@ def _plan_split_rows(db, bank_id, post_data, account_coa_id, date, date_tax,
                                        [(i + 1, _at(ids, i).strip()) for i in lines if _at(ids, i).strip()])
     planned = []
     for i in lines:
+        rid, old_row = booking_rows.get(i + 1, (None, None))
+        if old_row and rid in existing_by_id and old_row[19] == PAYMENT_MARK:       # 19 = Status
+            # Satz einer Rechnungszahlung oder Erstattung (die Marke aus dem gespeicherten Stand): Der Editor schreibt von ihm nur Datum, Steuerdatum und Empfänger – nichts von
+            # dem, was die Zeile zeigt, und er liest es auch nicht. Keine Ablehnung: Gespeichert bleibt, was gespeichert ist.
+            fields = dict(date_booking=date, date_tax=date_tax, recipient_client=recipient)
+            _follow_bank(fields, old_row, bank_row)
+            planned.append((rid, fields, False))
+            continue
         raw_amount = _at(amounts, i).strip()
         raw_coa = _at(coas, i).strip()
-        rid, old_row = booking_rows.get(i + 1, (None, None))
         sent_rate = _at(rates, i, None)   # None: das Formular bringt das Feld gar nicht mit
         sent_tax = _at(tax_amounts, i, None)
         row_rate = (sent_rate or '').strip()
@@ -789,12 +817,8 @@ def _plan_split_rows(db, bank_id, post_data, account_coa_id, date, date_tax,
             for name in ('date_booking', 'date_tax', 'recipient_client', 'currency'):
                 del fields[name]
         elif old_row:
-            # Satz unter dieser Bankbewegung: Datum, Steuerdatum und Empfänger folgen ihrer Änderung nur,
-            # wenn er den Wert mit ihr geteilt hat (derselbe wie bis jetzt, leer = leer). Hat er einen
-            # eigenen – eine zugeordnete Bestandsbuchung, ein verknüpfter Beleg –, bleibt der, je Feld.
-            for name, column in (('date_booking', 1), ('date_tax', 2), ('recipient_client', 6)):
-                if (old_row[column] or None) != (bank_row[column] or None):
-                    del fields[name]
+            # Satz unter dieser Bankbewegung: Datum, Steuerdatum und Empfänger folgen ihrer Änderung nur, wenn er den Wert mit ihr geteilt hat
+            _follow_bank(fields, old_row, bank_row)
         if old_row:
             # Text und Beleg-Nr. schreibt der Editor nur, wenn die Zeile sie geändert hat (leer und NULL sind
             # dasselbe): Ein Satz, den man zuordnet und wieder löst, soll in jeder Spalte so dastehen wie vorher.
@@ -868,6 +892,11 @@ def _skonto_from_form(post_data):
 # ``/transactions/edit?id=<ID>&err=<dieser Satz mit dem Grund>`` – der Fehlerweg der Seite (``appMsg``). Platzhalter: der Grund der Zuordnung.
 PAYMENT_NOT_ASSIGNED = 'Die Buchung ist gespeichert, die Zahlung wurde aber nicht zugeordnet: {reason}'
 
+# Die Maske eines einzelnen Buchungssatzes (``/transactions/edit?id=<Satz>``) schreibt keinen Satz einer Rechnungszahlung oder Erstattung (Marke ``PAYMENT_MARK``): 400 mit diesem Satz, nichts gespeichert. Die Seite zeigt ihn
+# als Hinweis und lässt „Aktualisieren“ weg; der Buchungssatz-Editor der Bankbewegung sperrt dieselben Sätze (``_plan_split_rows``). Löschen (``handle_delete_transaction``) bleibt, wie es ist.
+PAYMENT_ROW_READONLY = ('Dieser Buchungssatz gehört zu einer Rechnungszahlung und lässt sich hier nicht ändern. '
+                        'Bitte die Zuordnung an der Rechnung entfernen und neu zuordnen.')
+
 
 def handle_add_transaction(db: Database, post_data):
     """Handle manual booking entry (insert or update)
@@ -876,6 +905,8 @@ def handle_add_transaction(db: Database, post_data):
     Bankzeile und alle Sätze – angelegt, geändert, zugeordnet, entfernt – gelingen gemeinsam oder gar nicht, und ins Replay-Log
     kommt erst etwas, wenn sie festgeschrieben sind. Eine Bankbewegung, der eine Rechnungszahlung oder Erstattung zugeordnet ist,
     behält Betrag, Bankkonto und Datum (``BankChangeRefused``): erst die Zuordnung an der Rechnung entfernen.
+
+    **Ein Satz einer Rechnungszahlung** (``Status`` = ``PAYMENT_MARK``) wird hier nie geschrieben: 400 ``PAYMENT_ROW_READONLY``, noch vor jedem Schreiben (der Editor der Bankbewegung sperrt ihn ebenso).
 
     **Skonto (seit 2.9.0):** Das Feld ``skonto`` (der Haken „Rest als Skonto ausbuchen“, Wert ``1``) lässt die Zahlung die gewählte Rechnung mit Skonto schließen – streng gelesen
     (``_skonto_from_form``: fehlt = nein, sonst genau ``1``, alles andere 400). Eine NEUE Bewegung wird vor dem Anlegen geprüft (``_new_payment_problem`` → ``payment_precheck`` mit dem
@@ -958,6 +989,8 @@ def handle_add_transaction(db: Database, post_data):
                 # In einem anderen Fenster gelöscht: Sonst ginge die Eingabe kommentarlos verloren (303, nichts gespeichert)
                 return 400, 'Diese Buchung gibt es nicht (mehr). Bitte die Seite neu laden.'
             is_bank = existing[17] == 'bank'
+            if existing[19] == PAYMENT_MARK:                 # 19 = Status: ein Satz einer Rechnungszahlung – vor jedem Schreiben und vor der Rechnung des Formulars
+                return 400, PAYMENT_ROW_READONLY
 
             if has_split_rows and existing:
                 # Kontierung und Steuer der Bankzeile stammen bei aktivem
@@ -3362,7 +3395,7 @@ def _backfill_booking_skr(db, booking_id, invoice, revenue_coa_id):
                                contact_id=invoice[13], document_number=invoice[1])
 
 
-def link_booking_to_invoice_capped(db, invoice_id, booking_id, amount=None, revenue_coa_id=None, skonto=False):
+def link_booking_to_invoice_capped(db, invoice_id, booking_id, amount=None, revenue_coa_id=None, skonto=False, exact=False):
     """Buchung einer Rechnung als Zahlung zuordnen (idempotent, gekappt).
 
     Zuordnungsbetrag = min(gewünschter Betrag, offener Rechnungsrest, freier
@@ -3372,11 +3405,12 @@ def link_booking_to_invoice_capped(db, invoice_id, booking_id, amount=None, reve
     ``Database.assign_invoice_payment`` in einer Transaktion an. ``revenue_coa_id``: das
     Erlöskonto, das der Nutzer wählt, wenn für den Steuersatz keines hinterlegt ist (sonst
     ohne Wirkung). ``skonto``: Die Zahlung schließt die Rechnung mit Skonto (der Rest nach
-    der Zahlung wird als Skonto ausgebucht, siehe ``assign_invoice_payment``).
+    der Zahlung wird als Skonto ausgebucht, siehe ``assign_invoice_payment``). ``exact``: nur
+    genau ``amount`` (nicht gekappt: weniger ergäbe eine Ablehnung, ``PAYMENT_STATE_CHANGED``).
 
     Returns (True, None) bei Erfolg, sonst (False, Fehlermeldung).
     """
-    assignment = db.assign_invoice_payment(invoice_id, booking_id, amount, revenue_coa_id, skonto)
+    assignment = db.assign_invoice_payment(invoice_id, booking_id, amount, revenue_coa_id, skonto, exact)
     if not assignment.ok:
         return False, assignment.message
     try:
@@ -3402,6 +3436,11 @@ def handle_link_invoice_payment(post_body: bytes):
     „Ungültige Parameter“, nichts geschieht. Mit ``true`` schließt die Zahlung die Rechnung mit Skonto (``assign_invoice_payment(…, skonto=True)``: der Rest nach der Zahlung wird
     ausgebucht, die Regeln und ihre festen Sätze stehen dort). An einer Stornorechnung gibt es kein Skonto: ``true`` ist dort 400 ``SKONTO_REFUND``, bevor etwas geschrieben wird.
 
+    **Genau dieser Betrag (``exact``, 2.9.2):** ``exact`` – ebenfalls ein JSON-Wahrheitswert, fehlt es, ist es ``false``, alles andere ist 400 „Ungültige Parameter“ – gilt nur zusammen mit ``amount_paid``
+    (ohne Betrag 400 „Ungültige Parameter“) und nie an einer Stornorechnung (dort ebenso 400, bevor etwas geschrieben wird). Mit ``true`` ordnet die Zuordnung genau ``amount_paid`` zu oder lehnt ab
+    (``PAYMENT_STATE_CHANGED``, 400, nichts geschrieben), wenn Rest der Rechnung oder freier Rest der Bewegung inzwischen kleiner sind: „Alle eindeutigen zuordnen“ auf der Seite *Buchungen* schickt so den
+    gezeigten Betrag. Die Zuordnung mit einem Klick auf „Zuordnen“ schickt es nie.
+
     Returns tuple: (status_code, message_or_path)
     """
     data = _json_request(post_body)
@@ -3412,8 +3451,10 @@ def handle_link_invoice_payment(post_body: bytes):
         amount_paid = None
     revenue_coa_id = _json_id(data, 'revenue_coa_id', missing=None)   # nur bei Wahl des Nutzers
     skonto = data.get('skonto', False)
+    exact = data.get('exact', False)
 
-    if not invoice_id or not transaction_id or not isinstance(skonto, bool):
+    if (not invoice_id or not transaction_id or not isinstance(skonto, bool) or not isinstance(exact, bool)
+            or (exact and amount_paid is None)):
         return 400, "Ungültige Parameter"
 
     db = Database()
@@ -3423,6 +3464,8 @@ def handle_link_invoice_payment(post_body: bytes):
         if is_storno_row(invoice):
             if skonto:
                 return 400, SKONTO_REFUND                  # eine Erstattung kennt kein Skonto; vor dem ersten Schreiben
+            if exact:
+                return 400, "Ungültige Parameter"          # und keinen „genau diesen Betrag“: Das ist der Weg der Übersicht der Zahlungseingänge
             refund = db.assign_storno_refund(invoice_id, transaction_id, amount_paid, revenue_coa_id)
             ok, err = refund.ok, refund.message
             if ok:
@@ -3433,7 +3476,7 @@ def handle_link_invoice_payment(post_body: bytes):
                     print(f"Error backfilling contact for booking {transaction_id}: {e}")
         else:
             ok, err = link_booking_to_invoice_capped(db, invoice_id, transaction_id,
-                                                     amount_paid, revenue_coa_id, skonto)
+                                                     amount_paid, revenue_coa_id, skonto, exact)
         if not ok:
             return 400, err
         return 200, f"/invoice/view?id={invoice_id}"

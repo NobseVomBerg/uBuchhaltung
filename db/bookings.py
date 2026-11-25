@@ -964,6 +964,20 @@ class BookingsMixin:
         finally:
             conn.close()
 
+    def payment_row_ids(self, booking_ids):
+        """Welche dieser Sätze tragen die Marke einer Rechnungszahlung oder Erstattung (``Status = PAYMENT_MARK``)? Returns die IDs als ``set``. Rein lesend. Der Buchungssatz-Editor zeigt
+        ihre Zeilen schreibgeschützt (``server.pages_transactions``); geschrieben wird so ein Satz im Editor nie (``server.handlers._plan_split_rows``, das die Marke aus dem
+        gespeicherten Stand liest). Die Tupelform von ``get_child_bookings_for_bank`` bleibt dafür, wie sie ist (positionsbasierte Leser)."""
+        ids = [int(booking_id) for booking_id in booking_ids]
+        if not ids:
+            return set()
+        conn = self._get_connection()
+        try:
+            return {row[0] for row in conn.execute(
+                f"SELECT ID FROM Bookings WHERE Status = ? AND ID IN ({','.join('?' * len(ids))})", [PAYMENT_MARK, *ids])}
+        finally:
+            conn.close()
+
     def _detachable_split_rows(self, conn, ids):
         """``detachable_split_rows`` auf der Verbindung ``conn`` (in deren Transaktion, wenn sie eine führt); ``ids`` sind
         ganze Zahlen."""
@@ -1033,7 +1047,9 @@ class BookingsMixin:
         """Die geplanten Buchungssätze einer Bankbewegung in der laufenden Transaktion ``tx`` schreiben. ``planned``: die Zeilen
         aus ``server.handlers._plan_split_rows`` – ``[(ID oder None, Felder, zuordnen)]``: eine neue Zeile (ID ``None``) wird
         angelegt, eine vorhandene Buchung mit ``zuordnen`` der Bankbewegung zugeordnet (``ParentBooking_ID``), jede andere nur
-        mit den Feldern des Editors geändert (``update_booking_fields``).
+        mit den Feldern des Editors geändert (``update_booking_fields``). Ein markierter Zahlungssatz kommt nur mit Datum, Steuerdatum
+        und Empfänger (oder ganz ohne Felder: dann schreibt ``update_booking_fields`` nichts); Konto, Gegenkonto und Steuersatz fasst
+        der Editor bei ihm nie an – Form und BU-Schlüssel bleiben deshalb, wie sie sind.
 
         Was der Nutzer entfernt hat (``_split_rows_dropped``), geht über ``_remove_split_row_in``: gelöscht, ein Satz aber, der
         nicht im Editor entstanden ist (Import, AfA-Buchung), nur von der Bankbewegung abgehängt. Alles auf ``tx.conn`` – hier darf

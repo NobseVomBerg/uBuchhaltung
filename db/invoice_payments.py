@@ -88,6 +88,8 @@ MOVE_MIXED_HINT = ('Die Zahlungen der stornierten Rechnung {number} ({amount}) b
 MOVE_NONE_HINT = 'Es wurden keine Zahlungen der stornierten Rechnung {number} übernommen.'
 MOVE_REFUNDED_HINT = '{amount} sind bereits erstattet und bleiben an der stornierten Rechnung.'
 PAYMENT_CHANGED_MESSAGE = 'Rechnung oder Bankbewegung wurde inzwischen geändert – bitte erneut versuchen.'
+# Die Ablehnung einer Zuordnung mit ``exact`` (2.9.2: „Alle eindeutigen zuordnen“): Der Betrag, der zugeordnet würde, ist nicht der angeforderte – der Stand, den die Seite zeigte, gilt nicht mehr
+PAYMENT_STATE_CHANGED = 'Der Stand hat sich geändert – bitte die Seite neu laden.'
 
 # Ein Beleg mit einem Steuersatz aus den Stammdaten (2.8.0), dessen Positionen ein eigenes Erlöskonto tragen (``InvoiceItems.RevenueCoaId``,
 # ``invoice_entry_accounts``): Der Umzug der Zahlungen auf die Ersatzrechnung unterbleibt wie bei ``MOVE_MIXED_HINT`` – er bucht mit dem Erlöskonto neu, das heute
@@ -1387,7 +1389,7 @@ class InvoicePaymentsMixin:
         return min(counts, key=lambda row: (-row[1], revenue[row[0]]))[0]
 
     # ── Zuordnen ─────────────────────────────────────────────────────────────
-    def assign_invoice_payment(self, invoice_id, booking_id, amount=None, revenue_coa_id=None, skonto=False):
+    def assign_invoice_payment(self, invoice_id, booking_id, amount=None, revenue_coa_id=None, skonto=False, exact=False):
         """Eine Bankbewegung (ganz oder teilweise) einer Rechnung als Zahlung zuordnen.
 
         Der Betrag ist min(Rest der Rechnung, freier Rest der Bewegung, ``amount``);
@@ -1432,10 +1434,16 @@ class InvoicePaymentsMixin:
         kein Konto angelegt, auch kein Skonto-Konto –, wenn die Rechnung kein Skonto vorsieht, mehrere Steuersätze oder einen Satz aus den Stammdaten trägt, ihr Kopfsatz kein Skonto-Konto
         hat (nur 19 %, 7 %, 0 % und § 19), nach der Zahlung kein Rest bleibt oder der Rest größer ist als das Skonto (feste Sätze ``SKONTO_*``).
 
+        **``exact=True``: nur genau der angeforderte Betrag** (braucht ``amount``, sonst ``ValueError``). Sonst kappt die Zuordnung auf den Rest der Rechnung und den freien Rest der Bewegung; mit ``exact``
+        lehnt ``_assign_in_tx`` IN der Transaktion ab, wenn der Betrag, der zugeordnet würde, nicht der angeforderte ist (``PAYMENT_STATE_CHANGED``, nichts geschrieben) – so ordnet „Alle eindeutigen
+        zuordnen“ nach einem veralteten Stand nie weniger zu, als der Kasten zeigte.
+
         Returns ``PaymentAssignment(ok, message, payment_id, revenue_coa_id)``; ``message`` ist
         bei einer Ablehnung ein Klartext für die Oberfläche, ``revenue_coa_id`` das Erlöskonto,
         auf das gebucht wurde.
         """
+        if exact and amount is None:
+            raise ValueError('exact braucht einen Betrag.')
         invoice = self.get_document(invoice_id, 'invoice')
         if invoice is None:
             return _refused('Rechnung nicht gefunden')
@@ -1479,10 +1487,10 @@ class InvoicePaymentsMixin:
 
         with self.transaction() as tx:
             tx.conn.execute('BEGIN IMMEDIATE')
-            result = self._assign_in_tx(tx, invoice_id, booking_id, requested, ctx)
+            result = self._assign_in_tx(tx, invoice_id, booking_id, requested, ctx, exact=exact)
         return result
 
-    def _assign_in_tx(self, tx, invoice_id, booking_id, requested, ctx, allow_cancelled=False):
+    def _assign_in_tx(self, tx, invoice_id, booking_id, requested, ctx, allow_cancelled=False, exact=False):
         """Der Teil von ``assign_invoice_payment``, der in einer Transaktion läuft: prüfen, die Zuordnung und
         ihre Buchungssätze schreiben, die Rechnung neu rechnen. ``tx`` hat die Schreibsperre schon (``BEGIN
         IMMEDIATE`` – der Aufrufer holt sie); der Baustein committet nie. Er wird vom Umzug der Zahlungen beim
@@ -1500,6 +1508,8 @@ class InvoicePaymentsMixin:
         Schlüssel bucht wie immer.
         ``allow_cancelled``: Auch eine stornierte Rechnung (mit positivem Betrag, keine
         Stornorechnung) nimmt die Zuordnung an – nur für den Rest, der beim Umzug an der stornierten Rechnung bleibt.
+        ``exact``: ``requested`` ist ein Betrag, der genau so zugeordnet werden muss – würde am frisch gelesenen Stand weniger zugeordnet (Rest der Rechnung oder freier Rest der Bewegung sind
+        kleiner), lehnt der Baustein mit ``PAYMENT_STATE_CHANGED`` ab, vor dem ersten Schreiben.
 
         **Das Kennzeichen des Belegs und der Kontext müssen zusammenpassen:** Trägt der Beleg ``MixedTaxRates`` = 1, braucht der Kontext
         ``mixed`` – sonst (ein Kontext von Neuaufbau oder Umzug, die so einen Beleg nicht je Satz buchen, oder ein Beleg, der inzwischen gekennzeichnet
@@ -1548,6 +1558,8 @@ class InvoicePaymentsMixin:
         alloc = min(due, free, due if requested is None else requested)
         if alloc <= 0:
             return _refused(NOTHING_TO_ASSIGN_MESSAGE)
+        if exact and alloc != requested:
+            return _refused(PAYMENT_STATE_CHANGED)
         if ctx.get('mixed'):
             return self._assign_mixed(tx, invoice_id, booking_id, number, customer_id, bank, alloc, ctx)
 

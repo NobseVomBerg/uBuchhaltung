@@ -9,7 +9,7 @@ genau den angezeigten Werten abgeschickt (wie der Browser es tut), und danach si
 Buchungen** wie vorher:
 
 * jede Bankbewegung im Buchungssatz-Editor,
-* jeder Buchungssatz in der Buchungsmaske,
+* jeder Buchungssatz in der Buchungsmaske (der Satz einer Rechnungszahlung wird abgelehnt: 400, nichts geändert),
 * „vorhandene Buchung zuordnen“ (Konten, Betrag und Form der Buchung bleiben; jede andere Spalte –
   Steuer, Datum, Steuerdatum, Empfänger, Text, Beleg-Nr., Kategorie, Quellgruppe – ebenso, auch beim
   zweiten Speichern) und die Zeile wieder entfernen (eine importierte oder AfA-Buchung wird nur gelöst und ist
@@ -30,7 +30,9 @@ from decimal import Decimal
 import pytest
 
 from db import Database, _CoreMixin
+from db.invoice_payments import PAYMENT_MARK
 from db.matching import MIRROR_FORMS
+from server.handlers import PAYMENT_ROW_READONLY, handle_add_transaction
 from tests import entry_form_world as world
 from tests.entry_form_roundtrip import (
     adopt_row, differences, drop_row, open_form, snapshot, submit,
@@ -161,20 +163,26 @@ def _restore_account(db, booking_id, account_id):
 
 
 def test_opening_and_saving_an_entry_in_the_mask_without_a_change_changes_nothing(bestand):
+    """Der Satz einer Rechnungszahlung (Marke) lässt sich in der Maske eines einzelnen Satzes nicht speichern: Sie lehnt ab (400 ``PAYMENT_ROW_READONLY``) und schreibt nichts – dasselbe Ergebnis."""
     db = bestand
-    problems = []
+    problems, refused = [], 0
     for step in STEPS:
         _change_accounts(db, step)
         for entry_id in _ids(db, 'entry'):
             before = snapshot(db)
             post, _options = open_form(db, entry_id)
-            submit(db, post)
+            if before[entry_id]['Status'] == PAYMENT_MARK:
+                assert handle_add_transaction(db, post) == (400, PAYMENT_ROW_READONLY)
+                refused += 1
+            else:
+                submit(db, post)
             for line in differences(before, snapshot(db), _names(db), ignore=MASK_SETS_ACCOUNT):
                 problems.append(f'[{step}] Satz {entry_id}: {line}')
             _restore_account(db, entry_id, before[entry_id]['Account_ID'])
         if problems:
             break
     assert not problems, '\n'.join(problems[:20])
+    assert refused                                    # der Bestand trägt Zahlungssätze: Der Zweig der Ablehnung lief
 
 
 # ── „vorhandene Buchung zuordnen“ und wieder entfernen ────────────────────────
