@@ -124,7 +124,7 @@ Anmeldung). Vorher eine Datensicherung anlegen – Ablauf und Rückweg unter
 | Bereich | Was drin ist |
 |---|---|
 | **Buchen** | Bankbewegungen und Buchungssätze, Split-Buchungen, Kontierungs-Vorschlag aus der Historie, Belege verknüpfen. Zu einem Zahlungseingang schlägt die App die passende offene Rechnung vor – zugeordnet wird erst auf Klick |
-| **Belege** | Dateien hochladen, ansehen und mit Buchungen verknüpfen. E-Rechnungen (XRechnung, ZUGFeRD) werden strukturiert gelesen, PDFs mit Textebene über feste Regeln; dazu Vorschläge für die passende Bankbewegung – verknüpft wird erst auf Klick. Keine Texterkennung für Scans und Fotos; gelesene Werte sind zu prüfen |
+| **Belege** | Dateien hochladen, ansehen und mit Buchungen verknüpfen. E-Rechnungen (XRechnung, ZUGFeRD) werden strukturiert gelesen, PDFs mit Textebene über feste Regeln; dazu Vorschläge für die passende Bankbewegung – verknüpft wird erst auf Klick – und eine aus der Lesung vorbefüllte Zeile im Buchungssatz-Editor – gespeichert erst mit der Maske. Keine Texterkennung für Scans und Fotos; gelesene Werte sind zu prüfen |
 | **Kontenrahmen** | SKR04 vorbelegt, eigene Konten (auch weiterer Rahmen wie SKR03) anlegbar, DATEV-Steuerschlüssel |
 | **Auswertung** | Dashboard mit Monatsverlauf, Einnahmen-Überschuss-Rechnung (EÜR), betriebswirtschaftliche Auswertung, Summen- und Saldenliste und Liquiditätsrechnung – als Seite und PDF, die BWA und die Summen- und Saldenliste auch als CSV |
 | **Rechnungen & Angebote** | PDF als hybride E-Rechnung (ZUGFeRD/Factur-X, EN 16931) und XRechnung, Steuersatz je Position, E-Mail-Versand, Nummernkreise, Stornorechnung, offene Posten, Mahnwesen, Kleinunternehmerregelung |
@@ -224,6 +224,10 @@ Jede Funktion mit ihrer Seite im Browser. Die Regeln hinter den Funktionen stehe
   [PARSER_README.md](PARSER_README.md), [`docs/regeln/import.md`](docs/regeln/import.md)
 - **Vorschlag** (🪄): kontiert eine offene Buchung aus der Historie desselben Empfängers (Konto, Steuersatz, nächste Beleg-Nr.); gespeichert
   wird erst beim Speichern.
+- **Als Buchungssatz** (am verknüpften Beleg einer Bankbewegung ohne Buchungssätze): trägt aus der Lesung des Belegs eine Zeile in den leeren
+  Buchungssatz-Editor ein – den Betrag der Bankbewegung, Steuersatz und -betrag nur bei einem Satz, dessen Proben stimmen, das Konto nur, wenn
+  frühere Buchungen desselben Empfängers oder zu Belegen mit derselben USt-IdNr. sich einig sind. Gespeichert wird erst mit „Aktualisieren“.
+  Grenzen: nur gleicher Betrag auf den Cent (kein Skonto, keine Teilzahlung), nur ein Steuersatz je Beleg, nur Euro; die gelesenen Werte sind zu prüfen.
 - Belege in der Maske suchen, zuordnen, ansehen und lösen.
 - Regeln: [`docs/regeln/buchungen.md`](docs/regeln/buchungen.md)
 

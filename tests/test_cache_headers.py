@@ -175,6 +175,8 @@ NEVER_STORED = [
     pytest.param('/receipts/file?id=99999', 404, id='Beleg-fehlt'),
     pytest.param('/receipts/search?q=x', 200, id='Belegsuche'),
     pytest.param('/transactions/search?q=x', 200, id='Buchungssuche'),
+    pytest.param('/transactions/receipt-proposal?id=99999&document=1', 404, id='Buchungsvorschlag-aus-einem-Beleg'),
+    pytest.param('/transactions/suggest?id=0&recipient=x', 200, id='Vorschlag-aus-der-Historie'),
 ]
 
 
@@ -195,7 +197,8 @@ def test_a_search_for_an_extension_is_never_stored(server_port, books, path):
 
 
 @pytest.mark.parametrize('path', [
-    '/backup/download?file=fehlt.zip', '/receipts/file?id=99999', '/receipts/search?q=x', '/transactions/search?q=x'])
+    '/backup/download?file=fehlt.zip', '/receipts/file?id=99999', '/receipts/search?q=x', '/transactions/search?q=x',
+    '/transactions/receipt-proposal?id=99999&document=1', '/transactions/suggest?id=0&recipient=x'])
 def test_a_refusal_for_a_foreign_origin_is_never_stored_either(server_port, books, path):
     resp = get(server_port, path, {'Origin': FOREIGN_ORIGIN})
     assert resp.status == 403
@@ -324,6 +327,7 @@ def test_a_cache_control_in_the_headers_of_respond_stays_the_only_one():
 @pytest.mark.parametrize('path, expected', [
     ('/about', 'no-cache'), ('/dashboard?x=.png', 'no-cache'), ('/receipts/file?id=1&x=.png', 'no-store'),
     ('/backup/download', 'no-store'), ('/transactions/search?q=.png', 'no-store'),
+    ('/transactions/receipt-proposal?id=1&document=1&x=.png', 'no-store'), ('/transactions/suggest?id=1&x=.png', 'no-store'),
     pytest.param(None, 'no-cache', id='kaputte-Anfragezeile-ohne-Adresse')])
 def test_without_one_of_its_own_the_handler_gets_the_one_of_its_route(path, expected):
     handler = bare_handler(path)

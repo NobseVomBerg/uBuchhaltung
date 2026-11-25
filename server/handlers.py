@@ -7,6 +7,7 @@ POST request handlers for form submissions
 import os
 import json
 import math
+import dataclasses
 import hashlib
 import sqlite3
 import datetime
@@ -18,6 +19,7 @@ from typing import NamedTuple
 from urllib.parse import quote
 import auth
 import demo
+import receipt_reading
 import userctx
 from . import dirlock
 from . import receipt_files
@@ -33,6 +35,7 @@ from .richtext import sanitize_richtext as _sanitize_richtext
 from .upload_handler import STATEMENTS_DEMO_REFUSED
 from db import Database
 from db import datev_keys
+from db import receipt_proposal
 from importers.base import DETAIL_FIELDS
 from db.bookings import RELATION_DEFAULT, RELATION_TYPES, LinkRefused
 from db.contacts import VAT_METHOD_ERROR, ContactRefused, vat_method
@@ -457,6 +460,10 @@ def handle_confirm_import(db: Database, post_data):
         traceback.print_exc()                       # der volle Fehler nur ins Server-Log, nie in die Antwort
         return 500, json.dumps({'ok': False, 'error': 'Der Import ist fehlgeschlagen. Einzelheiten stehen im Server-Log.'})
 
+SUGGEST_RECIPIENT_MAX = 300
+SUGGEST_RECIPIENT_TOO_LONG = f'Der Empfänger ist zu lang (höchstens {SUGGEST_RECIPIENT_MAX} Zeichen).'
+
+
 def handle_transaction_suggest(db: Database, qs: dict):
     """Kontierungs-Vorschlag für eine offene Buchung (todo #1).
 
@@ -467,12 +474,18 @@ def handle_transaction_suggest(db: Database, qs: dict):
 
     War die Vorlage ein Split, kommen alle Teilbuchungen mit; die Maske fragt
     dann nach, ob sie übernommen werden sollen.
+
+    Der Empfänger aus der Adresse darf höchstens ``SUGGEST_RECIPIENT_MAX`` Zeichen lang
+    sein (ohne Leerraum am Rand), sonst 400 mit ``{"ok": false, "message": …}`` – so liest die Maske
+    ihre Antwort. Die ID kommt von ``app._id_param`` (``-1``: fehlt oder ungültig).
     """
     try:
         booking_id = int(qs.get('id', ['0'])[0] or 0)
     except (TypeError, ValueError):
         booking_id = 0
     recipient = (qs.get('recipient', [''])[0] or '').strip()
+    if len(recipient) > SUGGEST_RECIPIENT_MAX:
+        return 400, json.dumps({'ok': False, 'message': SUGGEST_RECIPIENT_TOO_LONG})
     booking = db.get_booking_by_id(booking_id) if booking_id else None
     if not recipient and booking:
         recipient = booking[6] or ''
@@ -3220,6 +3233,51 @@ def handle_receipt_suggestions(db, document_id):
         import traceback
         traceback.print_exc()                       # der volle Fehler nur ins Server-Log, nie in die Antwort
         return 500, json.dumps({'success': False, 'error': receipt_links.SUGGEST_FAILED})
+
+
+def handle_receipt_proposal(db, booking_id, document_id):
+    """Der Buchungsvorschlag aus einem gelesenen Beleg (``GET /transactions/receipt-proposal?id=<Bankbewegung>&document=<Beleg>``), rein lesend – die Antwort füllt nur eine NEUE Zeile des
+    Buchungssatz-Editors im Browser; gespeichert wird allein mit der Maske. ``booking_id`` und ``document_id``: die IDs aus der Adresse (``_id_param``: fehlt eine oder ist sie
+    ungültig, gilt ``-1``, also wie jede unbekannte ID).
+
+    Keine Bankbewegung: 404 ``PROPOSAL_NO_BANK`` (zuerst, damit jede ungültige ``id`` dieselbe Antwort sieht); kein Beleg: 404 ``receipt_files.NOT_FOUND``; der Beleg hängt nicht als ``receipt``
+    an dieser Bewegung: 404 ``PROPOSAL_NOT_LINKED``. Sonst 200 ``{"success": true, "ok": …, "message": …, "reasons": […], "hints": […], "row": …}``
+    (``receipt_links.proposal_payload``): ``ok: false`` mit dem Satz der Ablehnung und ohne Zeile, wenn es keinen Vorschlag gibt (``receipt_proposal.proposal_refusal``); die Historie wird dann nicht
+    gelesen. Ein Konto, das im Kontenrahmen ausgeblendet ist, wird verworfen (``HINT_ACCOUNT_HIDDEN``): Der Editor böte es nicht an. Nie ein Absender, eine Rechnungsnummer, ein Dateiname,
+    ein Pfad oder ein Text des Belegs in der Antwort: ein unerwarteter Fehler ist 500 mit festem Satz, der Text steht nur im Server-Log.
+
+    Returns tuple: (status_code, json_body)
+    """
+    try:
+        inputs = db.receipt_proposal_inputs(booking_id, document_id)
+        if inputs['bank'] is None:
+            return 404, json.dumps({'success': False, 'error': receipt_links.PROPOSAL_NO_BANK})
+        if not inputs['document']:
+            return 404, json.dumps({'success': False, 'error': receipt_files.NOT_FOUND})
+        if not inputs['linked']:
+            return 404, json.dumps({'success': False, 'error': receipt_links.PROPOSAL_NOT_LINKED})
+        amount, currency, recipient = inputs['bank']
+        reading, has_children, version = inputs['reading'], inputs['has_children'], receipt_reading.READER_VERSION
+        recipient_groups, sender_groups = [], []
+        if receipt_proposal.proposal_refusal(reading, version, amount, currency, has_children) is None:
+            from export.einvoice_model import tax_id_kind
+            recipient_groups = db.recipient_history_groups(recipient, booking_id, receipt_proposal.HISTORY_DEPTH)
+            kind, vat_id = tax_id_kind(reading.get('SenderVatId'))
+            if kind == 'vat':
+                sender_groups = db.vat_history_groups(vat_id, document_id, booking_id, receipt_proposal.HISTORY_DEPTH)
+        proposal = receipt_proposal.build_proposal(reading, version, amount, currency, has_children, recipient_groups, sender_groups)
+        if proposal.coa_id is not None:
+            shown = {account[0] for account in db.fetch_chart_of_accounts() if (account[7] if len(account) > 7 else 1)}
+            if proposal.coa_id not in shown:
+                account_reasons = (receipt_proposal.REASON_ACCOUNT_RECIPIENT, receipt_proposal.REASON_ACCOUNT_SENDER)
+                proposal = dataclasses.replace(
+                    proposal, coa_id=None, reasons=tuple(reason for reason in proposal.reasons if reason not in account_reasons),
+                    hints=proposal.hints + (receipt_proposal.HINT_ACCOUNT_HIDDEN,))
+        return 200, json.dumps({'success': True, **receipt_links.proposal_payload(proposal)})
+    except Exception:
+        import traceback
+        traceback.print_exc()                       # der volle Fehler nur ins Server-Log, nie in die Antwort
+        return 500, json.dumps({'success': False, 'error': receipt_links.PROPOSAL_FAILED})
 
 
 def handle_update_invoice_status(post_body: bytes):

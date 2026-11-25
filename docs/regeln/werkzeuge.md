@@ -5,7 +5,7 @@
 - Nur Standardbibliothek, stdio; fragt eine laufende Instanz per HTTP ab.
 - **Lesend per Konstruktion:** genau ein SELECT ohne `;` über `/execute_sql` (ohne `write`, also Lesemodus der Konsole – der Wächter bleibt die erste Schicht), nur lesende `pragma_`-Funktionen (`_READ_PRAGMAS`),
   kein WITH/RECURSIVE/zeroblob/randomblob; Seiten nur aus `_PAGE_ALLOWLIST` samt erlaubten Query-Schlüsseln. Lesewächter (`check_select`, `check_page_path`) nicht aufweichen; neue Seiten/Schlüssel nur für GET-Handler, die nichts schreiben (Nachweis im Test).
-- Bewusst nicht in der Positivliste: `/backup/download` (ganzer Datenbestand), `/receipts/search`, `/transactions/search`, `/receipts/suggestions` (JSON-Suchen/Vorschläge), `/receipts/read` (POST, schreibt die Lesung),
+- Bewusst nicht in der Positivliste: `/backup/download` (ganzer Datenbestand), `/receipts/search`, `/transactions/search`, `/receipts/suggestions`, `/transactions/receipt-proposal`, `/transactions/suggest` (JSON-Suchen/Vorschläge), `/receipts/read` (POST, schreibt die Lesung),
   `/bwa/pdf`, `/bwa/csv`, `/euer/pdf`, `/susa/pdf`, `/susa/csv`, `/liquiditaet/pdf` (Dokumente).
 - Zugangsdaten aus Windows-Anmeldeinformationsverwaltung, keyring oder Umgebung, nie im Repo; über `http://` nur an den eigenen Rechner, sonst nur mit `UBUCHHALTUNG_MCP_ALLOW_HTTP`.
   Registrierung nur lokal (`claude mcp add --scope local`), Einrichtung in `DEPLOYMENT.md`.

@@ -402,14 +402,17 @@ _POST_ONLY_JSON_PATHS = frozenset({
     "/receipts/read",
 })
 
-# Die Suchen der Belege und Buchungen (2.5.12) und die Vorschläge zu einem Beleg (2.6.0, `handlers.handle_receipt_suggestions`): GET,
+# Die Suchen der Belege und Buchungen (2.5.12), die Vorschläge zu einem Beleg (2.6.0, `handlers.handle_receipt_suggestions`), der Buchungsvorschlag
+# aus einem Beleg (2.10.1, `handlers.handle_receipt_proposal`) und der Vorschlag aus der Historie (🪄, `handlers.handle_transaction_suggest`): GET,
 # rein lesend, JSON-Antwort – kein Seiteneffekt, aber die Seiten lesen JSON, also kommt auch die 503 während einer Wiederherstellung
-# als JSON (`_JSON_ANSWER_ROUTES`). Alle drei antworten nur auf Anfragen der eigenen Seiten (Herkunftsprüfung in `do_GET`) und nie aus
+# als JSON (`_JSON_ANSWER_ROUTES`). Alle antworten nur auf Anfragen der eigenen Seiten (Herkunftsprüfung in `do_GET`) und nie aus
 # einem Cache (`end_headers`).
 _SEARCH_PATHS = frozenset({
     "/receipts/search",
     "/receipts/suggestions",
+    "/transactions/receipt-proposal",
     "/transactions/search",
+    "/transactions/suggest",
 })
 
 # Uploads mit eigener Prüfung vor dem ersten gelesenen Byte: nur per POST (GET → 405), JSON-Antwort, CSRF-Token als Header.
@@ -1693,12 +1696,21 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             elif route in _SEARCH_PATHS:
                 # Rein lesend, aber mit Herkunftsprüfung wie die Datei eines Belegs: die Treffer sind Daten des Benutzers
                 suggestions = route == "/receipts/suggestions"
+                proposal = route == "/transactions/receipt-proposal"
+                history = route == "/transactions/suggest"
                 if not request_is_same_origin(self.headers):
-                    self._respond_json(403, {'success': False, 'error': receipt_links.SUGGEST_FOREIGN if suggestions
+                    self._respond_json(403, {'success': False, 'error': receipt_links.SUGGEST_FOREIGN if suggestions or proposal or history
                                              else receipt_links.SEARCH_FOREIGN})
                     return
                 if suggestions:
                     status_code, body = handlers.handle_receipt_suggestions(db, _id_param(self._query()))
+                elif proposal:
+                    qs = self._query()
+                    status_code, body = handlers.handle_receipt_proposal(db, _id_param(qs), _id_param(qs, 'document'))
+                elif history:
+                    qs = self._query()
+                    # Die ID wie überall über `_id_param` (fehlt sie oder ist sie ungültig: -1, also wie jede unbekannte); der Handler liest `id` aus der Adresse
+                    status_code, body = handlers.handle_transaction_suggest(db, {**qs, 'id': [str(_id_param(qs))]})
                 else:
                     search = handlers.handle_receipt_search if route == "/receipts/search" else handlers.handle_booking_search
                     status_code, body = search(db, self._query())
@@ -1721,10 +1733,6 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 self.respond(200, PageTransactions(db, edit_transaction_id=transaction_id,
                                                    date_from=date_from, date_to=date_to,
                                                    err=query_components.get("err", [None])[0]))
-            elif self.path.startswith("/transactions/suggest"):
-                qs = parse_qs(self.path.split('?', 1)[1]) if '?' in self.path else {}
-                status_code, body = handlers.handle_transaction_suggest(db, qs)
-                self.respond(status_code, body, content_type="application/json")
             elif self.path == "/masterdata/numberranges" or self.path.startswith("/masterdata/numberranges?"):
                 qs = parse_qs(self.path.split('?', 1)[1]) if '?' in self.path else {}
                 self.respond(200, PageNumberRanges(db, err=qs.get('err', [None])[0]))

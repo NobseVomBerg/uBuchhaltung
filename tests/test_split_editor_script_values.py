@@ -64,8 +64,8 @@ def bank_booking(db, text, docnumber, amount=119.00):
 def editor_block(page):
     """Der Skriptblock des Editors aus einer Seite, so wie ein Browser die Blöcke zerlegt (ein ``</script>`` im Wert beendet dort den Block): genau EINER trägt die Variablen,
     und er ist vollständig – bis zur Summenzeile am Ende."""
-    blocks = [block for block in Dom(page).scripts if 'SPLIT_BANK_TEXT' in block]
-    assert len(blocks) == 1, f'{len(blocks)} Blöcke mit SPLIT_BANK_TEXT'
+    blocks = [block for block in Dom(page).scripts if 'var SPLIT_BANK_TEXT = ' in block]       # der Block, der ihn setzt: ``txPropose`` (Belege) liest ihn nur
+    assert len(blocks) == 1, f'{len(blocks)} Blöcke mit var SPLIT_BANK_TEXT'
     block = blocks[0]
     assert 'function splitAdopt()' in block and block.rstrip().endswith('splitRecalc();'), 'der Block des Editors ist abgeschnitten'
     return block

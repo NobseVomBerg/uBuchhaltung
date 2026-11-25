@@ -565,7 +565,7 @@ console.log(JSON.stringify(calls));
 
 
 def run_remove(db, bank, row, confirm):
-    blocks = [block for block in Dom(PageTransactions(db, edit_transaction_id=bank)).scripts if 'SPLIT_BANK_TEXT' in block]
+    blocks = [block for block in Dom(PageTransactions(db, edit_transaction_id=bank)).scripts if 'var SPLIT_BANK_TEXT = ' in block]       # der Block, der ihn setzt: ``txPropose`` liest ihn aus einem anderen
     assert len(blocks) == 1
     done = subprocess.run([NODE, '-e', REMOVE_HARNESS], input=json.dumps({'source': blocks[0], 'row': row, 'confirm': confirm}), capture_output=True, text=True,
                           encoding='utf-8', timeout=60)
