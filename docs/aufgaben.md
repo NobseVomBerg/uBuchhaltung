@@ -26,9 +26,9 @@ steht in `git log`. Eine Zeile je Punkt; Details gehören in Commit, Issue oder 
 - Belegerkennung: Texterkennung (OCR) für gescannte PDFs und Fotos – eine Datei ohne Textebene ist „nicht lesbar (kein Text)“
 - Belegerkennung: ein lokales Sprachmodell als optionaler Nachleser für nicht eindeutig gelesene Belege (standardmäßig aus; die Lesung bliebe ein Vorschlag mit Herkunft)
 - Belegerkennung: den gelesenen Absender (Name, USt-IdNr.) einem Kontakt zuordnen – als Vorschlag, übernommen erst auf Klick
-- Belegerkennung: aus einer Lesung einen Buchungssatz vorschlagen (Konto, Steuersatz, Betrag), gespeichert erst im Editor
 - Belegerkennung: Vorschläge auch in der Gegenrichtung – an einer Buchung die passenden gelesenen Belege nennen
-- Belegerkennung, Vorschläge: die Abweichung zwischen Zahlbetrag und Brutto berücksichtigen (Skonto, Valuta) – heute zählt nur der gleiche Betrag auf den Cent
+- Belegerkennung, Vorschläge und Buchungsvorschlag: die Abweichung zwischen Zahlbetrag und Brutto berücksichtigen (Skonto, Teilzahlung, Valuta) und eine Sammelüberweisung mehrerer Belege – heute zählt nur der gleiche Betrag auf den Cent
+- Belegerkennung, Buchungsvorschlag: Belege mit mehreren Steuersätzen (je Satz eine Zeile – braucht die Basis je Satz), auch für eigenständige Sätze und neue Buchungen, Konto über den exakten Absendernamen
 - Umsatzsteuer-Voranmeldung (ELSTER)
 - Liquiditätsrechnung: einen unstimmigen Split neben einem Übertrag kenntlich machen – sein Rest steht nur nachrichtlich unter den Überträgen
 - BWA: vom Nutzer pflegbare Gruppen (braucht Schemaänderung)

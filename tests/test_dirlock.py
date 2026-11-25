@@ -476,10 +476,13 @@ def test_a_post_of_a_page_that_reads_json_gets_a_json_503(server_port, auto_logi
     assert resp.will_close and resp.getheader('Connection') == 'close'
 
 
-@pytest.mark.parametrize('path', ['/receipts/search?q=a', '/transactions/search?q=a', '/receipts/suggestions?id={receipt}'])
-def test_a_search_of_a_page_gets_a_json_503_while_the_directory_is_restored(server_port, auto_login, path):
-    """Die Suchen der Belege und Buchungen (seit 2.5.12) und die Vorschläge zu einem Beleg (seit 2.6.0) sind GET, aber die Seiten lesen JSON
-    (``success``/``error``): Auch die 503 trägt es – ein Klartext ergäbe dort „kein JSON“."""
+@pytest.mark.parametrize('path, after', [
+    ('/receipts/search?q=a', 200), ('/transactions/search?q=a', 200), ('/receipts/suggestions?id={receipt}', 200),
+    ('/transactions/suggest?id=0&recipient=x', 200), ('/transactions/receipt-proposal?id=999999&document={receipt}', 404)])
+def test_a_search_of_a_page_gets_a_json_503_while_the_directory_is_restored(server_port, auto_login, path, after):
+    """Die Suchen der Belege und Buchungen (seit 2.5.12), die Vorschläge zu einem Beleg (seit 2.6.0) und der Buchungsvorschlag aus einem Beleg
+    (seit 2.10.1) sind GET, aber die Seiten lesen JSON (``success``/``error``): Auch die 503 trägt es – ein Klartext ergäbe dort „kein JSON“.
+    Nach der Sperre antwortet die Route wieder (``after``; der Buchungsvorschlag kennt die Bankbewegung nicht und antwortet mit einer 404, als JSON)."""
     auto_login.db.insert_receipt('26B001', '2026-03-04', 'beleg.pdf', '', '')        # damit die Vorschläge nach der Sperre mit 200 antworten
     path = path.format(receipt=auto_login.db.fetch_receipts()[-1][0])
     with exclusive_held(admin_dir()):
@@ -488,7 +491,7 @@ def test_a_search_of_a_page_gets_a_json_503_while_the_directory_is_restored(serv
     assert json.loads(resp.text) == {'success': False, 'ok': False, 'error': dirlock.RESTORE_RUNNING,
                                      'errors': [dirlock.RESTORE_RUNNING]}
     assert resp.headers['Retry-After'] == '15'
-    assert get(server_port, path).status == 200                      # danach ist die Sperre frei, die Suche antwortet
+    assert get(server_port, path).status == after                    # danach ist die Sperre frei, die Suche antwortet
 
 
 def test_the_static_files_and_the_download_of_a_backup_are_served_during_a_restore(server_port, auto_login):

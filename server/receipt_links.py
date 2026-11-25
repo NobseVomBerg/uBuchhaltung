@@ -3,11 +3,12 @@
 # Kommerzielle Lizenz ohne AGPL-Pflichten verfügbar – Kontakt: office@unsix.com
 """Belege und Buchungen verknüpfen (seit 2.5.12): Suchbegriffe lesen, Treffer und verknüpfte Listen als JSON-Daten, das gemeinsame
 Skript der Seite eines Belegs und der Buchungsmaske – seit 2.6.0 dazu die Vorschläge zu einem gelesenen Beleg als JSON-Daten
-(``suggestions_payload``). Die Routen stehen in ``server/handlers.py``."""
+(``suggestions_payload``), seit 2.10.1 der Buchungsvorschlag aus einem Beleg (``proposal_payload``). Die Routen stehen in ``server/handlers.py``."""
 import re
-from money import fmt_eur, from_minor, parse_amount, to_minor
+from money import fmt_eur, format_plain, from_minor, parse_amount, to_minor
 from db.bookings import RELATION_LABELS
 from db.core import SEARCH_LIMIT_MAX
+from db.receipt_proposal import rate_percent_text
 from . import receipt_files
 
 SEARCH_MAX_LENGTH = 100
@@ -18,6 +19,9 @@ SEARCH_FAILED = 'Die Suche ist fehlgeschlagen – Einzelheiten stehen im Server-
 SEARCH_FOREIGN = 'Die Suche ist nur über die Seiten der App erreichbar.'
 SUGGEST_FAILED = 'Die Vorschläge konnten nicht gelesen werden – Einzelheiten stehen im Server-Log.'
 SUGGEST_FOREIGN = 'Die Vorschläge sind nur über die Seiten der App erreichbar.'
+PROPOSAL_NO_BANK = 'Die Bankbewegung wurde nicht gefunden.'
+PROPOSAL_NOT_LINKED = 'Dieser Beleg ist nicht mit dieser Bankbewegung verknüpft.'
+PROPOSAL_FAILED = 'Der Vorschlag konnte nicht gelesen werden – Einzelheiten stehen im Server-Log.'
 LINK_FAILED = 'Die Verknüpfung konnte nicht gespeichert werden. Einzelheiten stehen im Server-Log.'
 UNLINK_FAILED = 'Die Verknüpfung konnte nicht gelöst werden. Einzelheiten stehen im Server-Log.'
 KIND_LABELS = {'bank': 'Bankbewegung', 'child': 'Satz einer Bankbewegung', 'entry': 'Buchungssatz'}
@@ -98,6 +102,18 @@ def suggestions_payload(found):
     noch Text des Belegs steht darin. Dieselbe Form liefern die Route und die Seite des Belegs."""
     return [{'booking': booking_payload(candidate['row']), 'reasons': list(suggestion.reasons), 'linked': suggestion.linked}
             for suggestion, candidate in found]
+
+
+def proposal_payload(proposal):
+    """Der Buchungsvorschlag aus einem Beleg (``receipt_proposal.Proposal``) als JSON-Daten: ``ok``, ``message``, ``reasons`` und ``hints`` (feste Sätze) und ``row`` – ohne
+    Vorschlag ``None``, sonst die Felder der neuen Zeile des Editors als Text mit denselben Schlüsseln wie ``/transactions/suggest`` (``amount``, ``coa_id``, ``tax_rate``,
+    ``tax_amount``; was nicht vorgeschlagen wird, ist ``''``), damit dasselbe Skript sie nimmt. Der Betrag ist der der Bankbewegung, die Steuer hat das Vorzeichen des Betrags;
+    der Satz steht mit Punkt (``5.5``). Weder ein Wert des Belegs noch ein Pfad steht darin."""
+    row = None
+    if proposal.ok:
+        row = {'amount': format_plain(proposal.amount_minor), 'coa_id': proposal.coa_id or '', 'tax_rate': rate_percent_text(proposal.tax_rate),
+               'tax_amount': '' if proposal.tax_minor is None else format_plain(proposal.tax_minor)}
+    return {'ok': proposal.ok, 'message': proposal.message, 'reasons': list(proposal.reasons), 'hints': list(proposal.hints), 'row': row}
 
 
 def linked_documents(db, booking_id):

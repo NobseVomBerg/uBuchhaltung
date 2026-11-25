@@ -15,6 +15,7 @@ from db.matching import (
     purpose_in_counter, read_entry_form, reform,
 )
 from db.invoice_payments import PAYMENT_MARK, BankChangeRefused, PaymentRemovalRefused
+from db import receipt_proposal
 
 # Alle Verweise auf ``Bookings.ID`` im Schema als (Tabelle, Spalte) – das, was ``_delete_booking_rows`` mit einer Buchung
 # wegräumt (BookingDocuments, InvoicePayments), umbiegt (Assets, AssetDepreciations), was mit ihr per ``ON DELETE CASCADE``
@@ -35,6 +36,26 @@ RELATION_DEFAULT = 'receipt'
 RELATION_LABELS = {'receipt': 'Beleg', 'invoice': 'Rechnung', 'contract': 'Vertrag', 'other': 'Sonstiges'}
 BOOKING_GONE = 'Diese Buchung gibt es nicht (mehr). Bitte die Seite neu laden.'
 RECEIPT_GONE = 'Diesen Beleg gibt es nicht (mehr). Bitte die Seite neu laden.'
+
+# Die Historie eines Empfängers (``find_history_suggestion``, ``recipient_history_groups``): Treffer sind Zeilen mit einem Konto und einem Empfänger. Teilbuchungen
+# tragen den Empfänger nicht immer selbst – bei importierten Splits steht er nur an der Bankbewegung –, deshalb zählt ersatzweise der des Elternteils. Feste
+# Texte, nie mit Werten gebaut: Alle Werte gehen als Parameter hinein.
+_HISTORY_RECIPIENT = "COALESCE(NULLIF(b.RecipientClient, ''), p.RecipientClient, '')"
+_HISTORY_BASE = '''
+    SELECT b.ID, b.DateBooking,
+           COALESCE(NULLIF(b.RecipientClient, ''), p.RecipientClient),
+           b.ParentBooking_ID, b.BookingType
+    FROM Bookings b
+    LEFT JOIN Bookings p ON p.ID = b.ParentBooking_ID
+    WHERE b.COA_ID IS NOT NULL
+      AND COALESCE(NULLIF(b.RecipientClient, ''), p.RecipientClient, '') != ''
+      AND b.ID != ? AND COALESCE(b.ParentBooking_ID, -1) != ?
+'''
+# Die Sätze einer Gruppe der Historie: die Kinder einer Bankbewegung, sonst der Satz selbst (Platzhalter: die ID).
+_HISTORY_CHILDREN = ('SELECT COA_ID, CounterCOA_ID, Amount, TaxRate, TaxAmount, Text, DocumentNumber, EntryForm, Status '
+                     'FROM Bookings WHERE ParentBooking_ID = ? ORDER BY ID')
+_HISTORY_SINGLE = ('SELECT COA_ID, CounterCOA_ID, Amount, TaxRate, TaxAmount, Text, DocumentNumber, EntryForm, Status '
+                   'FROM Bookings WHERE ID = ?')
 
 
 class LinkRefused(ValueError):
@@ -512,8 +533,9 @@ class BookingsMixin:
 
         Returns dict oder None:
           {'source_id', 'date', 'recipient', 'is_split',
-           'rows': [{'coa_id', 'counter_coa_id', 'amount'€, 'tax_rate',
-                     'tax_amount'€, 'text', 'document_number'}]}
+           'rows': [{'coa_id', 'counter_coa_id', 'nobank', 'amount'€, 'tax_rate',
+                     'tax_amount'€, 'text', 'document_number', 'payment'}]}
+        ``payment``: der Satz trägt die Marke einer Rechnungszahlung (``PAYMENT_MARK``).
         """
         norm = ' '.join((recipient or '').split()).replace(' ', '').lower()
         if not norm:
@@ -522,34 +544,16 @@ class BookingsMixin:
         cursor = conn.cursor()
 
         exclude = exclude_booking_id or -1
-        # Teilbuchungen tragen den Empfänger nicht immer selbst – bei
-        # importierten Splits steht er nur an der Bankbewegung. Deshalb zählt
-        # ersatzweise der Empfänger des Elternteils.
-        base = '''
-            SELECT b.ID, b.DateBooking,
-                   COALESCE(NULLIF(b.RecipientClient, ''), p.RecipientClient),
-                   b.ParentBooking_ID, b.BookingType
-            FROM Bookings b
-            LEFT JOIN Bookings p ON p.ID = b.ParentBooking_ID
-            WHERE b.COA_ID IS NOT NULL
-              AND COALESCE(NULLIF(b.RecipientClient, ''), p.RecipientClient, '') != ''
-              AND b.ID != ? AND COALESCE(b.ParentBooking_ID, -1) != ?
-        '''
-        eff_recipient = ("COALESCE(NULLIF(b.RecipientClient, ''),"
-                         " p.RecipientClient, '')")
-        cursor.execute(base + f'''
-              AND LOWER(REPLACE({eff_recipient}, ' ', '')) = ?
-            ORDER BY b.DateBooking DESC, b.ID DESC LIMIT 1
-        ''', (exclude, exclude, norm))
-        hit = cursor.fetchone()
+        exact = self._history_exact_hits(cursor, norm, exclude, 1)
+        hit = exact[0] if exact else None
 
         if not hit:
             # Fallback: längstes Wort des Empfängers als Kern (>= 4 Zeichen)
             words = sorted((recipient or '').split(), key=len, reverse=True)
             token = next((w for w in words if len(w) >= 4), None)
             if token:
-                cursor.execute(base + f'''
-                      AND LOWER({eff_recipient}) LIKE ?
+                cursor.execute(_HISTORY_BASE + f'''
+                      AND LOWER({_HISTORY_RECIPIENT}) LIKE ?
                     ORDER BY b.DateBooking DESC, b.ID DESC LIMIT 1
                 ''', (exclude, exclude, f'%{token.lower()}%'))
                 hit = cursor.fetchone()
@@ -560,25 +564,40 @@ class BookingsMixin:
 
         hit_id, date, found_recipient, parent_id, booking_type = hit
         # Buchungssätze der Fundstelle: Split → alle Geschwister, sonst sie selbst
+        bank_coa_ids = self._get_bank_coa_ids(cursor)
+        group_id, rows = self._history_group_rows(cursor, hit_id, parent_id, booking_type, bank_coa_ids)
+        conn.close()
+        if not rows:
+            return None
+        return {'source_id': group_id, 'date': date,
+                'recipient': found_recipient, 'is_split': len(rows) > 1,
+                'rows': rows}
+
+    def _history_exact_hits(self, cursor, norm, exclude, limit):
+        """Die Zeilen mit einem Konto, deren Empfänger (ersatzweise der des Elternteils) nach Entfernen des Leerraums und ohne Rücksicht auf die Schreibweise
+        ``norm`` ist (kleingeschrieben, ohne Leerraum) – die jüngsten zuerst, höchstens ``limit``. Weder die Zeile ``exclude`` noch ihre Kinder. Kein Rückgriff
+        über Wörter: Das bleibt ``find_history_suggestion``. Returns Rohzeilen ``(ID, DateBooking, Empfänger, ParentBooking_ID, BookingType)``."""
+        cursor.execute(_HISTORY_BASE + f"""
+              AND LOWER(REPLACE({_HISTORY_RECIPIENT}, ' ', '')) = ?
+            ORDER BY b.DateBooking DESC, b.ID DESC LIMIT ?
+        """, (exclude, exclude, norm, limit))
+        return cursor.fetchall()
+
+    def _history_group_rows(self, cursor, hit_id, parent_id, booking_type, bank_coa_ids):
+        """Die Sätze der Gruppe, zu der eine Fundstelle der Historie gehört, als Zeilen für den Editor: bei einer Bankbewegung (oder einem Kind) die Kinder der
+        Bewegung, sonst der Satz selbst; reine Doppik-Spiegel entfallen. Returns ``(ID der Gruppe, Zeilen)`` – die ID ist die der Bankbewegung bzw. des
+        eigenständigen Satzes; die Zeilen können leer sein. Jede Zeile: ``coa_id`` (das Zweckkonto), ``counter_coa_id`` (nur bei einer Umbuchung), ``nobank``
+        (bewegt kein Geld auf dem Bankkonto), ``amount`` und ``tax_amount`` in Euro, ``tax_rate``, ``text``, ``document_number`` und ``payment`` (Marke einer
+        Rechnungszahlung). Liest nur auf ``cursor``."""
         group_parent = parent_id or (hit_id if booking_type == 'bank' else None)
         if group_parent:
-            cursor.execute('''
-                SELECT COA_ID, CounterCOA_ID, Amount, TaxRate, TaxAmount,
-                       Text, DocumentNumber, EntryForm
-                FROM Bookings WHERE ParentBooking_ID = ? ORDER BY ID
-            ''', (group_parent,))
+            cursor.execute(_HISTORY_CHILDREN, (group_parent,))
         else:
-            cursor.execute('''
-                SELECT COA_ID, CounterCOA_ID, Amount, TaxRate, TaxAmount,
-                       Text, DocumentNumber, EntryForm
-                FROM Bookings WHERE ID = ?
-            ''', (hit_id,))
+            cursor.execute(_HISTORY_SINGLE, (hit_id,))
         raw = cursor.fetchall()
-        bank_coa_ids = self._get_bank_coa_ids(cursor)
-        conn.close()
 
         rows = []
-        for coa, counter, amount, rate, tax, text, docnr, stored_form in raw:
+        for coa, counter, amount, rate, tax, text, docnr, stored_form, status in raw:
             if is_mirror_row(stored_form, coa, counter, bank_coa_ids):
                 continue                      # reiner Doppik-Spiegel
             # Geldkonto vorne („Bank an 1460“ eingeschlossen): das Zweckkonto steht hinten
@@ -597,12 +616,44 @@ class BookingsMixin:
                 'tax_amount': from_minor(tax) if tax is not None else None,
                 'text': text or '',
                 'document_number': docnr or '',
+                'payment': status == PAYMENT_MARK,
             })
-        if not rows:
-            return None
-        return {'source_id': group_parent or hit_id, 'date': date,
-                'recipient': found_recipient, 'is_split': len(rows) > 1,
-                'rows': rows}
+        return group_parent or hit_id, rows
+
+    def _history_groups(self, cursor, hits, depth):
+        """Fundstellen der Historie zu Gruppen zusammenfassen: ``hits`` sind ``(ID, ParentBooking_ID, BookingType)``, die jüngste zuerst. Eine Gruppe ist die
+        Bankbewegung mit ihren Sätzen oder ein eigenständiger Satz (``_history_group_rows``); jede kommt nur einmal vor, auch wenn mehrere Sätze sie treffen.
+        Returns die Zeilenlisten der ersten ``depth`` nicht leeren Gruppen, die jüngste zuerst. Liest nur auf ``cursor``."""
+        bank_coa_ids = self._get_bank_coa_ids(cursor)
+        seen, groups = set(), []
+        for hit_id, parent_id, booking_type in hits:
+            key = parent_id or hit_id
+            if key in seen:
+                continue
+            seen.add(key)
+            _group_id, rows = self._history_group_rows(cursor, hit_id, parent_id, booking_type, bank_coa_ids)
+            if rows:
+                groups.append(rows)
+                if len(groups) >= depth:
+                    break
+        return groups
+
+    def recipient_history_groups(self, recipient, exclude_booking_id, depth):
+        """Die Historie zu einem Empfänger als Gruppen von Zeilen (``_history_group_rows``), die jüngste zuerst, höchstens ``depth`` nicht leere – der
+        Stoff für ``receipt_proposal.steady_account``. Gesucht wird NUR exakt (Leerraum entfernt, ohne Rücksicht auf die Schreibweise, wie die erste Stufe von
+        ``find_history_suggestion``); den Rückgriff über das längste Wort gibt es hier nicht: kein Raten über Schlagworte. Die Buchung
+        ``exclude_booking_id`` und ihre Kinder zählen nicht (``None`` und 0: nichts ausgeschlossen). Gelesen werden höchstens ``receipt_proposal.HISTORY_SCAN``
+        Fundstellen. Ein leerer Empfänger ergibt ``[]``. Rein lesend."""
+        norm = ' '.join((recipient or '').split()).replace(' ', '').lower()
+        if not norm:
+            return []
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            hits = self._history_exact_hits(cursor, norm, exclude_booking_id or 0, receipt_proposal.HISTORY_SCAN)
+            return self._history_groups(cursor, [(hit[0], hit[3], hit[4]) for hit in hits], depth)
+        finally:
+            conn.close()
 
     def get_bookings_by_import_key(self, date, amount, account_id):
         """Buchungen zum Import-Duplikatschlüssel (Datum, Betrag, Konto).

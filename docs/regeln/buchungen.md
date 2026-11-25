@@ -118,3 +118,4 @@
     ohne „Aktualisieren“ und 🪄; Löschen aus der Liste bleibt.
   - Die Seite zeigt die Zeile gesperrt (`splitRow splitLocked`, Eingaben `readonly`, Konto `disabled` plus verstecktes `split_coa`: jede Zeile führt alle Felder, gelesen wird über den Index; Hinweis „Rechnungszahlung – hier nicht änderbar“). Die Marke kennt sie über `Database.payment_row_ids`, nicht über die Tupel von `get_child_bookings_for_bank`.
   - Skripte der Maske beschreiben eine gesperrte Zeile nie (🪄 ersetzt nur die änderbaren Zeilen), die Summenzeile rechnet sie mit. `tests/test_split_editor_payment_rows_locked.py`
+  - Der Vorschlag aus einem Beleg (`belege.md`) fügt nur in einen leeren Editor eine Zeile an (`suggestAppendRow`, dieselbe Stelle wie 🪄); er legt nichts auf dem Server an und löst nichts, daher kein Neuladen. `tests/test_receipt_proposal_route.py`

@@ -14,6 +14,7 @@ from db.matching import bank_effect, is_bank_effective, is_mirror_row, purpose_i
 from db.invoices import InvoiceCol
 from db.invoice_payments import PAYABLE_STATUSES, PAYMENT_MARK, has_mixed_rates
 from db.payment_matching import is_certain, reason_text
+from db.receipt_proposal import HINT_ACCOUNT_HIDDEN, REFUSE_HAS_ROWS
 from .handlers import PAYMENT_ROW_READONLY
 from .pages import Header1, Header2, Header3, Footer, script_json
 from .pages_invoice import SKONTO_JS, revenue_coa_choice, skonto_check_html
@@ -76,6 +77,10 @@ def _receivable_badge():
 # Belegs in das Feld Beleg-Nr. der Maske – aber nur in ein leeres. **Eine Antwort gehört zur geöffneten Buchung:** Die Maske wird beim
 # Öffnen einer anderen (oder neuen) Buchung ausgetauscht, ``#txReceipts`` trägt ``data-booking``; ``txStill(<ID beim Aufruf>)`` fragt, ob
 # die Maske noch dieselbe ist – sonst fasst die Antwort weder die Liste noch das Feld Beleg-Nr. noch die Meldung an.
+# ``TX_PROPOSE`` (Daten vor dem Skript: ``null`` oder die festen Texte des Knopfs, ``PROPOSE_TEXTS``) gibt es nur in der Maske einer Bankbewegung: Dort steht an
+# jedem Beleg der Art ``receipt`` der Knopf „Als Buchungssatz“. ``txPropose`` fragt ``/transactions/receipt-proposal`` und trägt die Antwort in eine NEUE Zeile
+# des leeren Editors ein (``suggestAppendRow``, aus dem Skript des Vorschlags) – nie in einen Editor mit Zeilen (vor der Anfrage und nach der Antwort geprüft), nie
+# als Speichern; der Text der Zeile ist der Verwendungszweck der Bankbewegung (``SPLIT_BANK_TEXT``), die Beleg-Nr. das Feld der Maske.
 TX_LINK_JS = r'''function txReceiptIds() { return TX_RECEIPTS.map(function (d) { return d.id; }); }
 function txStill(bookingId) {
     var box = document.getElementById('txReceipts');
@@ -85,9 +90,15 @@ function txReceiptsRender(docs) {
     TX_RECEIPTS = docs;
     linkTable(document.getElementById('txReceipts'), ['Nr.', 'Datum', 'Dateiname', 'Verknüpfung', ''],
         docs.map(function (d) {
-            return linkRow([d.number, d.date, d.filename, d.relationLabel, linkActions(linkFileActions(d).concat([
-                linkAnchor('Beleg', '/receipts/edit?id=' + encodeURIComponent(String(d.id)), true),
-                linkButton('Lösen', 'bg-gray', function () { txDetach(d.id); })]))]);
+            var actions = linkFileActions(d);
+            actions.push(linkAnchor('Beleg', '/receipts/edit?id=' + encodeURIComponent(String(d.id)), true));
+            if (TX_PROPOSE && d.relation === 'receipt') {
+                var b = linkButton(TX_PROPOSE.button, 'bg-blue', function () { txPropose(d.id); });
+                b.title = TX_PROPOSE.title;
+                actions.push(b);
+            }
+            actions.push(linkButton('Lösen', 'bg-gray', function () { txDetach(d.id); }));
+            return linkRow([d.number, d.date, d.filename, d.relationLabel, linkActions(actions)]);
         }), 'Keine verknüpften Belege.');
 }
 function txReceiptSearch() {
@@ -129,14 +140,53 @@ function txDetach(documentId) {
         }).catch(linkFail);
     });
 }
+function txPropose(documentId) {
+    var bookingId = TX_LINK_BOOKING_ID;
+    if (!TX_PROPOSE || typeof suggestAppendRow !== 'function' || !document.getElementById('splitTable')) return;
+    if (splitRows().length) { suggestNote(TX_PROPOSE.hasRows, 'warnColor'); return; }
+    suggestNote(TX_PROPOSE.busy);
+    fetch('/transactions/receipt-proposal?id=' + encodeURIComponent(String(bookingId))
+          + '&document=' + encodeURIComponent(String(documentId)))
+        .then(linkAnswer)
+        .then(function (data) {
+            if (!txStill(bookingId)) return;
+            if (!data.ok || !data.row) { suggestNote(data.message, 'warnColor'); return; }
+            if (splitRows().length) { suggestNote(TX_PROPOSE.hasRows, 'warnColor'); return; }
+            var form = document.querySelector('form[action="/transactions/add"]');
+            var field = form ? form.elements['document_nr'] : null;
+            var row = data.row;
+            row.text = SPLIT_BANK_TEXT;
+            var tr = suggestAppendRow(row, field ? field.value.trim() : '');
+            var hints = (data.hints || []).slice();
+            var sel = tr.querySelector('[name=split_coa]');
+            if (row.coa_id && sel.value !== String(row.coa_id)) { sel.value = ''; hints.push(TX_PROPOSE.hidden); }
+            if (sel.selectedOptions && sel.selectedOptions[0]) sel.title = sel.selectedOptions[0].text;
+            splitRecalc();
+            suggestNote([data.message].concat(data.reasons || [], hints).join(' · '), hints.length ? 'warnColor' : 'successColor');
+        })
+        .catch(function (error) {
+            if (!txStill(bookingId)) return;
+            suggestNote('');
+            linkFail(error);
+        });
+}
 txReceiptsRender(TX_RECEIPTS);
 '''
 
+# Die festen Texte des Knopfs „Als Buchungssatz“ (``TX_PROPOSE``); ein Wert aus der Datenbank steht nie darin.
+PROPOSE_TEXTS = {
+    'hasRows': REFUSE_HAS_ROWS, 'hidden': HINT_ACCOUNT_HIDDEN, 'busy': 'Vorschlag wird gelesen …', 'button': 'Als Buchungssatz',
+    'title': 'Aus der Lesung eine Zeile im Buchungssatz-Editor vorbefüllen (speichert nicht)',
+}
 
-def _receipt_links_block(db, booking_id):
+
+def _receipt_links_block(db, booking_id, propose=False):
     """Der Abschnitt „Belege“ der Maske einer vorhandenen Buchung: die verknüpften Belege (Ansehen, Herunterladen, Lösen), eine Suche
     nach Belegen zum Zuordnen. Er steht NACH dem Formular – kein Feld darin hat einen Namen, das Speichern der Maske schreibt ihn
-    nie mit; die Daten kommen als JSON in den Skriptblock (``script_json``), das Skript baut die Tabellen nur über ``textContent``."""
+    nie mit; die Daten kommen als JSON in den Skriptblock (``script_json``), das Skript baut die Tabellen nur über ``textContent``.
+
+    ``propose``: die Maske einer Bankbewegung (nur sie hat den Editor). Dann trägt der Skriptblock die festen Texte des Knopfs „Als Buchungssatz“
+    (``TX_PROPOSE``, ``PROPOSE_TEXTS``), sonst ``null`` – und es gibt keinen Knopf."""
     return (
         f'<h3>Belege</h3><div id="txReceipts" data-booking="{int(booking_id)}"></div>'
         '<div class="rowWithObjects">'
@@ -148,6 +198,7 @@ def _receipt_links_block(db, booking_id):
         '<script>' + LINK_WIDGET_JS
         + f'var TX_LINK_BOOKING_ID = {int(booking_id)};\n'
         + f'var TX_RECEIPTS = {script_json(linked_documents(db, booking_id))};\n'
+        + f'var TX_PROPOSE = {script_json(PROPOSE_TEXTS if propose else None)};\n'
         + TX_LINK_JS + '</script>')
 
 
@@ -1085,26 +1136,33 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                     // ersetzt die Kontierung, er ergänzt sie nicht.
                     // Eine gesperrte Zeile (Zahlungssatz) bleibt: Fiele sie aus dem Formular, entfernte das Speichern die ganze Zuordnung.
                     document.querySelectorAll('#splitTable tr.splitRow:not(.splitLocked)').forEach(r => r.remove());
-                    const tpl = document.querySelector('#splitTable tr.splitTemplate');
+                    const base = document.querySelector('form [name=document_nr]').value || '';
                     rows.forEach((row, i) => {{
-                        const tr = tpl.cloneNode(true);
-                        tr.className = 'splitRow';
-                        tr.style.display = '';
-                        tr.querySelector('.splitAmount').value = row.amount || '';
-                        if (row.coa_id) tr.querySelector('[name=split_coa]').value = row.coa_id;
-                        // Umbuchung: Gegenkonto und Markierung mitnehmen, sonst
-                        // würde aus dem Privatanteil eine Bankbewegung.
-                        tr.querySelector('[name=split_counter_coa]').value = row.counter_coa_id || '';
-                        if (row.nobank) tr.dataset.nobank = '1';
-                        tr.querySelector('[name=split_tax_rate]').value = row.tax_rate || '';
-                        tr.querySelector('[name=split_tax_amount]').value = row.tax_amount || '';
-                        tr.querySelector('[name=split_text]').value = row.text || '';
-                        const base = document.querySelector('form [name=document_nr]').value || '';
-                        tr.querySelector('[name=split_docnr]').value =
-                            base ? (rows.length > 1 ? base + '_' + SPLIT_SUFFIX[i % 26] : base) : '';
-                        tpl.parentNode.insertBefore(tr, tpl);
+                        suggestAppendRow(row, base ? (rows.length > 1 ? base + '_' + SPLIT_SUFFIX[i % 26] : base) : '');
                     }});
                     splitRecalc();
+                }}
+
+                // Eine neue Zeile des Editors aus der Vorlage: für den Vorschlag aus der Historie (suggestFillSplit) und für den Buchungsvorschlag aus
+                // einem Beleg (txPropose). Sie steht als letzte Funktion dieses Blocks – der Lauf in tests/test_split_editor_payment_rows_locked.py
+                // nimmt den Block ab suggestFillSplit bis zum Ende.
+                function suggestAppendRow(row, docnr) {{
+                    var tpl = document.querySelector('#splitTable tr.splitTemplate');
+                    var tr = tpl.cloneNode(true);
+                    tr.className = 'splitRow';
+                    tr.style.display = '';
+                    tr.querySelector('.splitAmount').value = row.amount || '';
+                    if (row.coa_id) tr.querySelector('[name=split_coa]').value = row.coa_id;
+                    // Umbuchung: Gegenkonto und Markierung mitnehmen, sonst
+                    // würde aus dem Privatanteil eine Bankbewegung.
+                    tr.querySelector('[name=split_counter_coa]').value = row.counter_coa_id || '';
+                    if (row.nobank) tr.dataset.nobank = '1';
+                    tr.querySelector('[name=split_tax_rate]').value = row.tax_rate || '';
+                    tr.querySelector('[name=split_tax_amount]').value = row.tax_amount || '';
+                    tr.querySelector('[name=split_text]').value = row.text || '';
+                    tr.querySelector('[name=split_docnr]').value = docnr || '';
+                    tpl.parentNode.insertBefore(tr, tpl);
+                    return tr;
                 }}
             </script>
     '''
@@ -1137,7 +1195,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
     # Belege der Buchung (suchen, zuordnen, ansehen, herunterladen, lösen): nach dem Formular, kein Feld darin. Eine neue Buchung
     # hat noch keine ID, der Hinweis ersetzt den Abschnitt.
     if edit_trans:
-        s += _receipt_links_block(db, edit_trans[0])
+        s += _receipt_links_block(db, edit_trans[0], propose=is_bank_form)
     else:
         s += '<h3>Belege</h3><p class="muted">Belege lassen sich zuordnen, sobald die Buchung gespeichert ist.</p>'
 

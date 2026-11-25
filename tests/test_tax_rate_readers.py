@@ -144,6 +144,7 @@ NOT_THE_DOCUMENT_RATE = {
                                                          '(wie gespeichert), nie aus dem Kopf der Rechnung'),
     ('db/invoice_payments.py', 'suggest_revenue_coa'): 'Bookings.TaxRate: Vorauswahl des Erlöskontos aus den Buchungen',
     ('db/invoice_repair.py', '_rebuild_plan'): 'Bookings.TaxRate: die neuen Buchungssätze im Plan von „Zuordnung neu aufbauen“',
+    ('db/receipt_proposal.py', 'proposal_tax'): 'DocumentReadings.TaxRate: Lesung einer Belegdatei im Buchungsvorschlag (ein Satz oder keiner), nicht der Satz einer Rechnung',
     ('db/reporting.py', 'get_susa'): 'Bookings.TaxRate: Gruppierung der Sätze der Summen- und Saldenliste',
     ('server/handlers.py', '<module>'): 'InvoiceItems.TaxRate: Bezeichnung des Positionssatzes in der Fehlermeldung (_NOT_NULL_FIELDS)',
     ('server/receipt_reader.py', '<module>'): 'DocumentReadings.TaxRate: Spaltenzuordnung der Lesung einer Belegdatei, nicht der Satz einer Rechnung',

@@ -208,7 +208,8 @@ def _keys(*names, period=False):
 # Dokumente. /backup/download fehlt bewusst: Es liefert den ganzen Datenbestand (eine Sicherung, Gigabyte groß) –
 # das Werkzeug liest nur Anzeigeseiten. /receipts/file fehlt aus demselben Grund: Es liefert die Datei eines Belegs.
 # /receipts/search und /transactions/search fehlen bewusst: JSON-Suchen der Seiten, keine Anzeigeseiten; dasselbe liefert die
-# SQL-Abfrage. Aus demselben Grund fehlt die JSON-Route der Vorschläge zu einem Beleg (seit 2.6.0), und die POST-Route, die die
+# SQL-Abfrage. Aus demselben Grund fehlen die JSON-Route der Vorschläge zu einem Beleg (seit 2.6.0), der Buchungsvorschlag aus einem
+# Beleg (/transactions/receipt-proposal, seit 2.10.1) und der Vorschlag aus der Historie (/transactions/suggest), und die POST-Route, die die
 # Datei eines Belegs liest und die Lesung speichert, ist keine Anzeigeseite (docs/regeln/belege.md, „Belegerkennung“).
 # /bwa/pdf, /euer/pdf, /susa/pdf und /liquiditaet/pdf fehlen bewusst: Sie liefern Dokumente, keine Anzeigeseiten (die Seiten /bwa, /euer,
 # /susa und /liquiditaet schreiben nichts in den Bestand – das Cookie des Zeitraums setzen sie wie jede Seite mit period=True –, Tests in

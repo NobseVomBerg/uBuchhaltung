@@ -9,9 +9,13 @@ Die Lesung sind die aus der Datei eines Belegs gelesenen Felder, getrennt von de
 
 Dazu die Vorschläge zu einem Beleg: ``receipt_match_candidates`` (die Kandidaten, EINE lesende Abfrage) und ``suggest_bookings_for_receipt``
 (Abfrage und Rangfolge aus ``db/receipt_matching.py``; leer, solange der Beleg an einer Buchung hängt: ``receipt_is_linked``). Sie
-verknüpfen nichts."""
+verknüpfen nichts.
+
+Dazu die Eingaben des Buchungsvorschlags aus einem Beleg (seit 2.10.1, Regel in ``db/receipt_proposal.py``): ``receipt_proposal_inputs`` (die Bankbewegung und die
+Lesung ohne ``Text`` und ``Raw``) und ``vat_history_groups`` (die Historie über die USt-IdNr. des Absenders). Beide lesen nur."""
 import sqlite3
 
+from . import receipt_proposal
 from .bookings import RELATION_DEFAULT
 from .invoice_payments import PAYMENT_MARK
 from .matching import MIRROR_FORMS
@@ -29,6 +33,28 @@ _UPSERT = ('INSERT INTO DocumentReadings (Document_ID, ' + ', '.join(READING_COL
 
 #: So viele Belege liefert ``unread_receipt_ids`` höchstens je Aufruf.
 UNREAD_LIMIT_MAX = 1000
+
+#: So viele Belege (die jüngsten mit der gesuchten USt-IdNr.) liest ``vat_history_groups`` höchstens.
+VAT_DOCS_MAX = 500
+
+# Die Eingaben des Buchungsvorschlags (``receipt_proposal_inputs``): feste Texte, alle Werte gehen als Parameter hinein. Von der Lesung nie ``Text`` oder ``Raw`` –
+# und weder Absender noch Rechnungsnummer: Aus dem Beleg kommen nur Art, Beträge, Satz, Währung und USt-IdNr.
+_PROPOSAL_BANK = "SELECT Amount, Currency, RecipientClient FROM Bookings WHERE ID = ? AND BookingType = 'bank'"
+_PROPOSAL_HAS_CHILDREN = 'SELECT 1 FROM Bookings WHERE ParentBooking_ID = ? LIMIT 1'
+_PROPOSAL_DOCUMENT = 'SELECT 1 FROM Documents WHERE ID = ?'
+_PROPOSAL_LINK = 'SELECT 1 FROM BookingDocuments WHERE Booking_ID = ? AND Document_ID = ? AND RelationType = ?'
+_PROPOSAL_READING = ('SELECT Status, ReaderVersion, GrossMinor, NetMinor, TaxMinor, TaxRate, Currency, Kind, SenderVatId '
+                     'FROM DocumentReadings WHERE Document_ID = ?')
+
+# Die Historie über die USt-IdNr. (``vat_history_groups``): erst die Belege mit einer Lesung ``ok`` und einer Angabe (Platzhalter: der eigene Beleg), die jüngsten zuerst – ob
+# die Angabe die gesuchte USt-IdNr. ist, entscheidet ``tax_id_kind`` in Python –, dann die Buchungen, an denen diese Belege als ``receipt`` hängen (die Zahl der Platzhalter
+# von ``IN`` ergibt sich aus der Liste der Belege, nie aus Werten; Platzhalter dahinter: die Art, die ausgeschlossene Buchung zweimal – sie selbst und ihre Kinder –, die Grenze).
+_VAT_DOCUMENTS = ("SELECT Document_ID, SenderVatId FROM DocumentReadings "
+                  "WHERE Status = 'ok' AND SenderVatId IS NOT NULL AND Document_ID <> ? ORDER BY Document_ID DESC")
+_VAT_BOOKINGS_BEFORE = ('SELECT b.ID, b.ParentBooking_ID, b.BookingType FROM BookingDocuments bd JOIN Bookings b ON b.ID = bd.Booking_ID '
+                        'WHERE bd.RelationType = ? AND bd.Document_ID IN (')
+_VAT_BOOKINGS_AFTER = (') AND b.ID <> ? AND COALESCE(b.ParentBooking_ID, -1) <> ? '
+                       'ORDER BY b.DateBooking DESC, b.ID DESC LIMIT ?')
 
 # Hängt der Beleg an irgendeiner Buchung (gleich welcher Art der Verknüpfung)? Platzhalter: die ID des Belegs.
 _RECEIPT_IS_LINKED = 'SELECT 1 FROM BookingDocuments WHERE Document_ID = ? LIMIT 1'
@@ -252,3 +278,51 @@ class DocumentReadingsMixin:
         candidates = self.receipt_match_candidates(document_id, gross, *window)
         by_id = {candidate['id']: candidate for candidate in candidates}
         return [(suggestion, by_id[suggestion.booking_id]) for suggestion in rank_candidates(reading, candidates, doc_date)]
+
+    def receipt_proposal_inputs(self, booking_id, document_id):
+        """Was der Buchungsvorschlag aus einem Beleg von der Datenbank braucht – EINE Verbindung, rein lesend:
+        ``{'bank': (Betrag in Minor Units, Währung, Empfänger) | None, 'has_children': bool, 'document': bool, 'linked': bool, 'reading': dict | None}``.
+
+        ``bank`` gibt es nur, wenn ``booking_id`` eine Bankbewegung ist (sonst ``None``); ``has_children``: Es hängt ein Satz unter ihr (auch ein gesperrter Zahlungssatz);
+        ``document``: den Beleg gibt es; ``linked``: er hängt mit der Art ``receipt`` an dieser Bewegung selbst. ``reading``: die Spalten ``Status``, ``ReaderVersion``, ``GrossMinor``,
+        ``NetMinor``, ``TaxMinor``, ``TaxRate``, ``Currency``, ``Kind``, ``SenderVatId`` der Lesung – nie ``Text``, ``Raw``, Absendername oder Rechnungsnummer –
+        oder ``None``, wenn es keine gibt."""
+        conn = self._get_connection()
+        try:
+            bank = conn.execute(_PROPOSAL_BANK, (booking_id,)).fetchone()
+            has_children = conn.execute(_PROPOSAL_HAS_CHILDREN, (booking_id,)).fetchone() is not None
+            document = conn.execute(_PROPOSAL_DOCUMENT, (document_id,)).fetchone() is not None
+            linked = conn.execute(_PROPOSAL_LINK, (booking_id, document_id, RELATION_DEFAULT)).fetchone() is not None
+            conn.row_factory = sqlite3.Row
+            found = conn.execute(_PROPOSAL_READING, (document_id,)).fetchone()
+            return {'bank': None if bank is None else tuple(bank), 'has_children': has_children, 'document': document, 'linked': linked,
+                    'reading': None if found is None else dict(found)}
+        finally:
+            conn.close()
+
+    def vat_history_groups(self, vat_id, exclude_document_id, exclude_booking_id, depth):
+        """Die Historie zu einer USt-IdNr. als Gruppen von Zeilen (``_history_group_rows``), die jüngste zuerst, höchstens ``depth`` nicht leere – der Stoff für
+        ``receipt_proposal.steady_account``. Gesucht werden die Belege, deren Lesung ``ok`` ist und dieselbe USt-IdNr. trägt (``vat_id`` in der bereinigten
+        Schreibweise von ``export.einvoice_model.tax_id_kind``, nur die Art ``'vat'``: eine Steuernummer ist keine Quelle; höchstens die jüngsten ``VAT_DOCS_MAX``
+        Belege, nie der Beleg ``exclude_document_id``), und dazu die Buchungen, an denen sie mit der Art ``receipt`` hängen – nicht die Buchung
+        ``exclude_booking_id`` und ihre Kinder (``None`` und 0: nichts ausgeschlossen). Gelesen werden höchstens ``receipt_proposal.HISTORY_SCAN`` Fundstellen. Kein
+        Kontakt nötig. Rein lesend."""
+        from export.einvoice_model import tax_id_kind        # ``export`` importiert diese Schicht: erst zur Laufzeit
+        conn = self._get_connection()
+        try:
+            documents = []
+            for document_id, sender_vat in conn.execute(_VAT_DOCUMENTS, (exclude_document_id,)).fetchall():
+                if tax_id_kind(sender_vat) == ('vat', vat_id):
+                    documents.append(document_id)
+                    if len(documents) >= VAT_DOCS_MAX:
+                        break
+            if not documents:
+                return []
+            exclude = exclude_booking_id or 0
+            marks = ', '.join('?' * len(documents))
+            cursor = conn.cursor()
+            cursor.execute(_VAT_BOOKINGS_BEFORE + marks + _VAT_BOOKINGS_AFTER,
+                           (RELATION_DEFAULT, *documents, exclude, exclude, receipt_proposal.HISTORY_SCAN))
+            return self._history_groups(cursor, cursor.fetchall(), depth)
+        finally:
+            conn.close()

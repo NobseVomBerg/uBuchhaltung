@@ -41,7 +41,8 @@ SUBJECT_PAGES = [
     ('/masterdata/articles/edit', 'id'), ('/masterdata/contacts/edit', 'id'),
     ('/masterdata/skr/edit', 'id'), ('/masterdata/skr/copy', 'id'),
     ('/masterdata/bankaccounts/edit', 'id'), ('/receipts/edit', 'id'), ('/receipts/file', 'id'), ('/receipts/suggestions', 'id'),
-    ('/transactions/edit', 'id'), ('/masterdata/numberranges/edit', 'id'), ('/assets/edit', 'id'),
+    ('/transactions/edit', 'id'), ('/transactions/receipt-proposal', 'id'), ('/transactions/suggest', 'id'),
+    ('/masterdata/numberranges/edit', 'id'), ('/assets/edit', 'id'),
     ('/assets/view', 'id'), ('/asset_categories/edit', 'id'), ('/worktime/edit', 'id'), ('/trips/edit', 'id'),
 ]
 # Seiten mit einem Filter: Ein ungültiger Wert gilt als nicht angegeben
