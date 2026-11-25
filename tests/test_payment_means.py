@@ -333,6 +333,31 @@ def test_the_storno_and_the_replacement_invoice_take_the_payment_means(world, co
         assert cii_means(world, storno_id).find('ram:TypeCode', NS).text == code
 
 
+@pytest.mark.parametrize('stored', ['59', '', ' 10', '10 ', 'Bar', 'ZZZ'])
+def test_an_unreadable_payment_means_is_not_copied_and_never_stops_the_cancellation(world, stored):
+    """Das Stornieren hängt nicht an einem unlesbaren Nebenfeld: Storno- und Ersatzrechnung tragen dann keine Zahlungsart (NULL = Überweisung)."""
+    invoice_id = sent_invoice(world, paymentMeans='10')
+    set_column(world.db, invoice_id, 'PaymentMeans', stored)                  # die SQL-Konsole kann alles schreiben
+
+    storno = world.db.cancel_invoice(invoice_id, '2026-07-01', USER)
+
+    assert storno.ok, storno
+    storno_id = world.db.find_storno_invoice(invoice_id)[0]
+    reissue = world.db.create_replacement_draft(invoice_id, USER)
+    assert reissue.ok, reissue
+    assert stored_means(world, storno_id) is None and stored_means(world, reissue.invoice_id) is None
+    assert stored_means(world, invoice_id) == stored                          # die stornierte Rechnung bleibt, wie sie war
+    assert model(world, storno_id).payment_means == '58' and model(world, storno_id).payment_means_unreadable is False
+
+
+def test_a_stored_transfer_written_as_58_is_copied_without_a_failure(world):
+    invoice_id = sent_invoice(world)
+    set_column(world.db, invoice_id, 'PaymentMeans', '58')                    # lesbar, nur nicht in der Form, in der die App sie schreibt
+
+    assert world.db.cancel_invoice(invoice_id, '2026-07-01', USER).ok
+    assert stored_means(world, world.db.find_storno_invoice(invoice_id)[0]) is None
+
+
 # ── Die Maske ────────────────────────────────────────────────────────────────
 
 def means_select(html):

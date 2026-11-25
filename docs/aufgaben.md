@@ -10,7 +10,6 @@ steht in `git log`. Eine Zeile je Punkt; Details gehören in Commit, Issue oder 
 - Sammelimport: Exportdateien und Kontoauszüge als Sammlung hineingeben, ohne auf Importreihenfolgen zu achten – Spalten frei gewählter Exporte erkennen und in einer Vorschau zuordnen, ein gemeinsamer Abgleich mit sichtbaren Zweifelsfällen; braucht Schemaänderung und vorher einen Entwurf
 - Kontoauszüge im MT940-Format (heute gelesen: CAMT.053, PDF von DKB und Volksbank Rottweil, CSV der DKB)
 - Kontoauszug als CSV anderer Banken (heute liest `importers/dkb_csv.py` nur die Umsatzliste der DKB)
-- CAMT-Zusatzfelder (Valuta, EndToEndId, Mandatsreferenz, Gläubiger-ID) übernehmen – braucht Schemaänderung
 - Rechnungen mit mehreren Steuersätzen oder mit einem Erlöskonto aus den Stammdaten „Steuersätze“: Zahlungsumzug auf eine Ersatzrechnung und „Zuordnung neu aufbauen“ (Gründe `mixed`, `tax_entry`) lassen sie aus – je Satz bzw. mit dem Konto des Eintrags neu buchen, mit denselben Bedingungen wie bei einem Satz
 - Steuersätze aus den Stammdaten, offen: Wartekonto für weitere Sätze (feste Kontonummer je Satz); BU-Schlüssel für weitere Sätze und steuerfreie Umsätze im DATEV-Export; Befreiungscode der E-Rechnung (BT-121); eigene Steuerkonten für 5 % und 16 % (zweites Halbjahr 2020)
 - WISO-Datenbank-Import: Rechnungen mit mehreren Steuersätzen je Position übernehmen (heute ein Satz im Kopf, die Prüfliste nennt sie `unflagged_rate_mix`)
@@ -22,7 +21,7 @@ steht in `git log`. Eine Zeile je Punkt; Details gehören in Commit, Issue oder 
 - Zahlungsvorschläge, offen: Teilbeträge, Wahl des Erlöskontos im Kasten, von der Bank mitten in den Ziffern umbrochene Rechnungsnummern, andere Währungen als Euro
 - Zuordnung neu aufbauen, Schritt 2: markierte Zahlungssätze ohne Zuordnung (wiederherstellen oder entfernen, Wahl im Probelauf) und Sätze „Bank an Debitoren“ ohne Forderung
 - Steuerfälle bei Rechnungen und Angeboten: Reverse Charge, innergemeinschaftliche Lieferung und Ausfuhr (eigene E-Rechnungs-Kategorien, USt-IdNr. des Käufers als Pflicht, eigene Erlöskonten); 0 % ohne Eintrag der Stammdaten und ohne § 19 ergibt weiter Kategorie Z ohne Begründung und Konto 4185
-- Zurückholen einer versendeten Rechnung entfernt die Forderung auch nach einem DATEV-Export: Hinweis oder Sperre ab dem Export (braucht ein Merkmal „exportiert“ je Buchung)
+- Merkmal „exportiert“ (`BookingExports`): weitere Wirkungen (Storno von Hand, Zahlung entfernen, Bank-Editor, Festschreiben) und Ablösung des Stempels `DateTax` beim DATEV-Export; bis dahin nennt der Umzug der Zahlungen für exportierte Zahlungssätze den Grund „von Hand geändert oder ergänzt“ statt „anderes Steuerdatum (z. B. nach einem DATEV-Export)“
 - Datei zu einem bestehenden Beleg nachreichen (der Upload der Seite „Belege“ legt je Datei einen neuen Beleg an)
 - Belegerkennung: Texterkennung (OCR) für gescannte PDFs und Fotos – eine Datei ohne Textebene ist „nicht lesbar (kein Text)“
 - Belegerkennung: ein lokales Sprachmodell als optionaler Nachleser für nicht eindeutig gelesene Belege (standardmäßig aus; die Lesung bliebe ein Vorschlag mit Herkunft)
@@ -85,14 +84,14 @@ Heute ist nur SKR04 ausgebaut, und auch dort nur eine Grundauswahl; die Auswahl 
 - Bank-Editor: Das Gegenkonto eines zugeordneten Satzes mit Zweckkonto vorne lässt sich in der Zeile nicht ändern (nur über die Buchungsmaske)
 - Bankmaske übernimmt den Kontakt des ersten Satzes auf eine Bankbewegung ohne Kontakt
 - Ein eigenständiger Buchungssatz bekommt beim Speichern in der Maske das vorgewählte Bankkonto und gilt danach im Kontoauszug-Import als vorhandene Bankbewegung
-- Kontoauszug-Import erkennt Duplikate nur über Konto + Datum + Betrag: Bankreferenz (AcctSvcrRef/EndToEndId) speichern, gebündelt mit den CAMT-Zusatzfeldern (Schemaänderung). Bis dahin wird eine CAMT-Sammelbuchung gegen eine PDF-Summenzeile doppelt angelegt, und zwei Auszüge desselben Tags mit je einem echten, gleichen Umsatz verlieren einen
+- Kontoauszug-Import: Eine CAMT-Sammelbuchung wird gegen eine PDF-Summenzeile doppelt angelegt (die PDF-Seite trägt keine Bankreferenz). Zwei Auszüge desselben Tags mit je einem echten, gleichen Umsatz verlieren einen: Tragen beide eine verschiedene Bankreferenz, markiert die Vorschau die Zeile und sie lässt sich erzwingen, sonst nicht
 - WISO-Datenbank: Lesen der Satzversionen an einer großen echten Datei bestätigen (mehrere TIP-Seiten, Transaktionsnummern über 2³²) – geprüft an zwei kleinen echten Firebird-3.0-Dateien
 - Saldoprüfung der PDF-Auszüge: noch an keinem echten Auszug gesehen sind ein Soll-Saldo, ein einseitiger Auszug und ein Januar-Auszug mit Dezember-Buchungen des Vorjahres
 - CAMT-Sammelbuchungen, deren Einzelbeträge nur unter `AmtDtls/TxAmt` stehen, bleiben ein Umsatz mit dem Gesamtbetrag: aufteilen erst zusammen mit einer Duplikaterkennung Summe ↔ Einzelbeträge
 - DKB-PDF auf den Stand des Volksbank-Parsers bringen: ungültiges Datum wird dort noch zu „heute“, kein `unparsed`/`no_year`
 - Vorschau des Kontoauszug-Imports nach einem Einzelimport neu berechnen – die übrigen Karten zeigen sonst veraltete „neu“-Zahlen (das Ergebnis des Imports stimmt)
-- Kontoauszug-Import: Als Duplikat aus einer anderen Datei verworfene Umsätze lassen sich nicht gezielt doch importieren (Option „trotzdem importieren“ fehlt); `skipped_upload` ist beim Einzelimport immer 0
-- WISO-Datenbank-Import übernimmt CSV-Buchungen nur bei gleichem Beleg-Nr./Datum/Konto/Betrag **und Text**; eine nachträglich geänderte Zeile wird nicht wiedererkannt (der Textexport legt sie ohne Meldung doppelt an, die Datenbank-Übernahme meldet ein mögliches Duplikat) – die WISO-Satz-Id als eigene Spalte würde das exakt machen (Schemaänderung, mit der Bankreferenz bündeln)
+- Kontoauszug-Import: Ein als Duplikat verworfener Umsatz ohne Bankreferenz (PDF, CSV) lässt sich nicht gezielt doch importieren; `skipped_upload` ist beim Einzelimport immer 0
+- WISO-Datenbank-Import übernimmt CSV-Buchungen nur bei gleichem Beleg-Nr./Datum/Konto/Betrag **und Text**; eine nachträglich geänderte Zeile wird nicht wiedererkannt (der Textexport legt sie ohne Meldung doppelt an, die Datenbank-Übernahme meldet ein mögliches Duplikat) – die WISO-Satz-Id als eigene Spalte würde das exakt machen (Schemaänderung)
 - Nicht wiedererkannte CSV-Zeilen bleiben als zweite Buchung stehen; auf Kasse/1460 und bei Umbuchungen Anlage ↔ Erfolgskonto zählen sie doppelt in der EÜR, bis eine gelöscht ist (Liste „möglicherweise doppelt“ auf der Seite Daten)
 - Der Weg „erst CSV, dann Datenbank“ nach der Änderung der Unterkonten an einem echten CSV-/Datenbank-Paar gegenprüfen (Texte, Umschlüsselung von Unterkonten)
 - Der Datenbankweg liest Texte als latin-1 statt cp1252 (Anzeige von „€“ u. ä.); „…“ (0x85) geht schon im Leser verloren (`_clean`) – solche Texte werden nicht wiedererkannt

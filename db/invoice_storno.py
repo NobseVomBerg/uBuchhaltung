@@ -59,6 +59,7 @@ from .invoice_lock import (
     CHANGED_MESSAGE, EDITABLE_STATUSES, LOCKED_STATUSES, STORNO_KIND, _Refusal, canonical_status,
     document_version, invoice_row, is_storno)
 from .invoice_payments import MIXED_GROUPS_MISMATCH, MixedNotBookable, has_mixed_rates
+from .invoices import payment_means_code
 from .invoice_versions import is_iso_date
 from .numbering import NumberRangeError
 
@@ -526,7 +527,8 @@ def _copied_head(row):
     Absender mit seiner Firma, der Kunde samt Anschrift-Momentaufnahme, Käufer-USt-IdNr., Leitweg-ID, Bestellnummer,
     Bankverbindung, Währung, Steuersatz und -kategorie, das Kennzeichen „Steuersatz je Position“ (die Positionen tragen
     ihre Sätze mit), das Leistungsdatum samt Leistungszeitraum und die Zahlungsart – ohne Nummer, Datum, Zahlungsbedingungen, Summen,
-    Status und Dokumente."""
+    Status und Dokumente. Eine Zahlungsart, die sich nicht lesen lässt (``payment_means_code``; nur die SQL-Konsole schreibt so etwas),
+    wird nicht übernommen: Die Kopie trägt keine (NULL = Überweisung) – das Stornieren hängt nicht an einem unlesbaren Nebenfeld."""
     return {
         'own_company_id': row['OwnCompanyId'],
         'seller_name': row['SellerName'], 'seller_company': row['SellerCompany'],
@@ -541,7 +543,8 @@ def _copied_head(row):
         'buyer_vat_id': row['BuyerVATID'], 'buyer_reference': row['BuyerReference'],
         'buyer_route_id': row['BuyerRouteID'],
         'order_number': row['OrderNumber'], 'currency': row['Currency'],
-        'delivery_date': row['DeliveryDate'], 'service_date_end': row['ServiceDateEnd'], 'payment_means': row['PaymentMeans'],
+        'delivery_date': row['DeliveryDate'], 'service_date_end': row['ServiceDateEnd'],
+        'payment_means': row['PaymentMeans'] if payment_means_code(row['PaymentMeans']) is not None else None,
         'bank_account_id': row['BankAccountId'], 'bank_name': row['BankName'],
         'bank_iban': row['BankIBAN'], 'bank_bic': row['BankBIC'],
         'tax_category': row['TaxCategory'], 'tax_rate': row['TaxRate'],

@@ -237,6 +237,57 @@ def test_the_same_end_again_changes_nothing(world):
     assert snapshot(world.db) == before
 
 
+def test_an_unreadable_stored_end_does_not_stop_a_correction_of_the_start(world):
+    """Ein unlesbares gespeichertes Ende (die SQL-Konsole kann alles schreiben) gilt als „kein Zeitraum“: Das Leistungsdatum lässt sich berichtigen."""
+    invoice_id = sent_invoice(world)
+    set_column(world.db, invoice_id, 'ServiceDateEnd', 'abc')
+
+    answer = save_open(world, invoice_id, deliveryDate='2026-06-10')
+
+    assert answer['success'] is True and answer['documentVersion'] == 2
+    assert columns(world.db, invoice_id)['DeliveryDate'] == '2026-06-10' and stored_end(world, invoice_id) == 'abc'      # das Ende bleibt, wie es war
+    assert world.db.get_datev_invoice_data()['26R100'][0] == '2026-06-10'                                                  # und gilt nicht als Zeitraum
+    (row,) = protocol(world.db, invoice_id, 'correct')
+    assert row['Field'] == 'DeliveryDate'
+
+
+@pytest.mark.parametrize('stored', ['abc', '', '30.06.2026', '2026-02-30'], ids=['Text', 'leer', 'deutsch', 'kein-Tag'])
+def test_every_unreadable_stored_end_counts_as_no_period_for_a_correction_of_the_start(world, stored):
+    invoice_id = sent_invoice(world)
+    set_column(world.db, invoice_id, 'ServiceDateEnd', stored)
+
+    assert save_open(world, invoice_id, deliveryDate='2026-07-20')['documentVersion'] == 2
+
+
+def test_an_invalid_end_that_the_user_sends_is_still_refused_over_an_unreadable_stored_one(world):
+    invoice_id = sent_invoice(world)
+    set_column(world.db, invoice_id, 'ServiceDateEnd', 'abc')
+    before = snapshot(world.db)
+
+    answer = save_raw({'invoiceId': invoice_id, 'documentVersion': 1, 'serviceDateEnd': 'xyz', 'deliveryDate': '2026-06-10'})
+
+    assert answer.status == 400 and error_of(answer) == SERVICE_PERIOD_MESSAGE
+    assert snapshot(world.db) == before
+
+
+def test_a_valid_end_sent_by_the_user_replaces_an_unreadable_stored_one_and_so_does_clearing_it(world):
+    invoice_id = sent_invoice(world)
+    set_column(world.db, invoice_id, 'ServiceDateEnd', 'abc')
+
+    assert save_open(world, invoice_id, serviceDateEnd=END)['documentVersion'] == 2 and stored_end(world, invoice_id) == END
+    set_column(world.db, invoice_id, 'ServiceDateEnd', 'abc')
+    assert save_open(world, invoice_id, serviceDateEnd='')['documentVersion'] == 3 and stored_end(world, invoice_id) is None
+
+
+def test_a_readable_stored_end_still_stops_a_start_behind_it_after_the_change(world):
+    """Nur ein UNLESBARES Ende fällt weg: Ein lesbares, das vor dem neuen Beginn läge, lehnt weiter ab."""
+    invoice_id = sent_invoice(world, serviceDateEnd=END)
+
+    answer = save_raw({'invoiceId': invoice_id, 'documentVersion': 1, 'deliveryDate': '2026-07-15'})
+
+    assert answer.status == 400 and error_of(answer) == SERVICE_PERIOD_MESSAGE
+
+
 def test_a_cancelled_invoice_does_not_take_a_new_end(world):
     invoice_id = sent_invoice(world)
     run_sql(world.db, "UPDATE Invoices SET Status = 'cancelled' WHERE ID = ?", invoice_id)

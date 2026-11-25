@@ -17,6 +17,11 @@ Dateien sind Nutzereingaben und werden entsprechend behandelt:
 * ein Auszug, der irgendwo eine andere Währung als Euro nennt, wird nicht gelesen
   (die Bewegungen hätten keine Euro-Beträge).
 
+Zusatzfelder je Umsatz (``importers.base.DETAIL_FIELDS``): Valuta (``Ntry/ValDt``), Bankreferenz (``Ntry/AcctSvcrRef`` – nur die des Umsatzes,
+alle Teile einer Sammelbuchung teilen sie), End-to-End-Referenz (``TxDtls/Refs/EndToEndId``), Mandatsreferenz (``Refs/MndtId``) und
+Gläubiger-ID (``RltdPties/Cdtr``, Schema ``SEPA``, in der Form von .02/.04 und der von .08). Jeder Wert geht durch
+``clean_bank_text``/``clean_value_date``: Was kein sicherer Wert ist, bleibt leer.
+
 Befund-Schlüssel auf Beleg-Ebene (``BankStatement.warnings``):
 
 ====================  =======================================================
@@ -38,7 +43,7 @@ from xml.etree import ElementTree as ET
 
 from money import to_minor
 
-from .base import BankStatement, StatementTransaction
+from .base import BankStatement, StatementTransaction, clean_bank_text, clean_value_date
 from .safe_xml import UnsafeXml, parse_untrusted_xml
 
 BANK_CODE = 'CAMT'
@@ -220,6 +225,17 @@ def _counterparty(tx, indicator: str) -> Tuple[str, str]:
     return name, iban
 
 
+def _creditor_id(tx) -> str:
+    """Die Gläubiger-ID aus ``RltdPties/Cdtr``: das erste ``Othr`` mit dem Schema ``SEPA`` (``SchmeNm/Prtry``, ohne Rücksicht auf Schreibweise
+    und Leerraum) – in der Form von camt.053.001.02/.04 (``Cdtr/Id/PrvtId``) wie in der von .08 (``Cdtr/Pty/Id/PrvtId``) –, durch
+    ``clean_bank_text``; ``''`` ohne eine solche Angabe."""
+    for holder in (_path(tx, 'RltdPties', 'Cdtr', 'Id', 'PrvtId'), _path(tx, 'RltdPties', 'Cdtr', 'Pty', 'Id', 'PrvtId')):
+        for other in _children(holder, 'Othr') if holder is not None else ():
+            if _text(other, 'SchmeNm', 'Prtry').upper() == 'SEPA':
+                return clean_bank_text(_text(other, 'Id'))
+    return ''
+
+
 def _entry_transactions(entry, amount: Decimal, indicator: str, date: str,
                         warnings: list) -> List[StatementTransaction]:
     """Ein ``Ntry`` in eine oder – bei Sammelbuchung – mehrere Bewegungen."""
@@ -261,6 +277,11 @@ def _build(entry, tx, value: Decimal, indicator: str, date: str,
         recipient=name,
         reference=(prefix + reference).strip(),
         foreign_iban=iban,
+        value_date=clean_value_date(_iso_date(_child(entry, 'ValDt')) or ''),
+        end_to_end_id=clean_bank_text(_text(tx, 'Refs', 'EndToEndId')),
+        mandate_ref=clean_bank_text(_text(tx, 'Refs', 'MndtId')),
+        creditor_id=_creditor_id(tx),
+        bank_ref=clean_bank_text(_text(entry, 'AcctSvcrRef')),
     )
 
 

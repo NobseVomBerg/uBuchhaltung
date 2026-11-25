@@ -184,7 +184,9 @@ class InvoiceVersionsMixin:
         Ändert sich das Leistungsdatum oder das Ende des Leistungszeitraums, gilt ``normalize_service_end`` für das Paar aus dem
         neuen (sonst dem gespeicherten) Beginn und Ende: ein Ende, das kein Datum ist oder vor dem Beginn liegt, ein Zeitraum
         ohne Beginn – auch ein Beginn hinter einem gespeicherten Ende – ist ein :class:`CorrectionInvalid`, vor dem Verschieben.
-        Ein Ende am Beginn ist kein Zeitraum und steht danach als NULL da; ist es das, was gespeichert ist, ändert sich nichts.
+        Ein unlesbares gespeichertes Ende (kein ISO-Datum) gilt dabei als „kein Zeitraum“, solange die Berichtigung das Ende nicht selbst
+        nennt – abgelehnt wird nur ein Ende, das der Nutzer schickt. Ein Ende am Beginn ist kein Zeitraum und steht danach als NULL da;
+        ist es das, was gespeichert ist, ändert sich nichts.
 
         Scheitert das Verschieben, das Festhalten der Fassung oder das Speichern, liegen die Dokumente wieder dort,
         wo sie waren, und nichts ist geändert. Raises :class:`InvoiceLocked` (mit Klartext) bei einer gesperrten
@@ -229,9 +231,12 @@ class InvoiceVersionsMixin:
                     raise CorrectionInvalid(DELIVERY_DATE_MESSAGE)
                 if 'delivery_date' in open_data or 'service_date_end' in open_data:
                     from .invoices import normalize_service_end        # ``invoices`` liest dieses Modul schon beim Laden
+                    # ein unlesbares gespeichertes Ende (nur die SQL-Konsole schreibt so etwas) gilt als „kein Zeitraum“, solange diese Berichtigung es nicht selbst
+                    # nennt: Das Leistungsdatum lässt sich berichtigen; abgelehnt wird nur ein Ende, das der Nutzer schickt
+                    stored_end = row['ServiceDateEnd'] if is_iso_date(row['ServiceDateEnd']) else None
                     try:
                         end = normalize_service_end(open_data.get('delivery_date', row['DeliveryDate']),
-                                                    open_data.get('service_date_end', row['ServiceDateEnd']))
+                                                    open_data.get('service_date_end', stored_end))
                     except ValueError as invalid:
                         raise CorrectionInvalid(str(invalid)) from None
                     if 'service_date_end' in open_data:

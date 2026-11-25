@@ -26,12 +26,14 @@ from . import receipt_reader
 from . import wiso_upload
 from .pages import Header1, Header2, Header3, Footer
 from .pages_receipts import suggestions_empty_text
-from .import_preview import file_transactions, match_account
+from .import_preview import (UploadClassifier, bank_stock_for, classify_duplicates, duplicate_rows, file_transactions,
+                             match_account)
 from .period import parse_iso_date, valid_period
 from .richtext import sanitize_richtext as _sanitize_richtext
 from .upload_handler import STATEMENTS_DEMO_REFUSED
 from db import Database
 from db import datev_keys
+from importers.base import DETAIL_FIELDS
 from db.bookings import RELATION_DEFAULT, RELATION_TYPES, LinkRefused
 from db.contacts import VAT_METHOD_ERROR, ContactRefused, vat_method
 from db.core import fk_explained, ForeignKeyError
@@ -180,6 +182,32 @@ def _import_selection(values, files):
     return selection
 
 
+def _import_force(values, files):
+    """Das Formularfeld ``force`` von ``/confirm_transactions`` lesen: ``{file_index: {Position, …}}`` – für jeden Beleg die Umsätze, die trotz Duplikatverdacht angelegt werden
+    sollen. Form und Strenge sind die von ``selection`` (``_import_selection``: ``None`` bei jedem Formfehler); ein Eintrag mit leerer Liste zählt nicht."""
+    forced = _import_selection(values, files)
+    return None if forced is None else {index: positions for index, positions in forced.items() if positions}
+
+
+def _forced_rows_are_suspect(db, files, accounts, target_indices, force):
+    """Nennt ``force`` nur Umsätze, die die Vorschau als verdächtig markiert (``ref_differs``)? Die Einordnung wird frisch gerechnet – für die Belege dieses Laufs in ihrer
+    Reihenfolge, genau wie die Vorschau (``UploadClassifier``) –, bevor etwas geschrieben wird. Ein Beleg, den dieser Lauf nicht anlegt (außerhalb der Auswahl, ohne Konto, schon
+    importiert), kann nichts erzwingen. Der Import prüft jede Position beim Schreiben noch einmal gegen den Bestand, den er dann liest."""
+    classifier = UploadClassifier(db)
+    unchecked = set(force)
+    for i in target_indices:
+        if i < 0 or i >= len(files) or files[i].get('imported'):
+            continue
+        account_id, _name = match_account(accounts, files[i].get('iban'))
+        if account_id is None:
+            continue
+        _rows, verdicts = classifier.classify(file_transactions(files[i]), account_id)
+        if any(not verdicts.get(position, (None, False))[1] for position in force.get(i, ())):
+            return False
+        unchecked.discard(i)
+    return not unchecked
+
+
 def handle_confirm_import(db: Database, post_data):
     """Kontoauszug-Import bestätigen – einzelner Beleg oder alle.
 
@@ -195,6 +223,12 @@ def handle_confirm_import(db: Database, post_data):
     (oder einen Beleg ohne Konto) ist das 400, und nichts ist importiert. Jeder Umsatz wird wie bisher eingeordnet (die
     Duplikat-Zählung rückt für jede Zeile vor, gewählt oder nicht): Duplikat → ``skipped``, ohne Datum oder Betrag →
     ``skipped_invalid``, nicht gewählt → ``skipped_unselected``, sonst angelegt. Der Beleg gilt danach als importiert.
+
+    Optional ``force`` (JSON-Objekt wie ``selection``, genauso streng geprüft): Ein Umsatz, den die Duplikatprüfung verwirft, der aber verdächtig ist (``ref_differs`` der Vorschau:
+    eigene Bankreferenz, keine Bestandszeile belegt; ``classify_duplicates``), wird auf Wunsch doch angelegt – als ``inserted``, zusätzlich als ``forced`` gezählt (der Schlüssel steht nur
+    im Ergebnis, wenn etwas erzwungen wurde). Jede Position muss in der frisch gerechneten Einordnung verdächtig sein (``_forced_rows_are_suspect``), sonst 400 ``Ungültige Auswahl`` und nichts ist
+    importiert – vor dem ersten Schreiben, für alle Belege. ``force`` gilt auch für ein reines Geschäftskonto und ist von ``selection`` unabhängig. Die Zählung bleibt die von früher: ohne
+    ``force`` ändert die Bankreferenz am Ergebnis nichts; eine angelegte Zeile zählt für die späteren Belege des Laufs als Bestand.
 
     Je Beleg nennt ``results`` ``inserted``, ``skipped`` (Duplikate) und davon
     ``skipped_upload`` (schon durch einen anderen Beleg desselben Laufs da) sowie
@@ -239,6 +273,9 @@ def handle_confirm_import(db: Database, post_data):
             selected_account, _name = match_account(accounts, files[index].get('iban'))
             if selected_account is None or not db.account_allows_selection(selected_account):
                 return 400, json.dumps({'ok': False, 'error': SELECTION_NEEDS_MIXED_ACCOUNT})
+        force = _import_force(post_data.get('force', []), files)
+        if force is None:
+            return 400, json.dumps({'ok': False, 'error': INVALID_SELECTION})
 
         if not files:
             os.remove(import_file)
@@ -253,20 +290,23 @@ def handle_confirm_import(db: Database, post_data):
         else:
             target_indices = [i for i, fl in enumerate(files) if not fl.get('imported')]
 
+        if force and not _forced_rows_are_suspect(db, files, accounts, target_indices, force):
+            return 400, json.dumps({'ok': False, 'error': INVALID_SELECTION})
+
         results = []
         any_inserted = False
 
-        # Zählbasierte Duplikat-Erkennung, JE DATEI: Der Bestand je Schlüssel
-        # (Datum/Betrag/Konto) wird beim ersten Auftreten in der Datei gelesen und
+        # Zählbasierte Duplikat-Erkennung, JE DATEI (``classify_duplicates``): Der Bestand je
+        # Schlüssel (Datum/Betrag/Konto) wird vor dem ersten Schreiben der Datei gelesen und
         # enthält damit auch, was frühere Dateien dieses Laufs angelegt haben;
         # übersprungen werden nur so viele Umsätze, wie der Bestand bereits hat.
         # So bleiben mehrfach identische Umsätze innerhalb EINER Datei erhalten,
         # über mehrere Dateien gilt aber das Maximum statt der Summe (Überlappung
         # oder dieselbe Datei zweimal verdoppelt nichts) – „Alle importieren“
         # verhält sich wie die Einzelimporte nacheinander.
-        # run_db_counts hält den Bestand VOR diesem Lauf: ein Duplikat oberhalb
-        # davon geht auf eine andere Datei dieses Uploads zurück.
-        run_db_counts = {}
+        # inserted_ids hält die Buchungen dieses Laufs: ein Duplikat, das auf eine von ihnen
+        # zurückgeht, stammt aus einer anderen Datei dieses Uploads (Quelle „upload“).
+        inserted_ids = set()
 
         for i in target_indices:
             if i < 0 or i >= len(files):
@@ -291,10 +331,10 @@ def handle_confirm_import(db: Database, post_data):
             skipped_upload = 0    # davon: schon durch eine andere Datei dieses Laufs da
             skipped_invalid = 0   # ohne Datum oder Betrag: nicht importierbar, kein Duplikat
             skipped_unselected = 0  # nicht gewählt (nur bei einem Beleg mit Eintrag in ``selection``)
+            forced = 0            # davon angelegt: trotz Duplikatverdacht (``force``)
             chosen = selection.get(i)   # None = der Beleg wird ganz importiert
+            wanted = force.get(i, ())   # Positionen, die der Nutzer trotz Verdacht angelegt haben will
             text_updated = 0
-            dup_db_counts = {}
-            dup_seen = {}
             # Backfill-Kandidaten je Duplikatschlüssel sammeln und erst NACH
             # der Transaktionsschleife anwenden: enthält die Datei mehrere
             # Duplikate desselben Schlüssels mit VERSCHIEDENEN Texten, ist die
@@ -302,7 +342,12 @@ def handle_confirm_import(db: Database, post_data):
             # Buchung mehrfach bzw. mit dem falschen Text aktualisiert werden).
             backfill_texts = {}   # dup_key -> {normalisierte Texte}
             backfill_raw = {}     # dup_key -> (date, amount, account_id, text)
-            for position, trans in enumerate(file_transactions(fl)):
+            transactions = file_transactions(fl)
+            amounts = {}
+            rows = duplicate_rows(transactions, account_id, amounts)
+            dup_keys = {index: key for index, key, _ref in rows}
+            verdicts = classify_duplicates(rows, bank_stock_for(db, amounts, inserted_ids))
+            for position, trans in enumerate(transactions):
                 recipient = trans.get('recipient', '') or ''
                 text = trans.get('reference', '') or ''
                 foreign_iban = trans.get('foreign_iban', '') or ''
@@ -312,28 +357,23 @@ def handle_confirm_import(db: Database, post_data):
                 if not trans_date or trans_amount is None:
                     skipped_invalid += 1
                     continue
-                dup_key = (trans_date, round(float(trans_amount), 2), account_id)
-                if dup_key not in dup_db_counts:
-                    dup_db_counts[dup_key] = db.check_booking_exists(
-                        trans_date, trans_amount, account_id, foreign_iban, text)
-                    run_db_counts.setdefault(dup_key, dup_db_counts[dup_key])
-                seen = dup_seen.get(dup_key, 0)
-                dup_seen[dup_key] = seen + 1
-                if seen < dup_db_counts[dup_key]:
+                dup_source, suspect = verdicts[position]
+                if dup_source is not None and not (suspect and position in wanted):
                     # Duplikat: nicht neu anlegen; Text für den späteren
                     # Backfill vormerken (todo Buchungstext)
+                    dup_key = dup_keys[position]
                     backfill_texts.setdefault(dup_key, set()).add(_normalize_ws(text))
                     backfill_raw[dup_key] = (trans_date, trans_amount,
                                              account_id, text)
                     skipped += 1
-                    if seen >= run_db_counts[dup_key]:
+                    if dup_source == 'upload':
                         skipped_upload += 1
                     continue
-                if chosen is not None and position not in chosen:
+                if dup_source is None and chosen is not None and position not in chosen:
                     skipped_unselected += 1
                     continue
 
-                db.insert_booking(
+                inserted_ids.add(db.insert_booking(
                     date_booking=trans_date,
                     amount=trans_amount,
                     account_id=account_id,
@@ -342,9 +382,12 @@ def handle_confirm_import(db: Database, post_data):
                     text=text,
                     document_number=None,
                     booking_type='bank',
-                    log_description=f"{bank_code} bank statement import"
-                )
+                    log_description=f"{bank_code} bank statement import",
+                    bank_details={name: trans.get(name) for name in DETAIL_FIELDS}
+                ))
                 inserted += 1
+                if dup_source is not None:
+                    forced += 1
                 any_inserted = True
 
             # Text-Backfill: nur für Schlüssel mit genau EINEM eindeutigen
@@ -357,13 +400,16 @@ def handle_confirm_import(db: Database, post_data):
                     text_updated += 1
 
             fl['imported'] = True
-            results.append({'file_index': i, 'filename': fl.get('filename'),
-                            'inserted': inserted, 'skipped': skipped,
-                            'skipped_upload': skipped_upload,
-                            'skipped_invalid': skipped_invalid,
-                            'skipped_unselected': skipped_unselected,
-                            'text_updated': text_updated,
-                            'account_found': True, 'error': None})
+            result = {'file_index': i, 'filename': fl.get('filename'),
+                      'inserted': inserted, 'skipped': skipped,
+                      'skipped_upload': skipped_upload,
+                      'skipped_invalid': skipped_invalid,
+                      'skipped_unselected': skipped_unselected,
+                      'text_updated': text_updated,
+                      'account_found': True, 'error': None}
+            if forced:
+                result['forced'] = forced
+            results.append(result)
 
         # Auto-Linking nur wenn etwas neu angelegt wurde
         linked = repaired = resolved = 0
@@ -1636,7 +1682,9 @@ def handle_datev_export(db: Database, post_data: dict):
     """DATEV Buchungsstapel-CSV für einen Datumsbereich erzeugen.
 
     Setzt dabei für alle exportierten Buchungen das Steuerdatum (DateTax)
-    auf das heutige Datum.
+    auf das heutige Datum und vermerkt sie als exportiert (``BookingExports``,
+    ``Database.mark_datev_export``: nur der erste Export zählt, ein zweiter ändert
+    den Zeitpunkt nie).
 
     Der Zeitraum liegt in einem Kalenderjahr (``DATEV_YEAR_REFUSED``). Unstimmige Splits sperren den Export. Danach
     sammelt ``Database.check_transfers`` Hinweise (null bis drei, in dieser Reihenfolge): Bankbewegungen im Zeitraum ohne
@@ -1730,9 +1778,9 @@ def handle_datev_export(db: Database, post_data: dict):
             rates_without_key=unkeyed
         )
 
-        # Steuerdatum der exportierten Buchungen auf heute setzen
+        # Steuerdatum der exportierten Buchungen auf heute setzen und sie als exportiert vermerken – nur die Sätze, die im Stapel stehen
         today_iso = datetime.date.today().isoformat()
-        db.update_bookings_date_tax_batch(exported_ids, today_iso)
+        db.mark_datev_export(exported_ids, today_iso)
 
         year = date_from[:4]
         filename = f"DATEV_Buchungsstapel_{year}_{date_from.replace('-','')}-{date_to.replace('-','')}.csv"
@@ -3168,6 +3216,10 @@ def handle_update_invoice_status(post_body: bytes):
     und nichts erzeugt. Versendet die Route eine Ersatzrechnung, ziehen die Zahlungen der stornierten Rechnung um
     (in derselben Transaktion); die Antwort nennt in ``hint``, was geschah.
 
+    ``confirm_exported`` (Wahrheitswert, ohne Angabe ``false``; alles andere ist eine ungültige Anfrage, bevor etwas geschieht): Stand die Forderung einer Rechnung, die auf Entwurf oder
+    abgeschlossen zurückgeholt wird, schon in einem DATEV-Export, antwortet die Route ohne Bestätigung mit 409, dem Klartext in ``error`` und ``confirm: "exported"`` – nichts ist geändert;
+    mit ``true`` geschieht das Zurückholen wie sonst.
+
     Returns tuple: (status_code, json_body)
     """
     data = _json_request(post_body)
@@ -3175,6 +3227,9 @@ def handle_update_invoice_status(post_body: bytes):
     new_status = data.get('status')
     if not isinstance(new_status, str):
         raise InvalidRequest('status fehlt')
+    confirm_exported = data.get('confirm_exported', False)
+    if not isinstance(confirm_exported, bool):
+        raise InvalidRequest('confirm_exported ist kein Wahrheitswert')
 
     if not invoice_id or not new_status:
         return 400, '{"success": false, "error": "Fehlende Parameter"}'
@@ -3189,9 +3244,12 @@ def handle_update_invoice_status(post_body: bytes):
     if not db.get_document(invoice_id, 'invoice'):
         return 404, '{"success": false, "error": "Rechnung nicht gefunden"}'
 
-    change = db.set_invoice_status(invoice_id, new_status, userctx.get_user())
+    change = db.set_invoice_status(invoice_id, new_status, userctx.get_user(), confirm_exported=confirm_exported)
     if not change.ok:
-        return change.code, json.dumps({'success': False, 'error': change.message})
+        refusal = {'success': False, 'error': change.message}
+        if change.confirm:
+            refusal['confirm'] = change.confirm
+        return change.code, json.dumps(refusal)
     print(f"Invoice {invoice_id} status updated to: {new_status}")
 
     result = {'success': True, 'invoice_id': invoice_id}

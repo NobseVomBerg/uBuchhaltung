@@ -5,6 +5,11 @@
 - Nachbildung des WISO-Stapels (an einem Bestand gemessen, keine Zusicherung, dass die Kanzlei ihn annimmt). Die BU-Schlüssel sind nicht
   gegen einen echten Stapel geprüft (`docs/aufgaben.md`) – nicht als richtig voraussetzen.
 - Soll/Haben-Kennzeichen bezieht sich auf das Feld „Konto“ und folgt der Form (`soll_side`).
+- **Merkmal „exportiert“** (`BookingExports`): `handle_datev_export` ruft `Database.mark_datev_export` – setzt wie bisher das Steuerdatum auf heute und legt
+  für jeden Satz **im Stapel** (nicht die weggelassenen und nicht die außerhalb des Zeitraums) eine Zeile an, in EINER Transaktion. Nur der erste Export zählt:
+  `ExportedAt` ändert ein späterer nie. Der Stapel selbst bleibt unverändert (`tests/test_datev_export_marks.py`). Das Merkmal wirkt heute so: Das Zurückholen
+  einer Rechnung fragt nach (`rechnungen.md`), und ein exportierter Zahlungssatz zählt beim Umzug der Zahlungen als „hängt etwas dran“
+  (`_booking_attachments_exist`, `BOOKING_REFERENCES`). Der Stempel `DateTax` bleibt; Wirkungen und Ablösung des Stempels: `docs/aufgaben.md`.
 - **BU-Schlüssel als Daten am Satz** (`Bookings.DatevKey`, ganze Zahl 1–9999, Spalte 23; nur die Importe schreiben ihn): Der Export gibt
   ihn unverändert aus (auch 490/100/121 ohne Satz); alles andere (0, über 9999, Text) gilt als keiner. Er fällt (NULL), wenn sich Konto,
   Gegenkonto oder Steuersatz ändern: `update_booking_fields`/`update_booking` über EINE Stelle (`_datev_key_stale`, im selben UPDATE),

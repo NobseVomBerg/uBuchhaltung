@@ -217,7 +217,9 @@ Jede Funktion mit ihrer Seite im Browser. Die Regeln hinter den Funktionen stehe
 - Bankbewegungen (Import oder Erfassung) und Buchungssätze in einer Liste; Split-Buchungen (mehrere Buchungssätze je Bankbewegung),
   Status „verknüpft/offen“, Filter nach Datum, Konto, Kunde, Währung und Betrag.
 - **Kontoauszug-Import:** CAMT.053 (XML/ZIP, alle Banken), PDF (DKB, Volksbank Rottweil) oder CSV (Umsatzliste der DKB), mit Vorschau,
-  Duplikat-Erkennung und Saldo-Prüfung; erst danach wird übernommen. Bei einem **gemischt genutzten Konto** (Haken „Reines Geschäftskonto“
+  Duplikat-Erkennung und Saldo-Prüfung; erst danach wird übernommen. Als Duplikat gilt Konto + Datum + Betrag; trägt ein verworfener Umsatz eine
+  andere Bankreferenz als der vorhandene, markiert ihn die Vorschau, und er lässt sich doch importieren. CAMT-Zusatzfelder (Valuta, Bank-, End-to-End-
+  und Mandatsreferenz, Gläubiger-ID) stehen an der Bankbewegung. Bei einem **gemischt genutzten Konto** (Haken „Reines Geschäftskonto“
   in den Stammdaten entfernen) lassen sich einzelne Umsätze auswählen. Grenzen und Einzelheiten:
   [PARSER_README.md](PARSER_README.md), [`docs/regeln/import.md`](docs/regeln/import.md)
 - **Vorschlag** (🪄): kontiert eine offene Buchung aus der Historie desselben Empfängers (Konto, Steuersatz, nächste Beleg-Nr.); gespeichert

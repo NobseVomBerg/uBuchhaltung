@@ -3,7 +3,11 @@
 ## Kontoauszug-Import (CAMT.053 + PDF + CSV)
 
 - Ein Weg für alle Formate: `importers/` liefern `BankStatement` (`base.py`) → `server/upload_handler.py` → Vorschau
-  `server/import_preview.py` → bestätigen. Valuta, EndToEndId, Mandatsreferenz, Gläubiger-ID haben im Modell keinen Platz.
+  `server/import_preview.py` → bestätigen. Nur CAMT füllt die Zusatzfelder einer Bankbewegung (`importers.base.DETAIL_FIELDS`: Valuta, Bankreferenz,
+  End-to-End-Referenz, Mandatsreferenz, Gläubiger-ID); `StatementTransaction.as_dict` nimmt sie nur auf, wo sie einen Wert haben (PDF, CSV und ältere
+  Importdateien behalten ihre Schlüssel). Jeder Wert geht durch `clean_bank_text`/`clean_value_date`: Platzhalter der Bank, mehr als 35 Zeichen, Steuerzeichen
+  und ein Datum, das es nicht gibt, bleiben leer. Der Import schreibt sie mit der Bankzeile nach `BankTransactionDetails` (`insert_booking(bank_details=…)`, EINE
+  Transaktion); die Maske der Bankbewegung zeigt sie nur zum Lesen, kein Schreibweg der Masken fasst die Tabelle an.
 - Ablage der Seite *Buchungen*: `#dropZone`/`#fileInput`/`#uploadStatus` stehen im Bereich, den `openEditForm` austauscht. Hörer
   an `document.body`, Elemente bei jedem Ereignis neu suchen; nie ein Hörer oder eine Konstante an diesen Elementen
   (`tests/test_statement_upload_listeners.py`).
@@ -16,6 +20,9 @@
 - Nennt ein CAMT-Auszug irgendwo eine andere Währung als Euro: keine Umsätze, nur Befund `foreign_currency`
   (`_statement_currency`). **Nur `TxDtls/Amt` teilt eine Sammelbuchung auf** (`_tx_amount`), nie `AmtDtls` – nicht ändern, ohne
   die Duplikaterkennung mitzuziehen.
+- Zusatzfelder (`_build`): Valuta `Ntry/ValDt`; Bankreferenz `Ntry/AcctSvcrRef` **nur auf Ebene des Umsatzes** (alle Teile einer Sammelbuchung teilen sie, und sie
+  bleibt, wenn eine Sammelbuchung als ein Umsatz gelesen wird); End-to-End- und Mandatsreferenz aus `TxDtls/Refs`; Gläubiger-ID = erstes `Othr` mit Schema `SEPA`
+  unter `RltdPties/Cdtr` (Form .02/.04 und .08, `_creditor_id`).
 - Saldoprüfung für alle Formate: `pdftext.find_balances` (lineare Laufzeit), `plausibility.check_balance`; `balance` = stimmt
   nicht, `no_balance` = nicht gefunden – nichts wird geraten.
 - Volksbank-PDF: Jahr nur aus dem Kopf (`header_year`, sonst `no_year`); Buchung nach `latest` → Vorjahr (`_booking_date`);
@@ -51,15 +58,27 @@
   Schlüssel, Schlüssel ohne kanonische ASCII-Ganzzahl oder fremder `file_index`, Wert keine Liste ganzer Zahlen (kein `bool`) im
   Bereich der Umsätze, doppelte Positionen, Feld mehrfach → `400` „Ungültige Auswahl“; Eintrag für Beleg ohne Konto oder ohne
   erlaubte Auswahl → `400`. Nichts ist dann importiert.
-- Duplikat-Zählung unverändert: Jede Zeile wird eingeordnet (`dup_seen`/`dup_db_counts` rücken für jede Zeile vor, gewählt oder
+- Duplikat-Zählung unverändert: Jede Zeile wird eingeordnet (`classify_duplicates` rechnet für alle Zeilen der Datei, gewählt oder
   nicht), dann Duplikat → `skipped`, unvollständig → `skipped_invalid`, nicht gewählt → `skipped_unselected`, sonst angelegt.
 
 ### Duplikate
 
-- Duplikat = Konto + Buchungsdatum + Betrag, **ohne Text** (`check_booking_exists`), zählbasiert **je Datei**: Der Bestand enthält,
-  was frühere Dateien desselben Laufs angelegt haben; über mehrere Dateien gilt das Maximum, nicht die Summe. „Alle importieren“
-  (`handle_confirm_import`) = Einzelimporte nacheinander; die Vorschau (`build_import_preview`) rechnet dasselbe ohne Schreiben.
-- Grenzen: CAMT-Sammelbuchung gegen PDF-Summenzeile; zwei verschiedene Auszüge desselben Tags mit je einem echten, gleichen Umsatz.
+- Duplikat = Konto + Buchungsdatum + Betrag, **ohne Text und ohne Referenz** (Bestand: `Database.bank_stock`, dieselbe Bedingung wie `check_booking_exists`),
+  zählbasiert **je Datei**: Der Bestand enthält, was frühere Dateien desselben Laufs angelegt haben; über mehrere Dateien gilt das Maximum, nicht die Summe.
+  „Alle importieren“ (`handle_confirm_import`) = Einzelimporte nacheinander; die Vorschau (`build_import_preview`) rechnet dasselbe ohne Schreiben. Die
+  Zählung hat EINE Stelle, `import_preview.classify_duplicates` (Vorschau, Import und die Prüfung von `force`; Quelle `db` vor `upload`). **Die Bankreferenz
+  ändert die Zählung nie:** Von selbst wird nie doppelt importiert, und ein anderes Datum oder Konto gleicht nichts ab.
+- **Verdächtig** (`ref_differs`/`forceable`, Befund `ref_differs`): Ein Umsatz, den die Zählung verwirft, mit eigener Bankreferenz, der nach zwei Durchgängen keine
+  Bestandszeile belegt (1: Zeile mit gleicher Referenz; 2: mit Referenz die erste freie Zeile ohne, ohne Referenz zuerst eine mit). Ohne Referenz auf einer Seite
+  ist nie ein Umsatz verdächtig (PDF, CSV, Bestand ohne Details). Er bleibt `dup` und nicht `importable`; die Karte bietet je solcher Zeile „trotzdem importieren“
+  (nie vorab angehakt, auch bei reinem Geschäftskonto – dort steht die Liste dann offen).
+- `/confirm_transactions` nimmt `force` (`{"<file_index>": [<index>, …]}`, `_import_force`, so streng wie `selection`): Jede Position muss in der frisch gerechneten
+  Einordnung der Belege dieses Laufs verdächtig sein (`_forced_rows_are_suspect`, rechnet wie die Vorschau), sonst `400` „Ungültige Auswahl“ vor dem ersten
+  Schreiben; der Import prüft jede Position beim Schreiben noch einmal gegen seinen Bestand. Erzwungen = `inserted` und `forced` (Schlüssel nur bei Treffern),
+  unabhängig von `selection`; die Zeile zählt für spätere Belege des Laufs als Bestand und ist beim nächsten Import ein gewöhnliches Duplikat mit gleicher Referenz.
+  Ohne `force` entscheidet allein die Zählung, die Bankreferenz ändert am Ergebnis nichts (`tests/test_import_bank_refs.py`).
+- Grenzen: CAMT-Sammelbuchung gegen PDF-Summenzeile (die PDF-Seite hat keine Referenz); zwei verschiedene Auszüge desselben Tags mit je einem echten, gleichen
+  Umsatz, wenn nicht beide eine Bankreferenz tragen (mit verschiedenen: verdächtig, erzwingbar). Ein Umsatz ohne Referenz (PDF, CSV) lässt sich nicht erzwingen.
 - `text_differs` (Duplikat aus anderer Datei mit nicht passendem Verwendungszweck): nur Hinweis.
 - Umsatz ohne Datum oder Betrag: in Vorschau und Import gleich nicht importierbar (`incomplete`, `skipped_invalid`). Betrag 0,00 €
   ist kein Befund: gewöhnlicher Umsatz (`tests/test_import_zero_amount.py`); als Bankbewegung ohne Buchungssatz nicht „offen“

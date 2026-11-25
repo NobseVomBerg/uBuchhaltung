@@ -18,6 +18,10 @@ die eine Bankbewegung ausmachen und die ``Bookings`` braucht:
 ``foreign_iban`` IBAN der Gegenseite, falls im Beleg enthalten
 ===============  ====================================================
 
+Dazu kommen fünf Zusatzfelder (``DETAIL_FIELDS``), die nur CAMT füllt und die ein Umsatz nur trägt, wo sie einen Wert haben: ``value_date``
+(Valuta), ``end_to_end_id``, ``mandate_ref``, ``creditor_id`` (Gläubiger-ID) und ``bank_ref`` (Bankreferenz des Umsatzes). Sie gehen nicht in
+``Bookings``, sondern beim Import in ``BankTransactionDetails``; die Bankreferenz verfeinert außerdem den Hinweis der Duplikatprüfung.
+
 Ein Importmodul erbt von :class:`StatementImporter`, erkennt seine Belege über
 ``detect()`` und liefert in ``parse()`` den fertigen ``BankStatement``. Mehr
 schuldet es der Anwendung nicht.
@@ -29,6 +33,9 @@ from typing import List, Optional
 
 #: Spalten einer importierten Bankbewegung (Reihenfolge = Anzeigereihenfolge)
 CANONICAL_FIELDS = ('date', 'amount', 'recipient', 'reference', 'foreign_iban')
+
+#: Zusatzfelder einer Bankbewegung aus CAMT: Valuta, End-to-End-Referenz, Mandatsreferenz, Gläubiger-ID, Bankreferenz (``''`` = keine)
+DETAIL_FIELDS = ('value_date', 'end_to_end_id', 'mandate_ref', 'creditor_id', 'bank_ref')
 
 #: Länge, bis zu der ein Referenzfeld der Bank gilt (ISO 20022: Max35Text); ein längerer Wert ist kein Referenzfeld
 MAX_BANK_TEXT = 35
@@ -74,10 +81,16 @@ class StatementTransaction:
     foreign_iban: str = ''
     #: Plausibilitäts-Befunde (siehe importers.plausibility)
     warnings: List[str] = field(default_factory=list)
+    #: Zusatzfelder (``DETAIL_FIELDS``); nur CAMT füllt sie, immer über ``clean_value_date``/``clean_bank_text``
+    value_date: str = ''
+    end_to_end_id: str = ''
+    mandate_ref: str = ''
+    creditor_id: str = ''
+    bank_ref: str = ''
 
     @classmethod
     def from_dict(cls, data: dict) -> 'StatementTransaction':
-        """Aus dem Roh-Dict eines Parsers bauen; unbekannte Schlüssel entfallen."""
+        """Aus dem Roh-Dict eines Parsers bauen; unbekannte Schlüssel entfallen, die Zusatzfelder gehen durch dieselbe Reinigung wie beim Lesen."""
         return cls(
             date=data.get('date'),
             amount=data.get('amount'),
@@ -85,11 +98,17 @@ class StatementTransaction:
             reference=data.get('reference') or '',
             foreign_iban=data.get('foreign_iban') or '',
             warnings=list(data.get('warnings') or []),
+            value_date=clean_value_date(data.get('value_date')),
+            end_to_end_id=clean_bank_text(data.get('end_to_end_id')),
+            mandate_ref=clean_bank_text(data.get('mandate_ref')),
+            creditor_id=clean_bank_text(data.get('creditor_id')),
+            bank_ref=clean_bank_text(data.get('bank_ref')),
         )
 
     def as_dict(self) -> dict:
-        """Serialisieren – so, wie Vorschau und Import-Handler es lesen."""
-        return {
+        """Serialisieren – so, wie Vorschau und Import-Handler es lesen. Die Zusatzfelder stehen nur darin, wo sie einen Wert haben: Eine Datei ohne sie
+        (PDF, CSV, ein älterer Import) behält genau die Schlüssel von früher."""
+        data = {
             'date': self.date,
             'amount': self.amount,
             'recipient': self.recipient,
@@ -97,6 +116,8 @@ class StatementTransaction:
             'foreign_iban': self.foreign_iban,
             'warnings': list(self.warnings),
         }
+        data.update({name: getattr(self, name) for name in DETAIL_FIELDS if getattr(self, name)})
+        return data
 
 
 @dataclass

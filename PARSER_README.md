@@ -29,8 +29,9 @@ Die Anwendung kennt nur die Abstraktionsschicht; die Eigenheiten einer Bank stec
 | `safe_xml.py` | XML aus Uploads sicher lesen (`parse_untrusted_xml`); gemeinsam mit der Belegerkennung |
 | `__init__.py` | `IMPORTERS` (Erkennungsreihenfolge, das erste passende Modul gewinnt), `find_importer()`, `parse_statement()` |
 
-Eine importierte Bewegung hat nur `CANONICAL_FIELDS`: `date`, `amount`, `recipient`, `reference`, `foreign_iban`. Weiter
-reicht das Modell nicht (Valuta, EndToEndId, Mandats- und Gläubiger-ID fehlen).
+Eine importierte Bewegung hat die `CANONICAL_FIELDS`: `date`, `amount`, `recipient`, `reference`, `foreign_iban`. Nur CAMT füllt
+zusätzlich die `DETAIL_FIELDS` (`value_date`, `end_to_end_id`, `mandate_ref`, `creditor_id`, `bank_ref`); `as_dict` nimmt sie nur auf,
+wo sie einen Wert haben. Der Import schreibt sie nach `BankTransactionDetails` (`DB_MODEL.md`), PDF und CSV liefern sie nicht.
 
 **Neue Bank (PDF) anbinden:** ein Modul mit einer `StatementImporter`-Klasse schreiben (`detect(filename, text)` erkennt
 den Beleg, `parse(filepath, text=None)` liefert den `BankStatement`) und die Klasse in `IMPORTERS` eintragen. Am übrigen
@@ -84,6 +85,10 @@ Unterstützt camt.053.001.02/.04/.08; gelesen wird über den lokalen Elementname
   Umsatz mit Hinweis `split_mismatch`).
 * Gegenpartei: `Dbtr` bei Gutschrift, `Cdtr` bei Lastschrift; Zweck = alle `Ustrd` (Fallback `AddtlTxInf`,
   `AddtlNtryInf`).
+* Zusatzfelder: Valuta (`Ntry/ValDt`), Bankreferenz (`Ntry/AcctSvcrRef`, nur die des Umsatzes – alle Teile einer Sammelbuchung
+  teilen sie), End-to-End-Referenz (`TxDtls/Refs/EndToEndId`), Mandatsreferenz (`Refs/MndtId`) und Gläubiger-ID (`RltdPties/Cdtr`,
+  Schema `SEPA`, in der Form von .02/.04 wie von .08). Was kein sicherer Wert ist (Platzhalter `NOTPROVIDED`/`NONREF`, mehr als
+  35 Zeichen, Steuerzeichen, ein Datum, das es nicht gibt), bleibt leer.
 * Saldoprüfung: Anfangssaldo (OPBD/PRCD) + Umsätze = Schlusssaldo (CLBD).
 * Grenzen: je XML 20 MB (entpackt), höchstens 50 XML-Einträge je ZIP, 100 MB entpackt insgesamt, Kompressionsverhältnis
   höchstens 200, Beträge unter 10¹².

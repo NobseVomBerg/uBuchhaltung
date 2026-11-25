@@ -1676,10 +1676,12 @@ def _invoice_form_html(db: Database, invoice_id=None, copy_from=None):
 const einvoiceSendQuestion = {script_json(einvoice_question)};
 function setInvoiceStatus(invId) {{
   var ns = document.getElementById('statusChangeSelect').value;
-  var change = function() {{
+  var change = function(confirmed) {{
     fetch('/invoice/status', {{method: 'POST', headers: {{'Content-Type': 'application/json'}},
-      body: JSON.stringify({{invoice_id: invId, status: ns}})}}).then(r => r.json())
+      body: JSON.stringify({{invoice_id: invId, status: ns, confirm_exported: confirmed === true}})}}).then(r => r.json())
     .then(data => {{
+      // Das Zurückholen einer Rechnung, deren Forderung schon in einem DATEV-Export stand, ist eine Rückfrage, kein Fehler
+      if (!data.success && data.confirm === 'exported') {{ appConfirm(data.error, function() {{ change(true); }}); return; }}
       if (!data.success) {{ showMessage('Fehler: ' + (data.error || '?'), 'error'); return; }}
       // "Versendet" erzeugt das PDF automatisch (todo #2) - Hinweis, falls das
       // nicht geklappt hat; sonst direkt neu laden.

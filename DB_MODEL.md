@@ -343,8 +343,8 @@ Eine Zeile je Buchungssatz, der in einem Buchungsstapel stand – die Marke „e
 | Booking_ID | INTEGER | PRIMARY KEY, FK → Bookings ON DELETE CASCADE | der Buchungssatz |
 | ExportedAt | DATETIME | NOT NULL | Zeitpunkt des ersten Exports (UTC, `CURRENT_TIMESTAMP`); ein späterer Export ändert ihn nie |
 
-`Database.mark_datev_export` setzt das Steuerdatum und die Marke in EINER Transaktion (`DateTax` wie `update_bookings_date_tax_batch`, die Marke nur beim ersten Mal); `Database.exported_booking_ids` nennt,
-welche Sätze eine Marke tragen. Die Tabelle ist nur die Marke: Sie sperrt nichts.
+`Database.mark_datev_export` setzt das Steuerdatum und die Marke in EINER Transaktion (`DateTax` wie `update_bookings_date_tax_batch`, die Marke nur beim ersten Mal); es ruft `handle_datev_export` für die Sätze, die im Stapel stehen.
+`Database.exported_booking_ids` nennt, welche Sätze eine Marke tragen: Das Zurückholen einer Rechnung fragt nach, wenn ihre Forderung eine trägt (`docs/regeln/rechnungen.md`). Die Tabelle ist nur die Marke: Sie sperrt nichts.
 
 ### 10. BookingDocuments (n:m)
 
@@ -545,6 +545,19 @@ Fortschreibung), Buchen, Abgang, Erweiterungen, Löschen und der Abgleich mit de
 ---
 
 ## Datenfluss
+
+### Kontoauszug-Import
+
+```
+1. Upload (POST /upload_receipts): PDF, CAMT.053 oder CSV → BankStatement; nur CAMT liefert Zusatzfelder; Ablage als pending_imports/*.json
+2. Vorschau (server/import_preview.py, rein lesend): Konto über die IBAN; Duplikat = Konto + Datum + Betrag (classify_duplicates; Bestand je Schlüssel:
+   Database.bank_stock); „verdächtig“ = eigene Bankreferenz, die keine Bestandszeile belegt
+3. POST /confirm_transactions: je Beleg Bookings mit BookingType='bank' (insert_booking); die Zusatzfelder eines CAMT-Umsatzes → BankTransactionDetails in
+   derselben Transaktion; mit force legt der Import ein verdächtiges Duplikat doch an
+4. link_bank_to_entries() (unten)
+```
+
+Regeln und Grenzen: `docs/regeln/import.md`.
 
 ### Bank ↔ Satz
 

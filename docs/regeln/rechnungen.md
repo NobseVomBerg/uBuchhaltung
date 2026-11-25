@@ -285,7 +285,11 @@
   überfällig bucht und erzeugt nichts.
 - Teilzahlung/bezahlt und Rückweg setzt die Zahlungslogik (`next_payment_status`); „bezahlt“ von Hand nur mit ≥ 1 Zahlung (Skonto);
   Rückweg bezahlt/Teilzahlung → versendet/überfällig von Hand nur ohne Zahlung. Versendet/überfällig → Entwurf/abgeschlossen
-  („zurückholen“) nur ohne Zahlung: Forderung entfernt, Dokumente nach „Fassungen“.
+  („zurückholen“) nur ohne Zahlung: Forderung entfernt, Dokumente nach „Fassungen“. **Stand die Forderung schon in einem DATEV-Export**
+  (`BookingExports`), fragt `set_invoice_status` zuerst nach: `409` mit `REOPEN_EXPORTED_QUESTION` und `confirm == 'exported'`, nichts
+  geändert; erst `confirm_exported: true` (JSON-Wahrheitswert, sonst `InvalidRequest`) lässt es geschehen, die Seite fragt über
+  `appConfirm` und schickt neu. Keine Sperre; ohne Export keine Rückfrage; die Ablehnungen (`REOPEN_*`) gehen ihr vor
+  (`tests/test_reopen_after_export.py`).
 - **Nach „storniert“ nur für Rechnungen ohne positiven Betrag** (Brutto ≤ 0), Art `cancel`: Forderung geht, solange keine Zahlung hängt
   und nur die der App. `check_transition` entscheidet am Betrag, den `set_invoice_status` in der Transaktion liest (Bedingung
   `NO_POSITIVE`; `check_transition`/`allowed_targets` nehmen `gross`, ohne Angabe positiv). Brutto > 0: `set_invoice_status(…,
@@ -333,8 +337,10 @@
   den Versand ab (409, `PaymentMoveFailed` → `_Refusal`, nichts geändert).
 - **Was geschah, nennt `hint`** (`StatusChange.payment_hint`) mit Grund (`MOVE_SKIP_REASONS`: Import, Bankkonto ohne SKR-Nummer,
   überbuchte Bewegung, Sätze ohne Marke, geänderte/ergänzte Sätze oder Beleg, anderes Erlöskonto als hinterlegt, allein anderes
-  Steuerdatum (der DATEV-Export stempelt es), mehrfach zugeordnete Bewegung, keine Bankbewegung mit Zahlungseingang, nicht neu buchbar;
-  je Grund einmal, feste Reihenfolge, mit Gesamtbetrag). Spätes Entfernen der Zahlung von Hand: nichts wandert zurück.
+  Steuerdatum, mehrfach zugeordnete Bewegung, keine Bankbewegung mit Zahlungseingang, nicht neu buchbar; je Grund einmal, feste
+  Reihenfolge, mit Gesamtbetrag). Ein Zahlungssatz, der in einem DATEV-Export stand, trägt außer dem Steuerdatum das Merkmal
+  „exportiert“ und zählt als „hängt etwas dran“ (`_booking_attachments_exist`): Er zieht nicht um, der genannte Grund ist „geändert/ergänzt“.
+  Spätes Entfernen der Zahlung von Hand: nichts wandert zurück.
 
 ## Stornobeleg (`Database.cancel_invoice`, `db/invoice_storno.py`)
 

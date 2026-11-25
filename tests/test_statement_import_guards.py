@@ -957,8 +957,8 @@ class FakeDb:
     def fetch_accounts(self):
         return self.accounts
 
-    def check_booking_exists(self, *args):
-        return 0
+    def bank_stock(self, *args):
+        return []
 
     def account_allows_selection(self, account_id):
         # seit 2.5.0 fragt die Vorschau je Beleg, ob das Konto eine Auswahl einzelner Umsätze erlaubt (hier: nie)
