@@ -14,6 +14,7 @@ import shutil
 import tempfile
 import threading
 import time
+import unicodedata
 from typing import NamedTuple
 from urllib.parse import quote
 import auth
@@ -55,7 +56,7 @@ from db.matching import FORM_LIQUID_FIRST, FORM_TRANSFER, is_bank_effective, is_
 from db.accounts import DEFAULT_CASH_ACCOUNT
 from db.articles import ArticleExists
 from db.tax_rates import FIXED_TAX_BPS, entry_snapshot, legacy_expressible
-from money import to_minor, from_minor, multiply, tax_from_gross, round_minor, fmt_eur
+from money import to_minor, from_minor, multiply, tax_from_gross, round_minor, round_to_cent, fmt_eur
 from tax_groups import MIXED_TAX_RATES, STANDARD, bp_pct, group_label, rate_groups
 from decimal import Decimal
 
@@ -2888,22 +2889,33 @@ def handle_update_article(db: Database, post_data):
 
 
 # „Als Artikel speichern“ in den Masken von Rechnung und Angebot (``POST /articles/quick-add``): feste Sätze der Ablehnungen – nie der Text einer Ausnahme
-ARTICLE_NAME_INVALID = 'Die Bezeichnung des Artikels muss aus 1 bis 200 druckbaren Zeichen bestehen.'
-ARTICLE_UNIT_INVALID = 'Die Einheit des Artikels muss aus 1 bis 20 druckbaren Zeichen bestehen.'
+ARTICLE_NAME_INVALID = 'Die Bezeichnung des Artikels muss 1 bis 200 Zeichen lang sein, ohne Zeilenumbruch und Richtungszeichen.'
+ARTICLE_UNIT_INVALID = 'Die Einheit des Artikels muss 1 bis 20 Zeichen lang sein, ohne Zeilenumbruch und Richtungszeichen.'
 ARTICLE_PRICE_INVALID = 'Der Preis des Artikels muss eine Zahl von 0 bis unter 1.000.000.000 sein.'
-ARTICLE_RATE_INVALID = 'Der Steuersatz des Artikels muss eine Zahl von 0 bis 100 sein.'
+ARTICLE_RATE_INVALID = 'Der Steuersatz des Artikels muss 0 oder eine Zahl von 1 bis 100 sein.'
 ARTICLE_EXISTS = 'Einen Artikel mit dieser Bezeichnung gibt es schon.'
 ARTICLE_SAVE_FAILED = 'Der Artikel konnte nicht gespeichert werden. Einzelheiten stehen im Server-Log.'
 ARTICLE_NAME_MAX, ARTICLE_UNIT_MAX, ARTICLE_PRICE_LIMIT, ARTICLE_RATE_LIMIT = 200, 20, 10 ** 9, 100
 
+# Zeichen, die in einem Namen täuschen können, und deshalb nie gespeichert werden: Steuerzeichen (Unicode-Kategorie Cc, auch Zeilenumbruch und Tabulator), Ersatzzeichen (Cs), private (Co) und
+# nicht zugewiesene Zeichen (Cn), Zeilen- und Absatztrenner (Zl, Zp) und aus den Formatzeichen (Cf) die der Schreibrichtung (U+202A–U+202E, U+2066–U+2069, U+200E, U+200F, U+061C: Sie drehen die
+# Anzeige um). Weiche Trennstriche, ZWJ in einem Emoji und geschützte Leerzeichen sind erlaubt.
+_ARTICLE_REFUSED_CATEGORIES = frozenset({'Cc', 'Cs', 'Co', 'Cn', 'Zl', 'Zp'})
+_ARTICLE_REFUSED_DIRECTION = frozenset(chr(code) for code in (*range(0x202A, 0x202F), *range(0x2066, 0x206A), 0x200E, 0x200F, 0x061C))
+
 
 def _article_text(value, limit):
-    """Ein Text des Artikels aus dem JSON-Body: ein ``str``, außen ohne Leerraum, 1 bis ``limit`` Zeichen, nur druckbare Zeichen (``str.isprintable``: kein Steuerzeichen, kein
-    Zeilenumbruch) – sonst ``None``."""
+    """Ein Text des Artikels aus dem JSON-Body: ein ``str``, außen ohne Leerraum, 1 bis ``limit`` Zeichen, ohne die täuschenden Zeichen oben und mit mindestens einem sichtbaren Zeichen (Buchstabe, Ziffer,
+    Satzzeichen oder Symbol – ein Name aus Zeichen ohne Breite wäre leer) – sonst ``None``."""
     if not isinstance(value, str):
         return None
     text = value.strip()
-    return text if 1 <= len(text) <= limit and text.isprintable() else None
+    if not 1 <= len(text) <= limit:
+        return None
+    categories = [unicodedata.category(char) for char in text]
+    if any(category in _ARTICLE_REFUSED_CATEGORIES for category in categories) or not _ARTICLE_REFUSED_DIRECTION.isdisjoint(text):
+        return None
+    return text if any(category[0] in 'LNPS' for category in categories) else None
 
 
 def _article_number(value, limit, inclusive):
@@ -2913,12 +2925,20 @@ def _article_number(value, limit, inclusive):
     return value if 0 <= value and (value <= limit if inclusive else value < limit) else None
 
 
+def _article_rate(value):
+    """Der Steuersatz des Artikels (Prozent): 0 oder eine Zahl von 1 bis 100 – sonst ``None``. Ein Satz zwischen 0 und 1 gälte überall als Bruch (``tax_groups.rate_pct``: 0,5 sind 50 Prozent)
+    und würde nie als das gelesen, was der Nutzer meinte."""
+    rate = _article_number(value, ARTICLE_RATE_LIMIT, True)
+    return None if rate is None or 0 < rate < 1 else rate
+
+
 def handle_article_quick_add(db, post_body: bytes):
     """Aus einer Position einer Maske einen NEUEN Artikel anlegen (``POST /articles/quick-add``, JSON ``{"name", "unit", "price", "taxRate"}``) – ein vorhandener Artikel wird nie
-    geändert. ``name``: Text, außen ohne Leerraum 1 bis 200 druckbare Zeichen; ``unit``: ebenso 1 bis 20; ``price``: Zahl von 0 bis unter eine Milliarde, über ``money`` auf den Cent
-    gerundet (kein Gleitkomma-Rechnen); ``taxRate``: Zahl von 0 bis 100 (Prozent). Jede andere Form ist 400 mit festem Satz, nichts angelegt; ein Body, der kein JSON-Objekt ist, die
-    400 „Ungültige Anfrage.“ jeder JSON-Route. Gibt es schon einen Artikel, dessen Bezeichnung bis auf Schreibweise und Leerraum gleich ist (aktiv oder nicht): 409 ``ARTICLE_EXISTS``,
-    nichts angelegt – Prüfung und Anlegen laufen in EINER Transaktion (``Database.insert_article_unique``). Im Demo-Modus erlaubt (es ist keine Datei im Spiel).
+    geändert. ``name``: Text, außen ohne Leerraum 1 bis 200 Zeichen; ``unit``: ebenso 1 bis 20 (beide ohne Steuer- und Richtungszeichen, ``_article_text``); ``price``: Zahl von 0 bis unter eine
+    Milliarde, über ``money.round_to_cent`` EINMAL und exakt auf den Cent gerundet (kein Gleitkomma-Rechnen, keine doppelte Rundung: 1,00495 ergibt 1,00); ``taxRate``: 0 oder eine Zahl von 1 bis 100
+    (Prozent, ``_article_rate``). Jede andere Form ist 400 mit festem Satz, nichts angelegt; ein Body, der kein JSON-Objekt ist, die 400 „Ungültige Anfrage.“ jeder JSON-Route. Gibt es schon einen
+    Artikel, dessen Bezeichnung bis auf Schreibweise und Leerraum gleich ist (aktiv oder nicht): 409 ``ARTICLE_EXISTS``, nichts angelegt – Prüfung und Anlegen laufen in EINER Transaktion
+    (``Database.insert_article_unique``). Im Demo-Modus erlaubt (es ist keine Datei im Spiel).
 
     Erfolg: 200 ``{"success": true, "article": {…}}`` – der Artikel in der Form eines Eintrags von ``articlesData`` (``pages_invoice.article_json``). Ein unerwarteter Fehler: 500 mit
     ``ARTICLE_SAVE_FAILED``, der Ausnahmetext nur im Server-Log.
@@ -2929,12 +2949,12 @@ def handle_article_quick_add(db, post_body: bytes):
     name = _article_text(data.get('name'), ARTICLE_NAME_MAX)
     unit = _article_text(data.get('unit'), ARTICLE_UNIT_MAX)
     price = _article_number(data.get('price'), ARTICLE_PRICE_LIMIT, False)
-    rate = _article_number(data.get('taxRate'), ARTICLE_RATE_LIMIT, True)
+    unit_price = None if price is None else round_to_cent(price)           # ein Preis, der erst beim Runden die Milliarde erreicht, ist keiner „unter einer Milliarde“
+    rate = _article_rate(data.get('taxRate'))
     for invalid, sentence in ((name is None, ARTICLE_NAME_INVALID), (unit is None, ARTICLE_UNIT_INVALID),
-                              (price is None, ARTICLE_PRICE_INVALID), (rate is None, ARTICLE_RATE_INVALID)):
+                              (unit_price is None or unit_price >= ARTICLE_PRICE_LIMIT, ARTICLE_PRICE_INVALID), (rate is None, ARTICLE_RATE_INVALID)):
         if invalid:
             return 400, json.dumps({'success': False, 'error': sentence})
-    unit_price = from_minor(round_minor(to_minor(price), 2))
     try:
         article = db.insert_article_unique(name, unit, unit_price, float(rate))
         return 200, json.dumps({'success': True, 'article': article_json(article)})

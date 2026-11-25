@@ -248,7 +248,7 @@ Jede Funktion mit ihrer Seite im Browser. Die Regeln hinter den Funktionen stehe
 - PDF-Rechnung mit Logo; jede neu erzeugte Rechnungs-PDF ist PDF/A-3b mit eingebetteter `factur-x.xml` (ZUGFeRD/Factur-X, Profil EN 16931).
   Die **XRechnung** (UBL) entsteht bei einer Rechnung mit Leitweg-ID, wenn die Pflichtangaben vollständig sind – sonst nennt die Seite, was fehlt.
   Eine Zusicherung der Konformität gibt es nicht.
-- Steuersatz je Position, weitere Sätze und steuerfreie Leistungen aus den Stammdaten; bei Kleinunternehmern steht der Hinweis auf § 19 UStG im Dokument. Die Maske markiert eine Position, die vom gespeicherten Artikel abweicht (Einheit, Preis, Steuersatz), und legt sie auf Wunsch als neuen Artikel an.
+- Steuersatz je Position, weitere Sätze und steuerfreie Leistungen aus den Stammdaten; bei Kleinunternehmern steht der Hinweis auf § 19 UStG im Dokument. Die Maske markiert eine Position, die vom gespeicherten Artikel abweicht (Einheit, Preis, Steuersatz); eine Position ohne Artikel lässt sich mit „+“ als neuer Artikel anlegen.
 - **Leistungszeitraum** („bis“ unter dem Leistungsdatum) in PDF, E-Rechnung und DATEV; **Zahlungsart** (Überweisung, bar, Karte, nicht festgelegt) im Fuß der Maske. Eine Karte
   lässt die XRechnung aus (sie verlangt Kartenziffern, die die App nicht führt); Lastschrift gibt es nicht.
 - E-Mail-Versand per SMTP (nur verschlüsselt, mit Zertifikatsprüfung), Empfänger aus den Kontakten; Einrichtung: [DEPLOYMENT.md](DEPLOYMENT.md).

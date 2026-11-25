@@ -659,7 +659,8 @@ MIXED_TAX_JS = r'''
 # .textContent und createElement; die Texte kommen vom Server (``ARTICLE_TEXTS`` über ``script_json``, ``__ART_TEXTS__`` wird in der Konstante ersetzt, nie über eine fertige Seite), die
 # Artikel stehen in ``articlesData`` im Skript der Seite (die aktiven Artikel; der Block liest sie erst beim Aufruf). Die Seiten rufen ``artMark`` nach dem Laden und nach dem Hinzufügen und
 # Entfernen einer Zeile; die Ereignisse der Tabelle (``input``, ``change``) lösen es für alles andere aus: Eingaben in einer Zeile, „Steuersatz je Position“, „Umsatzsteuer ausweisen“ und
-# das Feld „Mehrwertsteuer“ im Kopf liegen alle in ihr. Das „+“ (``POST /articles/quick-add``) legt aus einer Zeile einen NEUEN Artikel an – ein vorhandener wird nie geändert.
+# das Feld „Mehrwertsteuer“ im Kopf liegen alle in ihr. Das „+“ (``POST /articles/quick-add``) gibt es nur an einer Zeile OHNE Artikel und legt aus ihr einen NEUEN Artikel an – ein vorhandener
+# wird nie geändert, und an einer Zeile, die von ihrem Artikel abweicht, übernähme es den Tippfehler als neuen Artikel und schaltete die Warnung ab.
 ARTICLE_TEXTS = {
     'article': 'Artikel: ',                                     # Anfang des Tooltips eines Felds, das vom Artikel abweicht
     'document': ' – Beleg: ',                                   # Satz des Belegs hinter dem Satz des Artikels
@@ -673,6 +674,9 @@ ARTICLE_MARK_JS = r'''
         // Abweichung vom Artikel: eine Position, die vom gespeicherten Artikel abweicht, fällt auf (nur die Anzeige, siehe pages_invoice.py).
         var ART_TEXTS = __ART_TEXTS__;
 
+        // Die Artikel nach normalisiertem Namen (artNames), einmal aufgebaut und nicht je Zeile und Tastendruck; null: noch nicht aufgebaut. Wer articlesData ändert, setzt es zurück (artSend).
+        var artIndex = null;
+
         // Ein Text zum Vergleich der Namen: Leerraum zusammengefasst und außen entfernt, Kleinbuchstaben (dieselbe Regel wie article_key auf dem Server beim Anlegen).
         function artNorm(text) {
             return String(text === null || text === undefined ? '' : text).replace(/\s+/g, ' ').trim().toLowerCase();
@@ -683,40 +687,105 @@ ARTICLE_MARK_JS = r'''
             return String(text === null || text === undefined ? '' : text).trim().toLowerCase();
         }
 
-        // Ein Preis in ganzen Cent; leer oder keine Zahl gilt als 0, wie die Zeile ihn rechnet.
-        function artCents(value) {
-            return Math.round((parseFloat(value) || 0) * 100);
-        }
-
         // Beginnt der Text mit einem Buchstaben, einer Ziffer oder einem Zeichen, das zum Buchstaben gehört (Akzent)? Dann endet ein Name davor nicht an einer Wortgrenze.
         function artWordStart(text) {
             return /^[\p{L}\p{M}\p{N}]/u.test(text);
         }
 
-        // Der Artikel einer Zeile oder null. 1. Trägt die Zeile data-article-id (frisch aus der Artikelsuche gewählt) und gibt es den Artikel: dieser. 2. Sonst beginnt ihre Beschreibung
-        // (normalisiert) mit dem normalisierten Namen eines Artikels, und danach folgt das Ende oder ein Zeichen, das kein Buchstabe und keine Ziffer ist („Beratung“ trifft nicht
-        // „Beratungspaket“): bei mehreren der längste Name, bei gleich langen keiner. Namen unter 3 Zeichen nehmen an 2. nicht teil. Rein: nichts wird geschrieben.
+        // Beginnt der Text (normalisiert) mit diesem Namen (normalisiert), und danach folgt das Ende oder ein Zeichen, das kein Buchstabe und keine Ziffer ist?
+        function artStarts(text, name) {
+            return name !== '' && text.indexOf(name) === 0 && !artWordStart(text.slice(name.length));
+        }
+
+        // Die Artikel nach normalisiertem Namen. Namen unter 3 Zeichen fehlen (sie nehmen an der Namenssuche nicht teil); tragen mehrere Artikel denselben normalisierten Namen, gilt der mit der
+        // kleinsten ID (zwei verschiedene Namen derselben Länge können nie beide der Anfang desselben Textes sein: weitere gleich lange Treffer gibt es nicht). Aufgebaut wird beim ersten Gebrauch
+        // und neu, wenn articlesData ein anderes Objekt ist (die Tests setzen es neu) oder artSend einen Artikel dazugelegt hat.
+        function artNames() {
+            if (artIndex !== null && artIndex.source === articlesData) return artIndex.names;
+            var names = new Map();
+            var keys = Object.keys(articlesData);
+            for (var i = 0; i < keys.length; i++) {
+                var article = articlesData[keys[i]];
+                var name = artNorm(article.name);
+                if (Array.from(name).length < 3) continue;
+                var known = names.get(name);
+                if (known === undefined || Number(article.id) < Number(known.id)) names.set(name, article);
+            }
+            artIndex = {source: articlesData, names: names};
+            return names;
+        }
+
+        // Der Artikel einer Zeile oder null. 1. Trägt die Zeile data-article-id (frisch aus der Artikelsuche gewählt), gibt es den Artikel und beginnt die Beschreibung noch mit seinem Namen
+        // (artStarts): dieser – wer die Beschreibung auf etwas anderes umschreibt, hat einen anderen Artikel gemeint. 2. Sonst der Artikel mit dem LÄNGSTEN Namen, mit dem die Beschreibung
+        // beginnt und nach dem das Ende oder ein Zeichen folgt, das kein Buchstabe und keine Ziffer ist („Beratung“ trifft nicht „Beratungspaket“). Dafür wird nur gefragt, ob ein Anfang der
+        // Beschreibung bis zu einer Wortgrenze ein Name ist – der Aufwand hängt an der Länge des Texts, nicht an der Zahl der Artikel. Rein: nichts wird geschrieben.
         function artFind(row) {
-            var id = row.getAttribute('data-article-id');
-            if (id !== null && Object.prototype.hasOwnProperty.call(articlesData, id)) return articlesData[id];
             var field = row.querySelector('.item-description');
             var text = artNorm(field ? field.value : '');
-            var keys = Object.keys(articlesData);
-            var found = null;
-            var length = 0;
-            var tie = false;
-            for (var i = 0; i < keys.length; i++) {
-                var name = artNorm(articlesData[keys[i]].name);
-                if (Array.from(name).length < 3 || text.indexOf(name) !== 0 || artWordStart(text.slice(name.length))) continue;
-                if (name.length > length) {
-                    found = articlesData[keys[i]];
-                    length = name.length;
-                    tie = false;
-                } else if (name.length === length) {
-                    tie = true;
-                }
+            var id = row.getAttribute('data-article-id');
+            if (id !== null && Object.prototype.hasOwnProperty.call(articlesData, id) && artStarts(text, artNorm(articlesData[id].name))) return articlesData[id];
+            var names = artNames();
+            var ends = [];
+            var boundary = /[^\p{L}\p{M}\p{N}]/gu;
+            var hit;
+            while ((hit = boundary.exec(text)) !== null) ends.push(hit.index);
+            ends.push(text.length);
+            for (var i = ends.length - 1; i >= 0; i--) {
+                var article = names.get(text.slice(0, ends[i]));
+                if (article !== undefined) return article;
             }
-            return tie ? null : found;
+            return null;
+        }
+
+        // Eine Dezimalzahl – der Text eines Zahlenfelds oder eine Zahl – als ganze Zahl (BigInt) und Zahl der Nachkommastellen: {units, places}. Der Text wird Ziffer für Ziffer gelesen, nie als
+        // Gleitkommazahl gerechnet (1.005 ist 1005 mit 3 Stellen, nicht 1.00499…); auch die Schreibweise mit Exponent (8.5e1). Leer oder keine Zahl: 0, wie die Summenrechnung der Maske es liest.
+        function artDecimal(value) {
+            var match = /^\s*([+-]?)(\d*)(?:\.(\d*))?(?:[eE]([+-]?\d+))?\s*$/.exec(String(value));
+            var fraction = match && match[3] ? match[3] : '';
+            if (!match || match[2] + fraction === '') return {units: BigInt(0), places: 0};
+            var places = fraction.length - (match[4] ? parseInt(match[4], 10) : 0);
+            var units = BigInt(match[2] + fraction);
+            if (places < 0) {
+                units = units * BigInt('1' + '0'.repeat(Math.min(-places, 400)));
+                places = 0;
+            } else if (places > 400) {
+                units = BigInt(0);
+                places = 0;
+            }
+            return {units: match[1] === '-' ? -units : units, places: places};
+        }
+
+        // Eine Dezimalzahl als ganze Zahl mit genau so vielen Nachkommastellen (places ist mindestens ihre eigene Zahl).
+        function artScale(decimal, places) {
+            return decimal.units * BigInt('1' + '0'.repeat(places - decimal.places));
+        }
+
+        // Weicht der Preis der Zeile vom Preis des Artikels ab? Genau dann, wenn der Unterschied mindestens einen halben Cent beträgt – in Dezimalzahlen gerechnet, ohne die Gleitkomma-Falle
+        // (85.005 gegen 85.01: als Gleitkomma ist die Differenz 0.00499…, in Dezimalzahlen genau 0.005).
+        function artPriceDiffers(rowValue, articleValue) {
+            var row = artDecimal(rowValue);
+            var article = artDecimal(articleValue);
+            var places = Math.max(row.places, article.places, 3);
+            var difference = artScale(row, places) - artScale(article, places);
+            if (difference < BigInt(0)) difference = -difference;
+            return difference * BigInt(2) >= BigInt('1' + '0'.repeat(places - 2));
+        }
+
+        // Ein Preis auf zwei Nachkommastellen, ab der Hälfte aufgerundet (wie money.round_to_cent auf dem Server: einmal und exakt), als Zahl; leer oder keine Zahl: 0. Das ist der Wert, den das
+        // „+“ schickt – und den die Rückfrage zeigt: EINE Funktion für beides.
+        function artPrice(value) {
+            var decimal = artDecimal(value);
+            var cents = decimal.units;
+            if (decimal.places < 2) {
+                cents = cents * BigInt('1' + '0'.repeat(2 - decimal.places));
+            } else if (decimal.places > 2) {
+                var unit = BigInt('1' + '0'.repeat(decimal.places - 2));
+                var magnitude = cents < BigInt(0) ? -cents : cents;
+                var quotient = magnitude / unit;
+                if (magnitude % unit * BigInt(2) >= unit) quotient = quotient + BigInt(1);
+                cents = cents < BigInt(0) ? -quotient : quotient;
+            }
+            return Number(cents) / 100;
         }
 
         // Ein Satz (Prozentzahl als Text, wie mixKey ihn schreibt) für einen Tooltip, mit Dezimalkomma.
@@ -745,7 +814,7 @@ ARTICLE_MARK_JS = r'''
             var unit = row.querySelector('.item-unit');
             if (unit && artLow(unit.value) !== artLow(article.unit)) found.unit = ART_TEXTS.article + article.unit;
             var price = row.querySelector('.item-price');
-            if (price && artCents(price.value) !== artCents(article.price)) found.price = ART_TEXTS.article + fmtDe(article.price);
+            if (price && artPriceDiffers(price.value, article.price)) found.price = ART_TEXTS.article + fmtDe(article.price);
             var tax = document.getElementById('show_tax');
             var wanted = artArticleRate(article);
             if (!tax || !tax.checked || wanted === '') return found;
@@ -790,8 +859,8 @@ ARTICLE_MARK_JS = r'''
             return button;
         }
 
-        // Eine Zeile markieren: Mit Beschreibung und ohne Artikel trägt sie itemNoArticle, mit Artikel bekommt jedes Feld, das abweicht, itemDeviates und seinen Tooltip; itemCanSave
-        // zeigt das „+“. Eine Zeile ohne Beschreibung bleibt ohne Markierung (das Speichern übergeht sie).
+        // Eine Zeile markieren: Mit Beschreibung und ohne Artikel trägt sie itemNoArticle (Rand links) und itemCanSave (zeigt das „+“), mit Artikel bekommt jedes Feld, das abweicht, itemDeviates und
+        // seinen Tooltip – aber kein „+“: Es übernähme den Tippfehler als neuen Artikel. Eine Zeile ohne Beschreibung bleibt ohne Markierung (das Speichern übergeht sie).
         function artMarkRow(row) {
             var description = row.querySelector('.item-description');
             var named = !!description && artNorm(description.value) !== '';
@@ -803,7 +872,7 @@ ARTICLE_MARK_JS = r'''
             artSet(row.querySelector('td:first-child'), found.head);
             var without = named && !article;
             if (without) row.classList.add('itemNoArticle'); else row.classList.remove('itemNoArticle');
-            if (without || found.unit || found.price || found.tax || found.head) row.classList.add('itemCanSave'); else row.classList.remove('itemCanSave');
+            if (without) row.classList.add('itemCanSave'); else row.classList.remove('itemCanSave');
             artButton(row);
         }
 
@@ -822,11 +891,13 @@ ARTICLE_MARK_JS = r'''
             return mixOn() ? mixRowRate(row) : parseFloat(document.getElementById('tax_rate').value);
         }
 
-        // Das „+“ wurde geklickt: nach Rückfrage (die Zeile als Text) die Position als neuen Artikel anlegen. Der Name ist die Beschreibung (Leerraum zusammengefasst, höchstens 200 Zeichen).
+        // Das „+“ wurde geklickt: nach Rückfrage (die Zeile als Text) die Position als neuen Artikel anlegen – nur eine Zeile ohne Artikel (itemCanSave), auch wenn das Stylesheet das „+“ nicht
+        // versteckt. Der Name ist die Beschreibung (Leerraum zusammengefasst, höchstens 200 Zeichen), der Preis der auf zwei Stellen gerundete (artPrice), den die Rückfrage zeigt.
         function artAdd(row) {
+            if (!row.classList.contains('itemCanSave')) return;
             var name = Array.from(row.querySelector('.item-description').value.replace(/\s+/g, ' ').trim()).slice(0, 200).join('').trim();
             var unit = row.querySelector('.item-unit').value.trim();
-            var price = parseFloat(row.querySelector('.item-price').value) || 0;
+            var price = artPrice(row.querySelector('.item-price').value);
             var rate = artRowRate(row);
             var text = ART_TEXTS.question + name + ' · ' + unit + ' · ' + fmtDe(price) + ' € · ' + (isNaN(rate) ? '?' : String(rate).replace('.', ',')) + ' %';
             appConfirm(text, function () { artSend(row, {name: name, unit: unit, price: price, taxRate: rate}); });
@@ -843,6 +914,7 @@ ARTICLE_MARK_JS = r'''
                         return;
                     }
                     articlesData[String(data.article.id)] = data.article;
+                    artIndex = null;
                     row.setAttribute('data-article-id', String(data.article.id));
                     artMark();
                     appMsg(ART_TEXTS.saved, 'success');

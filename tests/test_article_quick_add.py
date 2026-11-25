@@ -8,17 +8,21 @@ Artikel abwich. Die Maske markiert so eine Position (``tests/test_article_marks.
 Es legt aus der Position einen NEUEN Artikel an. **Ein vorhandener Artikel wird nie geändert.**
 
 Geprüft wird die Route (``_JSON_PATHS`` + ``_POST_ONLY_JSON_PATHS``: GET ergibt 405, Herkunft und CSRF-Token wie bei jeder JSON-Route), jede Fehlform des Bodys (400 mit festem
-Satz, nichts angelegt), die Dublettenprüfung (409, auch gegen einen inaktiven Artikel und eine andere Schreibweise; Prüfung und Anlegen in EINER Transaktion), das Geld (``money``:
-auf den Cent gerundet, kein Gleitkomma-Rechnen), die Antwortform (dieselbe wie ein Eintrag von ``articlesData``) und dass nie ein Ausnahmetext in der Antwort steht.
+Satz, nichts angelegt; ein Satz zwischen 0 und 1 gilt nicht, weil die App ihn überall als Bruch läse), die Zeichen von Name und Einheit (Steuerzeichen und täuschende Richtungszeichen
+abgelehnt, weiche Trennstriche, Emoji und geschützte Leerzeichen erlaubt), die Dublettenprüfung (409, auch gegen einen inaktiven Artikel und eine andere Schreibweise; Prüfung und Anlegen in
+EINER Transaktion), das Geld (``money``: EINMAL und exakt auf den Cent gerundet, kein Gleitkomma-Rechnen), die Antwortform (dieselbe wie ein Eintrag von ``articlesData``) und dass nie ein
+Ausnahmetext in der Antwort steht.
 
 Alle Namen, Einheiten und Preise sind erfundene Testwerte.
 """
 import json
 import threading
+from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
 
+import money
 from db import Database
 from db.articles import ArticleExists, article_key
 from server import app as server_app
@@ -140,20 +144,47 @@ def test_a_unit_of_one_to_20_printable_characters_is_accepted(server_port, auto_
     pytest.param(0.004, 0, id='unter-einem-halben-Cent'),
     pytest.param(1.005, 10100, id='1,005-kaufmännisch-gerundet'),
     pytest.param(12.3456, 123500, id='vier-Stellen-auf-den-Cent'),
+    pytest.param(1.00495, 10000, id='einmal-gerundet-1,00495-ist-1,00'),
+    pytest.param(12.3449999, 123400, id='einmal-gerundet-12,3449999-ist-12,34'),
+    pytest.param(2.34495, 23400, id='einmal-gerundet-2,34495-ist-2,34'),
+    pytest.param(0.00495, 0, id='einmal-gerundet-0,00495-ist-0'),
+    pytest.param(0.285, 2900, id='0,285-ist-0,29'),
+    pytest.param(2.675, 26800, id='2,675-ist-2,68'),
     pytest.param(0, 0, id='null'),
     pytest.param(-0.0, 0, id='minus-null'),
     pytest.param(999999999.99, 9999999999900, id='knapp-unter-der-Grenze'),
+    pytest.param(999999999.994, 9999999999900, id='unter-der-Grenze-auf-den-Cent'),
 ])
-def test_the_price_is_rounded_to_the_cent_through_money_and_stored_in_minor_units(server_port, auto_login, price, minor):
-    """Kein Gleitkomma-Rechnen: ``85.005`` ist als Text 85,005 und ergibt 85,01 (``1.005 * 100`` als Gleitkomma ergäbe 100,49999…)."""
+def test_the_price_is_rounded_once_to_the_cent_through_money_and_stored_in_minor_units(server_port, auto_login, price, minor):
+    """Kein Gleitkomma-Rechnen und keine doppelte Rundung: ``85.005`` ist als Text 85,005 und ergibt 85,01; ``1.00495`` ergibt 1,00 (erst auf vier Stellen zu runden – 1,0050 – und dann auf zwei,
+    ergäbe 1,01)."""
     assert quick_add(server_port, auto_login, body_of(price=price)).status == 200
     assert query_rows(auto_login.db, 'SELECT UnitPrice FROM Articles') == [{'UnitPrice': minor}]
 
 
-@pytest.mark.parametrize('rate', [0, 7, 19, 100, 5.5, 0.5, 100.0])
-def test_a_tax_rate_from_0_to_100_is_stored_as_a_percentage(server_port, auto_login, rate):
+def test_money_rounds_a_value_once_to_the_cent_exactly_and_half_up():
+    assert money.round_to_cent(1.00495) == Decimal('1.00') and money.round_to_cent(12.3449999) == Decimal('12.34')
+    assert money.round_to_cent('1,005') == Decimal('1.01') and money.round_to_cent(Decimal('0.285')) == Decimal('0.29') and money.round_to_cent(2.675) == Decimal('2.68')
+    assert money.round_to_cent(-1.005) == Decimal('-1.01') and money.round_to_cent(7) == Decimal('7.00') and money.round_to_cent(0.004) == Decimal('0.00')
+    assert str(money.round_to_cent(85)) == '85.00'
+    for unusable in (float('nan'), float('inf'), True, None, '', 'abc'):
+        with pytest.raises((ValueError, TypeError)):
+            money.round_to_cent(unusable)
+
+
+@pytest.mark.parametrize('rate', [0, 1, 1.0, 7, 19, 100, 5.5, 100.0, 1.5])
+def test_a_tax_rate_of_0_or_from_1_to_100_is_stored_as_a_percentage(server_port, auto_login, rate):
     assert quick_add(server_port, auto_login, body_of(taxRate=rate)).status == 200
     assert [row[4] for row in articles(auto_login.db)] == [float(rate)]
+
+
+@pytest.mark.parametrize('rate', [0.5, 0.99, 0.0001, 0.999999, 1e-9])
+def test_a_tax_rate_between_0_and_1_is_refused_because_the_app_would_read_it_as_a_fraction_everywhere(server_port, auto_login, rate):
+    """0,5 stünde als „0,5 Prozent“ im Artikel, würde aber überall (``tax_groups.rate_pct``) als Bruch, also als 50 Prozent, gelesen."""
+    response = quick_add(server_port, auto_login, body_of(taxRate=rate))
+
+    assert (response.status, answer(response)) == (400, {'success': False, 'error': ARTICLE_RATE_INVALID})
+    assert articles(auto_login.db) == []
 
 
 # ── Jede Fehlform ergibt 400 mit festem Satz, nichts wird angelegt ───────────
@@ -171,7 +202,18 @@ BAD_BODIES = [
     pytest.param(body_of(name='Zeile\nUmbruch'), ARTICLE_NAME_INVALID, id='Name-Zeilenumbruch'),
     pytest.param(body_of(name='Tab\tulator'), ARTICLE_NAME_INVALID, id='Name-Tabulator'),
     pytest.param(body_of(name='Steuer\x00zeichen'), ARTICLE_NAME_INVALID, id='Name-NUL'),
-    pytest.param(body_of(name='Geschütztes\u00a0Leerzeichen'), ARTICLE_NAME_INVALID, id='Name-nicht-druckbar'),
+    pytest.param(body_of(name='Zeichen\x7fDEL'), ARTICLE_NAME_INVALID, id='Name-DEL'),
+    pytest.param(body_of(name='Zeichen\x85NEL'), ARTICLE_NAME_INVALID, id='Name-NEL'),
+    pytest.param(body_of(name='Zeile\u2028Trenner'), ARTICLE_NAME_INVALID, id='Name-Zeilentrenner'),
+    pytest.param(body_of(name='Absatz\u2029Trenner'), ARTICLE_NAME_INVALID, id='Name-Absatztrenner'),
+    pytest.param(body_of(name='Ersatz\ud800zeichen'), ARTICLE_NAME_INVALID, id='Name-einzelnes-Ersatzzeichen'),
+    pytest.param(body_of(name='Privat\ue000zeichen'), ARTICLE_NAME_INVALID, id='Name-privates-Zeichen'),
+    pytest.param(body_of(name='Nicht\u0378zugewiesen'), ARTICLE_NAME_INVALID, id='Name-nicht-zugewiesen'),
+    pytest.param(body_of(name='\u200b'), ARTICLE_NAME_INVALID, id='Name-nur-Zeichen-ohne-Breite'),
+    pytest.param(body_of(name=' \u200d\u00ad '), ARTICLE_NAME_INVALID, id='Name-nur-ZWJ-und-weicher-Trennstrich'),
+    pytest.param(body_of(name='\u0301'), ARTICLE_NAME_INVALID, id='Name-nur-ein-kombinierender-Akzent'),
+    pytest.param(body_of(name='\u00a0\u00a0'), ARTICLE_NAME_INVALID, id='Name-nur-geschützte-Leerzeichen'),
+    pytest.param(body_of(unit='\u200b'), ARTICLE_UNIT_INVALID, id='Einheit-nur-Zeichen-ohne-Breite'),
     pytest.param(body_of(unit=MISSING), ARTICLE_UNIT_INVALID, id='Einheit-fehlt'),
     pytest.param(body_of(unit=None), ARTICLE_UNIT_INVALID, id='Einheit-null'),
     pytest.param(body_of(unit=''), ARTICLE_UNIT_INVALID, id='Einheit-leer'),
@@ -179,6 +221,7 @@ BAD_BODIES = [
     pytest.param(body_of(unit=1), ARTICLE_UNIT_INVALID, id='Einheit-Zahl'),
     pytest.param(body_of(unit='x' * 21), ARTICLE_UNIT_INVALID, id='Einheit-21-Zeichen'),
     pytest.param(body_of(unit='a\tb'), ARTICLE_UNIT_INVALID, id='Einheit-Tabulator'),
+    pytest.param(body_of(unit='Std.\u202e'), ARTICLE_UNIT_INVALID, id='Einheit-Richtungszeichen'),
     pytest.param(body_of(price=MISSING), ARTICLE_PRICE_INVALID, id='Preis-fehlt'),
     pytest.param(body_of(price=None), ARTICLE_PRICE_INVALID, id='Preis-null'),
     pytest.param(body_of(price='85'), ARTICLE_PRICE_INVALID, id='Preis-Text'),
@@ -199,6 +242,8 @@ BAD_BODIES = [
     pytest.param(body_of(taxRate=-1), ARTICLE_RATE_INVALID, id='Satz-negativ'),
     pytest.param(body_of(taxRate=100.01), ARTICLE_RATE_INVALID, id='Satz-über-100'),
     pytest.param(body_of(taxRate=101), ARTICLE_RATE_INVALID, id='Satz-101'),
+    pytest.param(body_of(taxRate=0.5), ARTICLE_RATE_INVALID, id='Satz-zwischen-0-und-1'),
+    pytest.param(body_of(price=999999999.995), ARTICLE_PRICE_INVALID, id='Preis-rundet-auf-eine-Milliarde'),
     pytest.param(body_of(taxRate=10 ** 400), ARTICLE_RATE_INVALID, id='Satz-riesige-Ganzzahl'),
     pytest.param(body_of(taxRate=[19]), ARTICLE_RATE_INVALID, id='Satz-Liste'),
 ]
@@ -225,6 +270,37 @@ def test_a_price_that_python_reads_from_non_standard_json_is_refused_too(server_
     response = quick_add(server_port, auto_login, '{"name": "Beratung Pro", "unit": "Std.", "price": 1, "taxRate": %s}' % literal)
     assert (response.status, answer(response)) == (400, {'success': False, 'error': ARTICLE_RATE_INVALID})
     assert articles(auto_login.db) == []
+
+
+BIDI_CONTROLS = [*range(0x202A, 0x202F), *range(0x2066, 0x206A), 0x200E, 0x200F, 0x061C]
+
+
+@pytest.mark.parametrize('code', BIDI_CONTROLS, ids=lambda code: f'U+{code:04X}')
+@pytest.mark.parametrize('field', ['name', 'unit'])
+def test_a_direction_control_can_deceive_in_a_name_or_unit_and_is_refused(server_port, auto_login, field, code):
+    """Richtungszeichen drehen die Anzeige um („Rabatt ‮etla‬“): Ein Name mit so einem Zeichen wird nie gespeichert."""
+    response = quick_add(server_port, auto_login, body_of(**{field: 'Rabatt ' + chr(code) + 'etla'}))
+
+    assert response.status == 400 and answer(response)['error'] in (ARTICLE_NAME_INVALID, ARTICLE_UNIT_INVALID)
+    assert articles(auto_login.db) == []
+
+
+@pytest.mark.parametrize('name', [
+    pytest.param('Rück\u00adbau', id='weicher-Trennstrich'),
+    pytest.param('Entwickler \U0001F468\u200d\U0001F4BB Tag', id='Emoji-mit-ZWJ'),
+    pytest.param('Geschütztes\u00a0Leerzeichen', id='geschütztes-Leerzeichen'),
+    pytest.param('Zeichen\u200bohne\u200cBreite', id='Zeichen-ohne-Breite'),
+    pytest.param('Straße 5 – „Ü“ (ß, ä, ö, ü) 😀', id='Umlaute-Anführungszeichen-Emoji'),
+    pytest.param('日本語の名前', id='andere-Schrift'),
+    pytest.param('Std\u0301 mit Akzent', id='kombinierender-Akzent'),
+    pytest.param('a\u200b', id='ein-sichtbares-Zeichen-und-eines-ohne-Breite'),
+    pytest.param('%', id='nur-ein-Satzzeichen'),
+    pytest.param('\U0001F600', id='nur-ein-Emoji'),
+])
+def test_invisible_but_harmless_characters_are_allowed_in_a_name(server_port, auto_login, name):
+    """Nur Steuerzeichen und täuschende Richtungs- und Formatzeichen werden abgelehnt – weiche Trennstriche, ZWJ in einem Emoji und geschützte Leerzeichen sind erlaubt."""
+    assert quick_add(server_port, auto_login, body_of(name=name)).status == 200
+    assert [row[1] for row in articles(auto_login.db)] == [name]
 
 
 def test_the_sentences_are_plain_text_without_exception_text_or_path():

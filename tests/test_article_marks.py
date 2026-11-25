@@ -5,15 +5,17 @@
 
 Der Fehlfall: Eine kopierte Rechnung trug eine Position, deren Netto-Einzelpreis versehentlich mit der Stundenzahl überschrieben war (8 statt 85,00 € je Stunde) – niemand sah es,
 die Rechnung ging hinaus. Jetzt fällt so eine Position auf: das Feld, das abweicht (Einheit, Netto-Einzelpreis, Steuersatz), bekommt einen Warnton und den Tooltip „Artikel: …“, eine
-Position, die zu keinem Artikel gehört, einen schmalen Rand links; bei beiden steht ein „+“, das aus der Position einen NEUEN Artikel anlegt (``POST /articles/quick-add``,
-``tests/test_article_quick_add.py``). **Es ist reine Anzeige:** Speichern, Payload, Sperre und Summen bleiben, wie sie waren (``tests/test_mixed_tax_mask.py``,
+Position, die zu keinem Artikel gehört, einen schmalen Rand links und ein „+“, das aus ihr einen NEUEN Artikel anlegt (``POST /articles/quick-add``,
+``tests/test_article_quick_add.py``). An einer Zeile mit Artikel gibt es das „+“ nicht: Es übernähme den Tippfehler als neuen Artikel und schaltete die Warnung ab. **Es ist reine Anzeige:** Speichern, Payload, Sperre und Summen bleiben, wie sie waren (``tests/test_mixed_tax_mask.py``,
 ``tests/test_tax_entries_mask.py`` halten den Payload fest) – die Markierung liest die Zeilen und schreibt nur Klassen und Tooltips.
 
 Geprüft wird in drei Schichten:
 
-* ``artFind`` und ``artMark`` – die echten Skripte, aus der Seite geschnitten – in Node auf der DOM-Attrappe von ``tests/test_mixed_tax_mask.py``: der Artikel einer Zeile (ID geht vor,
-  Präfix mit Wortgrenze, der längste Name, gleich lange keiner, kurze Namen, Schreibweise und Leerraum), was markiert wird und was nie, das Verschwinden der Markierung, das „+“ und sein
-  Weg bis zur Antwort des Servers, die Ereignisse (``input``/``change`` bis zur Tabelle, anders als die Attrappe es sonst tut), die gesperrte Rechnung, der unveränderte Payload;
+* ``artFind`` und ``artMark`` – die echten Skripte, aus der Seite geschnitten – in Node auf der DOM-Attrappe von ``tests/test_mixed_tax_mask.py``: der Artikel einer Zeile (die ID gilt, solange
+  die Beschreibung noch mit dem Namen dieses Artikels beginnt, sonst Präfix mit Wortgrenze, der längste Name, derselbe Name zweimal: die kleinste ID, kurze Namen, Schreibweise und Leerraum; die Namen
+  werden einmal vorbereitet, nicht je Zeile und Tastendruck), was markiert wird und was nie (der Preis ab einem halben Cent Unterschied, in ganzen Zahlen gerechnet), das Verschwinden der Markierung,
+  das „+“ nur an einer Zeile ohne Artikel und sein Weg bis zur Antwort des Servers, die Ereignisse (``input``/``change`` bis zur Tabelle, anders als die Attrappe es sonst tut), die gesperrte
+  Rechnung, der unveränderte Payload;
 * das HTML: der Block steht in beiden Masken genau einmal, im Block der Steuersatz-Bausteine; die Seite schreibt keine Markierung selbst; ein feindlicher Artikelname bricht nichts;
 * statisch: nur ``var`` und ``function``, Präfix ``art``, kein ``innerHTML``, keine Texte und keine Sätze im Quelltext, das Stylesheet kennt die Regeln.
 
@@ -140,19 +142,22 @@ FIND_CASES = [
     ('Beratung', None, 1), ('Beratung Q3', None, 1), ('Beratung (Std.)', None, 1), ('Beratung-Paket', None, 1), ('Beratung, vor Ort', None, 1),
     ('Beratungspaket', None, None), ('Beratung2', None, None), ('Beratungen', None, None), ('Beratun', None, None),
     ('Beratung Plus', None, 2), ('Beratung Plus Q3', None, 2), ('Beratung Pluss', None, 1),          # der längste Name, aber nur mit Wortgrenze
-    ('Fachbuch', None, None), ('FACHBUCH Heft', None, None),                                         # zwei gleich lange Namen (Schreibweise und Randleerraum zählen nicht): keiner
+    ('Fachbuch', None, 3), ('FACHBUCH Heft', None, 3), ('fachbuch ', None, 3),                       # derselbe normalisierte Name zweimal (Schreibweise und Randleerraum zählen nicht): die kleinste ID
     ('AB', None, None), ('AB Test', None, None),                                                     # ein Name unter 3 Zeichen nimmt am Namensvergleich nicht teil
     ('  beratung    PLUS  ', None, 2), ('BERATUNG\tplus', None, 2),                                  # Schreibweise und Leerraum
     ('ÜBERPRÜFUNG Haus', None, 6), ('überprüfungen', None, None),                                    # Umlaute über toLowerCase
     ('Beratung\u0301', None, None),                                                                  # ein Akzent gehört zum Buchstaben: keine Wortgrenze
     ('', None, None), ('   ', None, None), ('Fahrtkosten', None, None),
-    ('Beratung', 3, 3), ('Fahrtkosten', 5, 5), ('Beratung Plus Q3', 1, 1),                           # die ID der Zeile geht vor – auch bei kurzem Namen und gegen den Text
+    # Die ID der Zeile gilt, solange die Beschreibung noch mit dem Namen DIESES Artikels beginnt (dieselbe Wortgrenzenregel) – auch bei kurzem Namen und auch, wenn ein längerer Name passte
+    ('AB', 5, 5), ('AB Zeile', 5, 5), ('Beratung', 1, 1), ('beratung - Details', 1, 1), ('Beratung Plus Q3', 1, 1),
+    # Sonst fällt die Zeile auf die Namenssuche zurück: Die Beschreibung gehört jetzt zu einem anderen Artikel, zu keinem, oder der Name steht dort nicht mehr als Wort
+    ('Beratung', 3, 1), ('Fachbuch Q3', 1, 3), ('Fahrtkosten', 5, None), ('ABC', 5, None), ('Beratungspaket', 1, None), ('', 1, None),
     ('Beratung', 99, 1), ('Fahrtkosten', 99, None),                                                  # eine ID ohne Artikel gilt nicht
 ]
 
 
 @NO_NODE
-def test_artFind_gives_the_article_of_a_row_by_its_id_first_else_by_the_longest_name_with_a_word_boundary(world, tmp_path):
+def test_artFind_gives_the_article_by_its_id_while_the_description_starts_with_its_name_else_by_the_longest_name_with_a_word_boundary(world, tmp_path):
     cases = [[text, article_id, expected] for text, article_id, expected in FIND_CASES]
     program = ARTICLES_JS + f"var cases = {json.dumps(cases)}; emit('got', cases.map(function (c) {{ return find(c[0], c[1] === null ? undefined : c[1]); }}));"
 
@@ -175,6 +180,100 @@ def test_artFind_changes_nothing(world, tmp_path):
     assert run(tmp_path, 'invoice', page_of('invoice', world), program)['same'] == [True, True, True, 'Beratung Plus Q3']
 
 
+@NO_NODE
+def test_artFind_takes_the_smallest_id_among_articles_with_the_same_name_whatever_the_order(world, tmp_path):
+    """Die Schlüssel sind hier keine Zahlen: Sie behalten die Reihenfolge des Einfügens (bei Zahlen ordnet JavaScript sie aufsteigend) – die kleinste ID gewinnt trotzdem."""
+    program = r"""
+      articlesData = {
+        'x': {id: 9, name: 'Workshop', unit: 'Psch.', price: 500, taxRate: 19, mixRate: '19', description: ''},
+        'y': {id: 3, name: 'workshop ', unit: 'Psch.', price: 450, taxRate: 19, mixRate: '19', description: ''},
+        'z': {id: 7, name: 'WORKSHOP', unit: 'Psch.', price: 400, taxRate: 19, mixRate: '19', description: ''}
+      };
+      function find(text) { var row = document.createElement('tr'), input = document.createElement('input'); input.className = 'item-description'; input.value = text; row.appendChild(input);
+                            var found = artFind(row); return found ? found.id : null; }
+      emit('got', [find('Workshop'), find('workshop Q3'), find('  WORKSHOP  ')]);
+    """
+
+    assert run(tmp_path, 'invoice', page_of('invoice', world), program)['got'] == [3, 3, 3]
+
+
+@NO_NODE
+def test_artFind_agrees_with_a_plain_search_over_every_article_for_many_generated_texts(world, tmp_path):
+    """Gegenprobe: das Ergebnis des vorbereiteten Namensverzeichnisses gegen die einfache Suche (jeden Artikel einzeln prüfen: Präfix, Wortgrenze, der längste Name, dann die kleinste ID).
+    Die Namen stammen aus einem kleinen Alphabet, damit sich viele Präfixe überlappen; zwei verschiedene Namen gleicher Länge können nie beide Präfix desselben Textes sein."""
+    program = r"""
+      var seed = 12345;
+      function random(n) { seed = (seed * 1103515245 + 12345) % 2147483648; return seed % n; }
+      var alphabet = ['a', 'b', 'ab', ' ', ' ', '-', '1', 'Ä', 'é', 'A', '  '];
+      function piece(length) { var out = ''; for (var i = 0; i < length; i++) out += alphabet[random(alphabet.length)]; return out; }
+      articlesData = {};
+      var names = [];
+      for (var n = 0; n < 300; n++) { var name = piece(2 + random(7)); names.push(name); articlesData[String(1000 - n * 3)] = {id: 1000 - n * 3, name: name, unit: 'Std.', price: 1, taxRate: 19, mixRate: '19', description: ''}; }
+      function plain(text) {
+        var best = null, bestLength = -1;
+        Object.keys(articlesData).forEach(function (key) {
+          var article = articlesData[key], name = artNorm(article.name);
+          if (Array.from(name).length < 3 || text.indexOf(name) !== 0 || artWordStart(text.slice(name.length))) return;
+          if (name.length > bestLength || (name.length === bestLength && article.id < best.id)) { best = article; bestLength = name.length; }
+        });
+        return best ? best.id : null;
+      }
+      var checked = 0, found = 0, wrong = [];
+      for (var t = 0; t < 3000; t++) {
+        var text = random(3) ? names[random(names.length)] + piece(random(5)) : piece(random(12));
+        var row = document.createElement('tr'), input = document.createElement('input'); input.className = 'item-description'; input.value = text; row.appendChild(input);
+        var got = artFind(row), want = plain(artNorm(text));
+        checked++; if (want !== null) found++;
+        if ((got ? got.id : null) !== want) wrong.push([text, got ? got.id : null, want]);
+      }
+      emit('result', {checked: checked, found: found, wrong: wrong.slice(0, 5)});
+    """
+
+    result = run(tmp_path, 'invoice', page_of('invoice', world), program)['result']
+
+    assert result['wrong'] == [] and result['checked'] == 3000
+    assert result['found'] > 300                                                                                      # die Gegenprobe prüft auch Treffer, nicht nur „kein Artikel“
+
+
+@NO_NODE
+def test_the_names_are_prepared_once_and_not_per_row_and_keystroke_and_a_new_article_is_picked_up(world, tmp_path):
+    """Ziel: 5000 Artikel und 200 Zeilen bleiben bei jedem Tastendruck weit unter 50 ms. Gemessen wird nicht die Zeit, sondern die Zahl der Normalisierungen (``artNorm``): einmal je Artikel
+    beim Aufbau des Verzeichnisses, danach nur je Zeile – nicht je Zeile und Artikel (das wären eine Million)."""
+    doc_id = make_doc('invoice', world, [row_item(n + 1, f'Freier Text {n}' if n % 2 == 0 else f'Beratung Variante {n * 10} Zusatz', 12.0) for n in range(200)], mixed=False)
+    program = r"""
+      var words = ['Beratung', 'Schulung', 'Wartung', 'Lizenz', 'Installation', 'Support', 'Material', 'Fahrt', 'Pauschale', 'Analyse'];
+      articlesData = {};
+      for (var n = 0; n < 5000; n++) articlesData[String(100000 + n)] = {id: 100000 + n, name: words[n % 10] + ' Variante ' + n, unit: 'Std.', price: 12, taxRate: 19, mixRate: '19', description: ''};
+      var calls = 0, plainNorm = artNorm;
+      artNorm = function (text) { calls++; return plainNorm(text); };
+      artMark(); var first = calls;
+      artMark(); artMark(); var again = (calls - first) / 2;
+      var found = rows().filter(function (row) { return row.classList.contains('itemNoArticle'); }).length;
+      emit('counts', {rows: rows().length, articles: Object.keys(articlesData).length, first: first, again: again, withoutArticle: found});
+    """
+
+    counts = run(tmp_path, 'invoice', page_of('invoice', world, doc_id), program)['counts']
+
+    assert counts['rows'] == 200 and counts['articles'] == 5000
+    assert counts['first'] <= 5000 + 3 * 200                                                                          # die Namen einmal, dazu je Zeile ein paar Aufrufe
+    assert counts['again'] <= 3 * 200                                                                                 # beim nächsten Tastendruck keine Artikelname mehr
+    assert 0 < counts['withoutArticle'] < 200                                                                         # die Namenssuche hat gearbeitet: ein Teil der Zeilen findet seinen Artikel
+
+
+@NO_NODE
+def test_a_new_article_of_the_plus_is_found_by_the_other_rows_by_name(world, tmp_path):
+    """Das Verzeichnis der Namen wird neu aufgebaut, wenn ein Artikel über „+“ dazukommt (er steht dann im selben ``articlesData``-Objekt, nicht in einem neuen)."""
+    doc_id = make_doc('invoice', world, [row_item(1, 'Fahrtkosten', 30.0), row_item(2, 'Fahrtkosten Q4', 30.0)], mixed=False)
+    answer = {'success': True, 'article': {'id': 7, 'name': 'Fahrtkosten', 'unit': 'Std.', 'price': 30.0, 'taxRate': 19.0, 'mixRate': '19', 'description': ''}}
+    program = ("artMark(); emit('before', looks()); fire(rows()[0].querySelector('.itemAddArticle'), 'click'); "
+               "afterAll(function () { emit('after', looks()); });")
+
+    out = run(tmp_path, 'invoice', page_of('invoice', world, doc_id), program, answer=answer)
+
+    assert [look['classes'] for look in out['before']] == [['itemCanSave', 'itemNoArticle']] * 2
+    assert out['after'] == [{'deviating': {}, 'classes': [], 'buttons': 1}] * 2                                       # die zweite Zeile findet den neuen Artikel über ihren Namen
+
+
 # ── 2. artMark: was abweicht, wird markiert – und nur das ────────────────────
 
 @NO_NODE
@@ -186,7 +285,7 @@ def test_the_owners_case_a_price_typed_into_the_wrong_field_marks_the_price_fiel
 
     (look,) = looks_of(tmp_path, kind, page_of(kind, world, doc_id))
 
-    assert look == {'deviating': {'price': 'Artikel: 85,00'}, 'classes': ['itemCanSave'], 'buttons': 1}
+    assert look == {'deviating': {'price': 'Artikel: 85,00'}, 'classes': [], 'buttons': 1}                           # kein itemCanSave: An dieser Zeile steht kein „+“
 
 
 @NO_NODE
@@ -215,23 +314,84 @@ def test_each_field_is_compared_on_its_own_unit_price_and_the_rate(world, tmp_pa
     }
     got = {name: looks_of(tmp_path, kind, html, program)[0] for name, program in programs.items()}
 
-    assert got['unit'] == {'deviating': {'unit': 'Artikel: Std.'}, 'classes': ['itemCanSave'], 'buttons': 1}
-    assert got['price'] == {'deviating': {'price': 'Artikel: 85,00'}, 'classes': ['itemCanSave'], 'buttons': 1}
+    assert got['unit'] == {'deviating': {'unit': 'Artikel: Std.'}, 'classes': [], 'buttons': 1}
+    assert got['price'] == {'deviating': {'price': 'Artikel: 85,00'}, 'classes': [], 'buttons': 1}
     assert got['none'] == {'deviating': {}, 'classes': [], 'buttons': 1}
 
 
 @NO_NODE
 @pytest.mark.parametrize('kind', KINDS)
-def test_the_price_is_compared_in_whole_cents_and_the_title_shows_two_decimals_with_a_comma(world, tmp_path, kind):
+def test_the_price_deviates_from_half_a_cent_on_and_the_title_shows_two_decimals_with_a_comma(world, tmp_path, kind):
     add_articles(world, ('Fachbuch', 'Stk.', 1234.5, 19))
     doc_id = make_doc(kind, world, [row_item(1, 'Fachbuch', 1234.5, 19, 'Stk.')], mixed=False)
     html = page_of(kind, world, doc_id)
+    prices = ('1234.5', '1234.50', '1234.504', '1234.496', '1234.505', '1234.495', '1234.51', '1234.49', '0', '')
 
-    got = {price: looks_of(tmp_path, kind, html, f"typed(rows()[0].querySelector('.item-price'), '{price}');")[0]['deviating']
-           for price in ('1234.5', '1234.50', '1234.504', '1234.51', '1234.49', '0', '')}
+    got = {price: looks_of(tmp_path, kind, html, f"typed(rows()[0].querySelector('.item-price'), '{price}');")[0]['deviating'] for price in prices}
 
-    assert got['1234.5'] == got['1234.50'] == got['1234.504'] == {}                                                # auf den Cent gleich
-    assert got['1234.51'] == got['1234.49'] == got['0'] == got[''] == {'price': 'Artikel: 1.234,50'}             # Tausenderpunkt, Komma, zwei Stellen; leer rechnet die Zeile als 0
+    for price in ('1234.5', '1234.50', '1234.504', '1234.496'):                                                       # weniger als ein halber Cent Unterschied: keine Abweichung
+        assert got[price] == {}, price
+    for price in ('1234.505', '1234.495', '1234.51', '1234.49', '0', ''):                                             # ab einem halben Cent; leer rechnet die Zeile als 0
+        assert got[price] == {'price': 'Artikel: 1.234,50'}, price                                                    # Tausenderpunkt, Komma, zwei Stellen
+
+
+PRICE_CASES = [
+    # (Feld der Zeile, Preis des Artikels, weicht ab?) – der Unterschied ist EXAKT mindestens 0,005, in Dezimalzahlen gerechnet
+    ('85', 85, False), ('85.0', 85, False), ('85.004', 85, False), ('85.0049999', 85, False), ('84.996', 85, False),
+    ('85.005', 85, True), ('84.995', 85, True), ('85.01', 85, True), ('84.99', 85, True), ('', 85, True), ('0', 85, True), ('abc', 85, True),
+    ('8.5e1', 85, False), ('8.5001e1', 85, False), ('8.5005e1', 85, True), ('850e-1', 85, False),                      # Schreibweise mit Exponent
+    ('85.005', 85.01, True), ('85.0051', 85.01, False), ('85.015', 85.01, True), ('85.01', 85.01, False),                # 85,01 − 85,005 ist als Gleitkomma kleiner als 0,005
+    ('0.28', 0.285, True), ('0.2849', 0.285, False), ('0.29', 0.285, True), ('0.285', 0.285, False),                    # 0,285 − 0,28 ebenso
+    ('1.005', 1.01, True), ('1.0051', 1.01, False), ('1.01', 1.01, False),
+    ('', 0, False), ('0', 0, False), ('0.004', 0, False), ('0.005', 0, True), ('-0.005', 0, True), ('-0.004', 0, False),
+    ('0.0079', 0.0079, False), ('0.0129', 0.0079, True), ('0.0128', 0.0079, False),                                       # ein Artikelpreis mit vier Stellen
+    ('1e-7', 0, False), ('1e3', 1000, False), ('1e3', 1000.01, True),
+    ('999999999.995', 999999999.99, True), ('999999999.994', 999999999.99, False),
+]
+
+
+@NO_NODE
+def test_the_price_is_compared_exactly_in_decimals_deviating_from_half_a_cent_on_without_the_floating_point_trap(world, tmp_path):
+    """„Abweichend genau dann, wenn |Zeile − Artikel| ≥ 0,005“ – mit Dezimalzahlen gerechnet: Der Text des Felds wird Ziffer für Ziffer gelesen (``85.005`` gegen 85,01: als Gleitkomma ist die
+    Differenz 0,00499…, in Dezimalzahlen genau 0,005). Ein leeres oder ungültiges Feld gilt als 0, wie die Summenrechnung der Maske es liest."""
+    program = f"var cases = {json.dumps(PRICE_CASES)}; emit('got', cases.map(function (c) {{ return artPriceDiffers(c[0], c[1]); }}));"
+
+    out = run(tmp_path, 'invoice', page_of('invoice', world), program)
+
+    assert [(row, article, got) for (row, article, _), got in zip(PRICE_CASES, out['got'])] == [(row, article, expected) for row, article, expected in PRICE_CASES]
+
+
+ROUND_CASES = [
+    # (Feld der Zeile, der Preis, den das „+“ zeigt und schickt) – auf zwei Stellen, ab der Hälfte aufgerundet, EINMAL und exakt
+    ('85', 85), ('85.5', 85.5), ('1234.5', 1234.5), ('0.1', 0.1), ('0.29', 0.29),
+    ('1.005', 1.01), ('1.00495', 1), ('12.3449999', 12.34), ('2.675', 2.68), ('0.285', 0.29), ('0.125', 0.13), ('0.124', 0.12), ('2.34495', 2.34), ('0.00495', 0), ('0.005', 0.01),
+    ('', 0), ('abc', 0), ('0', 0), ('1e2', 100), ('1.5e-2', 0.02), ('1.4e-2', 0.01), ('8.5005e1', 85.01), ('-1.005', -1.01), ('999999999.995', 1000000000), ('0.0079', 0.01),
+]
+
+
+@NO_NODE
+def test_the_price_for_the_plus_is_rounded_once_to_two_decimals_and_exactly(world, tmp_path):
+    program = f"var cases = {json.dumps(ROUND_CASES)}; emit('got', cases.map(function (c) {{ return artPrice(c[0]); }}));"
+
+    out = run(tmp_path, 'invoice', page_of('invoice', world), program)
+
+    assert [(field, got) for (field, _), got in zip(ROUND_CASES, out['got'])] == [(field, price) for field, price in ROUND_CASES]
+
+
+@NO_NODE
+@pytest.mark.parametrize('kind', KINDS)
+def test_the_plus_shows_and_sends_the_same_rounded_price(world, tmp_path, kind):
+    """Die Rückfrage und die Anfrage nehmen EINE Funktion (``artPrice``): Was die Rückfrage zeigt, geht ab – nicht der Wert des Felds."""
+    doc_id = make_doc(kind, world, [row_item(1, 'Messgerät Miete', 30.0)], mixed=False)
+    html = page_of(kind, world, doc_id)
+
+    got = {}
+    for field in ('1.005', '12.3449999', '1.00495', '0.125', '85', ''):
+        program = f"artMark(); typed(rows()[0].querySelector('.item-price'), '{field}'); fire(rows()[0].querySelector('.itemAddArticle'), 'click'); emit('asked', asked);"
+        out = run(tmp_path, kind, html, program, answer={'success': False, 'error': 'x'})
+        got[field] = (out['asked'][0].split(' · ')[2], out['sent'][0]['body']['price'])
+
+    assert got == {'1.005': ('1,01 €', 1.01), '12.3449999': ('12,34 €', 12.34), '1.00495': ('1,00 €', 1), '0.125': ('0,13 €', 0.13), '85': ('85,00 €', 85), '': ('0,00 €', 0)}
 
 
 @NO_NODE
@@ -254,7 +414,7 @@ def test_with_a_rate_per_position_the_select_of_the_row_is_compared_with_the_rat
     first, second = looks_of(tmp_path, kind, page_of(kind, world, doc_id))
 
     assert first == {'deviating': {}, 'classes': [], 'buttons': 1}
-    assert second == {'deviating': {'tax': 'Artikel: 19 %'}, 'classes': ['itemCanSave'], 'buttons': 1}              # das Auswahlfeld, nicht die Positionsnummer
+    assert second == {'deviating': {'tax': 'Artikel: 19 %'}, 'classes': [], 'buttons': 1}                          # das Auswahlfeld, nicht die Positionsnummer
 
 
 @NO_NODE
@@ -265,7 +425,7 @@ def test_without_the_checkbox_the_rate_of_the_document_is_compared_and_the_posit
 
     (look,) = looks_of(tmp_path, kind, page_of(kind, world, doc_id))
 
-    assert look == {'deviating': {'first': 'Artikel: 7 % – Beleg: 19 %'}, 'classes': ['itemCanSave'], 'buttons': 1}
+    assert look == {'deviating': {'first': 'Artikel: 7 % – Beleg: 19 %'}, 'classes': [], 'buttons': 1}
 
 
 @NO_NODE
@@ -328,7 +488,7 @@ def test_when_the_deviation_goes_away_class_and_title_go_with_it_and_the_select_
     out = run(tmp_path, kind, page_of(kind, world, doc_id), program)
 
     marked, fixed = out['marked'], out['fixed']
-    assert marked[0] == {'deviating': {'tax': 'Artikel: 19 %', 'unit': 'Artikel: Std.'}, 'classes': ['itemCanSave'], 'buttons': 1}
+    assert marked[0] == {'deviating': {'tax': 'Artikel: 19 %', 'unit': 'Artikel: Std.'}, 'classes': [], 'buttons': 1}
     assert marked[1:] == ['Artikel: 19 %', 'Artikel: Std.']
     assert fixed[0] == {'deviating': {}, 'classes': [], 'buttons': 1}
     assert fixed[1:4] == ['19 %', '', ''] and fixed[4] == '19 %'                                                     # die Bezeichnung der gewählten Option, sonst kein Tooltip
@@ -358,6 +518,57 @@ def test_a_row_without_an_article_gets_the_left_border_class_and_the_plus_but_no
 
     assert first == {'deviating': {}, 'classes': [], 'buttons': 1}
     assert second == {'deviating': {}, 'classes': ['itemCanSave', 'itemNoArticle'], 'buttons': 1}
+
+
+@NO_NODE
+@pytest.mark.parametrize('kind', KINDS)
+def test_the_plus_is_offered_only_to_a_row_without_an_article_never_to_one_that_deviates_from_its_article(world, tmp_path, kind):
+    """Eine Zeile mit Artikel, die abweicht, bekommt kein „+“: Es übernähme den Tippfehler als neuen Artikel und schaltete die Warnung ab. Sichtbar ist es nur mit ``itemCanSave`` (``buch.css``)."""
+    add_articles(world, CONSULTING, BOOK)
+    doc_id = make_doc(kind, world, [row_item(1, 'Beratung', 8.0, 19, 'Stk.'), row_item(2, 'Fachbuch', 24.9, 19, 'Stk.'), row_item(3, 'Fahrtkosten', 30.0)], mixed=False)
+
+    deviating, rate_only, without = looks_of(tmp_path, kind, page_of(kind, world, doc_id))
+
+    assert set(deviating['deviating']) == {'unit', 'price'} and 'itemCanSave' not in deviating['classes'] and deviating['classes'] == []
+    assert set(rate_only['deviating']) == {'first'} and rate_only['classes'] == []
+    assert without == {'deviating': {}, 'classes': ['itemCanSave', 'itemNoArticle'], 'buttons': 1}
+
+
+@NO_NODE
+@pytest.mark.parametrize('kind', KINDS)
+def test_the_plus_does_nothing_on_a_row_with_an_article_even_if_it_is_clicked(world, tmp_path, kind):
+    """Auch wenn das Stylesheet fehlt und das „+“ überall steht: An einer Zeile mit Artikel fragt es nicht und schickt nichts."""
+    add_articles(world, CONSULTING)
+    doc_id = make_doc(kind, world, [row_item(1, 'Beratung', 8.0)], mixed=False)
+    program = "artMark(); fire(rows()[0].querySelector('.itemAddArticle'), 'click'); emit('asked', asked); emit('looks', looks());"
+
+    out = run(tmp_path, kind, page_of(kind, world, doc_id), program)
+
+    assert out['asked'] == [] and out['sent'] == [] and out['messages'] == []
+    assert out['looks'][0]['deviating'] == {'price': 'Artikel: 85,00'}
+
+
+@NO_NODE
+@pytest.mark.parametrize('kind', KINDS)
+def test_a_row_inserted_from_the_search_keeps_its_article_only_while_the_description_still_starts_with_its_name(world, tmp_path, kind):
+    """Die ID einer Zeile gilt nur, solange die Beschreibung noch mit dem Namen dieses Artikels beginnt: Wird sie auf einen anderen Artikel umgeschrieben, vergleicht die Zeile mit diesem –
+    sonst stünde die Zeile weiter für den alten Artikel (Preis und Einheit passten ja noch) und die Abweichung bliebe unbemerkt."""
+    ids = add_articles(world, CONSULTING, BOOK)
+    program = f"""
+      addArticleRow('{ids['Beratung']}'); var row = rows()[1], description = row.querySelector('.item-description');
+      emit('inserted', look(row));
+      typed(description, 'Fachbuch Q4'); emit('other', look(row));
+      typed(description, 'Fahrtkosten'); emit('none', look(row));
+      typed(description, 'Beratung Q4'); emit('back', look(row));
+      emit('id', row.getAttribute('data-article-id'));
+    """
+
+    out = run(tmp_path, kind, page_of(kind, world), program)
+
+    assert out['inserted'] == {'deviating': {}, 'classes': [], 'buttons': 1}
+    assert out['other'] == {'deviating': {'unit': 'Artikel: Stk.', 'price': 'Artikel: 24,90', 'first': 'Artikel: 7 % – Beleg: 19 %'}, 'classes': [], 'buttons': 1}
+    assert out['none'] == {'deviating': {}, 'classes': ['itemCanSave', 'itemNoArticle'], 'buttons': 1}
+    assert out['back'] == out['inserted'] and out['id'] == str(ids['Beratung'])                                       # die ID blieb an der Zeile; sie gilt wieder, sobald der Name wieder dort steht
 
 
 @NO_NODE
@@ -419,7 +630,7 @@ def test_new_and_removed_rows_are_marked_by_the_functions_that_add_and_remove_th
     assert [look['buttons'] for look in out['free']] == [1, 1]                                                       # die neue Zeile bekommt ihr „+“ (addFreeRow ruft artMark)
     assert out['free'][1]['classes'] == ['itemCanSave', 'itemNoArticle']
     # eine Zeile aus dem Artikelfeld trägt die ID: Der Artikel ist bekannt, nur der Satz des Belegs (19 %) weicht vom Artikel (7 %) ab
-    assert out['article'][2] == {'deviating': {'first': 'Artikel: 7 % – Beleg: 19 %'}, 'classes': ['itemCanSave'], 'buttons': 1}
+    assert out['article'][2] == {'deviating': {'first': 'Artikel: 7 % – Beleg: 19 %'}, 'classes': [], 'buttons': 1}
     assert [look['buttons'] for look in out['removed']] == [1, 1] and out['removed'][1]['deviating'] == {'first': 'Artikel: 7 % – Beleg: 19 %'}
 
 
@@ -720,8 +931,8 @@ def test_the_block_uses_only_var_and_function_with_the_prefix_art_and_sets_value
     assert 'textContent' in CODE and 'createElement' in CODE and '.title =' in CODE
     assert '.style' not in CODE and "'style'" not in CODE and '"style"' not in CODE                                  # kein Inline-Stil: Die Optik steht in buch.css
     names = set(re.findall(r'function (\w+)\(', CODE))
-    assert names == {'artNorm', 'artLow', 'artCents', 'artWordStart', 'artFind', 'artRateText', 'artArticleRate', 'artOptionLabel', 'artSet', 'artDeviations', 'artMarkRow',
-                     'artButton', 'artMark', 'artRowRate', 'artAdd', 'artSend', 'artInit'}
+    assert names == {'artNorm', 'artLow', 'artWordStart', 'artStarts', 'artNames', 'artFind', 'artDecimal', 'artScale', 'artPriceDiffers', 'artPrice', 'artRateText',
+                     'artArticleRate', 'artOptionLabel', 'artSet', 'artDeviations', 'artMarkRow', 'artButton', 'artMark', 'artRowRate', 'artAdd', 'artSend', 'artInit'}
     assert all(name.startswith('art') for name in names)
     assert set(re.findall(r'(?<![\w.])var (\w+)', CODE)) >= {'ART_TEXTS'}
 
