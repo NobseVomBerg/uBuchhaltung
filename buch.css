@@ -281,6 +281,16 @@ button.active			{ background-color: #4facfe; color: #FFF; }	/* aktiver Jahres-/M
    längsten Bezeichnung, aber nie über max-width (bei kurzen Bezeichnungen wie „19 %“ bleibt sie schmal, wie sie war); mit width: 100% bliebe sie schmal und zeigte nur die ersten Buchstaben */
 .invoice-items .item-tax 				{ width: auto; max-width: 130px; }
 .invoice-items .taxChoice 				{ max-width: 260px; }
+/* Abweichung vom Artikel (Rechnung, Angebot): Ein Feld, das vom gespeicherten Artikel abweicht (Einheit, Einzelpreis, Satz), bekommt einen warmen Hintergrund und einen Rand in Warnfarbe, die Zelle der
+   Positionsnummer zeigt einen abweichenden Satz des Belegs; eine Position ohne Artikel trägt einen schmalen Rand links. Das „+“ (legt die Position als neuen Artikel an) steht nur an einer Zeile mit
+   .itemCanSave; er bleibt auch unsichtbar im Layout (visibility), sonst spränge die Spalte beim Tippen. Das Blatt ist in beiden Farbschemata weiß (.invoice-container): Die Töne sind die von .warnColor
+   und der Warnmeldung; !important gegen die weißen Vorgaben von .invoice-container * */
+.invoice-items .itemDeviates 				{ background-color: #fff3cd !important; }
+.invoice-items input.itemDeviates, .invoice-items select.itemDeviates 	{ border-color: #e69500 !important; }
+.invoice-items .itemNoArticle > td:first-child 		{ border-left: 3px solid #e69500; }
+.invoice-items tbody td.no-pdf 				{ white-space: nowrap; }
+.invoice-items .itemAddArticle 				{ visibility: hidden; margin-left: 3px; padding: 0 5px; font-weight: bold; cursor: pointer; }
+.invoice-items .itemCanSave .itemAddArticle 		{ visibility: visible; }
 .invoice-payment-terms 	{ margin: 20px 0; font-size: 0.9em; }
 /* Angebots-Fließtext (contenteditable) – passt sich in die .invoice-* Familie ein */
 .invoice-richtext-toolbar 	{ margin: 10px 0 2px 0; }

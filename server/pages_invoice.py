@@ -106,6 +106,20 @@ def rate_label(key):
     return key.replace('.', ',') + ' %'
 
 
+def article_json(article):
+    """Ein Artikel (eine Zeile von ``Database.fetch_articles`` bzw. ``get_article_by_id``) als Eintrag von ``articlesData`` – für die Masken von Rechnung und Angebot und für die Antwort von
+    ``POST /articles/quick-add``: EINE Form für beide. ``mixRate``: der Auswahlwert für „Steuersatz je Position“ (``rate_key``; ``None``, wenn der Satz sich nicht lesen lässt)."""
+    return {
+        'id': article[0],
+        'name': article[1] or '',
+        'unit': unit_display(article[2]),
+        'price': float(article[3]) if article[3] is not None else 0,  # Decimal -> JSON-fähig
+        'taxRate': article[4] if article[4] is not None else 19,  # 0% nicht zu 19% verfälschen
+        'mixRate': rate_key(article[4]),
+        'description': article[5] or ''
+    }
+
+
 def mixed_rate_choices():
     """Die wählbaren Sätze als ``(Wert, Beschriftung)`` in der Reihenfolge von ``tax_groups.MIXED_TAX_RATES`` – bei jedem Aufruf frisch aus dem Modul gelesen."""
     keys = (rate_key(rate) for rate in tax_groups.MIXED_TAX_RATES)
@@ -640,11 +654,220 @@ MIXED_TAX_JS = r'''
 '''
 
 
+# Abweichung vom Artikel (Rechnung und Angebot): Der Block steht im selben Skript wie die Bausteine oben (``mixed_tax_script``) und nutzt sie (``mixOn``, ``mixKey``, ``mixChosen``, ``mixRowRate``).
+# Nur die Anzeige: Er liest die Zeilen und schreibt nur Klassen und Tooltips – Payload, Summen und Sperre bleiben, wie sie waren. Nur var und function (Präfix art), Werte nur über .title,
+# .textContent und createElement; die Texte kommen vom Server (``ARTICLE_TEXTS`` über ``script_json``, ``__ART_TEXTS__`` wird in der Konstante ersetzt, nie über eine fertige Seite), die
+# Artikel stehen in ``articlesData`` im Skript der Seite (die aktiven Artikel; der Block liest sie erst beim Aufruf). Die Seiten rufen ``artMark`` nach dem Laden und nach dem Hinzufügen und
+# Entfernen einer Zeile; die Ereignisse der Tabelle (``input``, ``change``) lösen es für alles andere aus: Eingaben in einer Zeile, „Steuersatz je Position“, „Umsatzsteuer ausweisen“ und
+# das Feld „Mehrwertsteuer“ im Kopf liegen alle in ihr. Das „+“ (``POST /articles/quick-add``) legt aus einer Zeile einen NEUEN Artikel an – ein vorhandener wird nie geändert.
+ARTICLE_TEXTS = {
+    'article': 'Artikel: ',                                     # Anfang des Tooltips eines Felds, das vom Artikel abweicht
+    'document': ' – Beleg: ',                                   # Satz des Belegs hinter dem Satz des Artikels
+    'add': 'Als neuen Artikel speichern',                       # Tooltip des „+“
+    'question': 'Als neuen Artikel speichern? ',                # Anfang der Rückfrage
+    'saved': 'Artikel gespeichert.',
+    'failed': 'Der Artikel konnte nicht gespeichert werden.',   # fester Satz, wenn der Server nichts Lesbares antwortet
+}
+
+ARTICLE_MARK_JS = r'''
+        // Abweichung vom Artikel: eine Position, die vom gespeicherten Artikel abweicht, fällt auf (nur die Anzeige, siehe pages_invoice.py).
+        var ART_TEXTS = __ART_TEXTS__;
+
+        // Ein Text zum Vergleich der Namen: Leerraum zusammengefasst und außen entfernt, Kleinbuchstaben (dieselbe Regel wie article_key auf dem Server beim Anlegen).
+        function artNorm(text) {
+            return String(text === null || text === undefined ? '' : text).replace(/\s+/g, ' ').trim().toLowerCase();
+        }
+
+        // Eine Einheit zum Vergleich: außen ohne Leerraum, Kleinbuchstaben.
+        function artLow(text) {
+            return String(text === null || text === undefined ? '' : text).trim().toLowerCase();
+        }
+
+        // Ein Preis in ganzen Cent; leer oder keine Zahl gilt als 0, wie die Zeile ihn rechnet.
+        function artCents(value) {
+            return Math.round((parseFloat(value) || 0) * 100);
+        }
+
+        // Beginnt der Text mit einem Buchstaben, einer Ziffer oder einem Zeichen, das zum Buchstaben gehört (Akzent)? Dann endet ein Name davor nicht an einer Wortgrenze.
+        function artWordStart(text) {
+            return /^[\p{L}\p{M}\p{N}]/u.test(text);
+        }
+
+        // Der Artikel einer Zeile oder null. 1. Trägt die Zeile data-article-id (frisch aus der Artikelsuche gewählt) und gibt es den Artikel: dieser. 2. Sonst beginnt ihre Beschreibung
+        // (normalisiert) mit dem normalisierten Namen eines Artikels, und danach folgt das Ende oder ein Zeichen, das kein Buchstabe und keine Ziffer ist („Beratung“ trifft nicht
+        // „Beratungspaket“): bei mehreren der längste Name, bei gleich langen keiner. Namen unter 3 Zeichen nehmen an 2. nicht teil. Rein: nichts wird geschrieben.
+        function artFind(row) {
+            var id = row.getAttribute('data-article-id');
+            if (id !== null && Object.prototype.hasOwnProperty.call(articlesData, id)) return articlesData[id];
+            var field = row.querySelector('.item-description');
+            var text = artNorm(field ? field.value : '');
+            var keys = Object.keys(articlesData);
+            var found = null;
+            var length = 0;
+            var tie = false;
+            for (var i = 0; i < keys.length; i++) {
+                var name = artNorm(articlesData[keys[i]].name);
+                if (Array.from(name).length < 3 || text.indexOf(name) !== 0 || artWordStart(text.slice(name.length))) continue;
+                if (name.length > length) {
+                    found = articlesData[keys[i]];
+                    length = name.length;
+                    tie = false;
+                } else if (name.length === length) {
+                    tie = true;
+                }
+            }
+            return tie ? null : found;
+        }
+
+        // Ein Satz (Prozentzahl als Text, wie mixKey ihn schreibt) für einen Tooltip, mit Dezimalkomma.
+        function artRateText(key) {
+            return key.replace('.', ',') + ' %';
+        }
+
+        // Der Satz des Artikels als Auswahlwert: mixRate vom Server, sonst aus taxRate; '' – er lässt sich nicht lesen, dann gibt es nichts zu vergleichen.
+        function artArticleRate(article) {
+            return article.mixRate ? mixKey(article.mixRate) : mixKey(article.taxRate);
+        }
+
+        // Die Bezeichnung der ersten Option der Auswahl einer Zeile, die diesen Satz trägt – sonst der Satz selbst.
+        function artOptionLabel(select, key) {
+            var options = select ? select.options : [];
+            for (var i = 0; i < options.length; i++) {
+                if (mixKey(mixOptionRate(options[i])) === key) return options[i].textContent;
+            }
+            return artRateText(key);
+        }
+
+        // Die Abweichungen einer Zeile vom Artikel als Tooltip-Texte ('' = keine): Einheit, Netto-Einzelpreis, Satz der Auswahl der Zeile (tax, nur mit „Steuersatz je Position“) und
+        // Satz des Belegs (head, ohne das Häkchen; markiert wird die Zelle der Positionsnummer). Menge und Beschreibung werden nie verglichen; ohne Steuerausweis gibt es keine Steuer-Markierung.
+        function artDeviations(row, article) {
+            var found = {unit: '', price: '', tax: '', head: ''};
+            var unit = row.querySelector('.item-unit');
+            if (unit && artLow(unit.value) !== artLow(article.unit)) found.unit = ART_TEXTS.article + article.unit;
+            var price = row.querySelector('.item-price');
+            if (price && artCents(price.value) !== artCents(article.price)) found.price = ART_TEXTS.article + fmtDe(article.price);
+            var tax = document.getElementById('show_tax');
+            var wanted = artArticleRate(article);
+            if (!tax || !tax.checked || wanted === '') return found;
+            if (mixOn()) {
+                var select = row.querySelector('.item-tax');
+                var option = mixChosen(select);
+                if (select && mixKey(option ? mixOptionRate(option) : select.value) !== wanted) found.tax = ART_TEXTS.article + artOptionLabel(select, wanted);
+            } else {
+                var own = mixKey(document.getElementById('tax_rate').value);
+                if (own !== '' && own !== wanted) found.head = ART_TEXTS.article + artRateText(wanted) + ART_TEXTS.document + artRateText(own);
+            }
+            return found;
+        }
+
+        // Ein Feld markieren (text = der Tooltip bei einer Abweichung) oder die Markierung löschen (text = ''). Ohne Abweichung verschwinden Klasse und Tooltip; das Auswahlfeld des Satzes
+        // bekommt den Tooltip zurück, den mixTotals ihm gibt (die Bezeichnung der gewählten Option), die übrigen Felder haben keinen. Ein Feld ohne Markierung bleibt unberührt.
+        function artSet(field, text) {
+            if (!field) return;
+            if (text) {
+                field.classList.add('itemDeviates');
+                field.title = text;
+            } else if (field.classList.contains('itemDeviates')) {
+                field.classList.remove('itemDeviates');
+                var chosen = field.classList.contains('item-tax') ? mixChosen(field) : null;
+                field.title = chosen ? chosen.textContent : '';
+            }
+        }
+
+        // Das „+“ einer Zeile (type=button) in ihrer letzten Zelle hinter dem ✕: angelegt wird es einmal, sichtbar ist es nur an einer Zeile mit itemCanSave (buch.css).
+        function artButton(row) {
+            var found = row.querySelector('.itemAddArticle');
+            if (found) return found;
+            var cell = row.querySelector('td.no-pdf');
+            if (!cell) return null;
+            var button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'itemAddArticle';
+            button.textContent = '+';
+            button.title = ART_TEXTS.add;
+            button.addEventListener('click', function () { artAdd(row); });
+            cell.appendChild(button);
+            return button;
+        }
+
+        // Eine Zeile markieren: Mit Beschreibung und ohne Artikel trägt sie itemNoArticle, mit Artikel bekommt jedes Feld, das abweicht, itemDeviates und seinen Tooltip; itemCanSave
+        // zeigt das „+“. Eine Zeile ohne Beschreibung bleibt ohne Markierung (das Speichern übergeht sie).
+        function artMarkRow(row) {
+            var description = row.querySelector('.item-description');
+            var named = !!description && artNorm(description.value) !== '';
+            var article = named ? artFind(row) : null;
+            var found = article ? artDeviations(row, article) : {unit: '', price: '', tax: '', head: ''};
+            artSet(row.querySelector('.item-unit'), found.unit);
+            artSet(row.querySelector('.item-price'), found.price);
+            artSet(row.querySelector('.item-tax'), found.tax);
+            artSet(row.querySelector('td:first-child'), found.head);
+            var without = named && !article;
+            if (without) row.classList.add('itemNoArticle'); else row.classList.remove('itemNoArticle');
+            if (without || found.unit || found.price || found.tax || found.head) row.classList.add('itemCanSave'); else row.classList.remove('itemCanSave');
+            artButton(row);
+        }
+
+        // Alle Zeilen markieren – nicht in einer gesperrten Rechnung (versendet, storniert, Stornorechnung): dort läuft nichts, und es gibt kein „+“.
+        function artMark() {
+            var locked = document.getElementById('invoice_locked');
+            if (locked && locked.value === 'true') return;
+            var rows = document.querySelectorAll('.invoice-item-row');
+            for (var i = 0; i < rows.length; i++) artMarkRow(rows[i]);
+        }
+
+        // Der Satz einer Zeile als Zahl (Prozent), wie das Speichern ihn schickt: ohne Steuerausweis 0, mit „Steuersatz je Position“ der der Auswahl, sonst der Satz des Belegs; ohne lesbaren Satz NaN.
+        function artRowRate(row) {
+            var tax = document.getElementById('show_tax');
+            if (!tax || !tax.checked) return 0;
+            return mixOn() ? mixRowRate(row) : parseFloat(document.getElementById('tax_rate').value);
+        }
+
+        // Das „+“ wurde geklickt: nach Rückfrage (die Zeile als Text) die Position als neuen Artikel anlegen. Der Name ist die Beschreibung (Leerraum zusammengefasst, höchstens 200 Zeichen).
+        function artAdd(row) {
+            var name = Array.from(row.querySelector('.item-description').value.replace(/\s+/g, ' ').trim()).slice(0, 200).join('').trim();
+            var unit = row.querySelector('.item-unit').value.trim();
+            var price = parseFloat(row.querySelector('.item-price').value) || 0;
+            var rate = artRowRate(row);
+            var text = ART_TEXTS.question + name + ' · ' + unit + ' · ' + fmtDe(price) + ' € · ' + (isNaN(rate) ? '?' : String(rate).replace('.', ',')) + ' %';
+            appConfirm(text, function () { artSend(row, {name: name, unit: unit, price: price, taxRate: rate}); });
+        }
+
+        // Den Artikel anlegen lassen (ein JSON-POST, das Token hängt die Fußzeile an). Gelingt es, kennt die Zeile ihn (data-article-id) und artMark läuft neu; sonst steht der Satz des Servers
+        // oder der feste Satz in der Meldung – nie der Text einer Ausnahme. Gibt das Versprechen zurück (die Tests warten darauf).
+        function artSend(row, article) {
+            return fetch('/articles/quick-add', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(article)})
+                .then(function (response) { return response.json(); })
+                .then(function (data) {
+                    if (!data || !data.success || !data.article) {
+                        appMsg((data && data.error) || ART_TEXTS.failed, 'error');
+                        return;
+                    }
+                    articlesData[String(data.article.id)] = data.article;
+                    row.setAttribute('data-article-id', String(data.article.id));
+                    artMark();
+                    appMsg(ART_TEXTS.saved, 'success');
+                })
+                .catch(function () { appMsg(ART_TEXTS.failed, 'error'); });
+        }
+
+        // Die Tabelle der Positionen hört auf input und change: Jede Eingabe in einer Zeile und jedes Umschalten im Fuß der Tabelle markiert neu (nach den Zuhörern der Felder selbst).
+        function artInit() {
+            var table = document.querySelector('.invoice-items');
+            if (!table) return;
+            table.addEventListener('input', artMark);
+            table.addEventListener('change', artMark);
+        }
+        artInit();
+'''
+
+
 def mixed_tax_script(choices=None):
-    """Der Skriptblock mit den Bausteinen für die Steuersätze der Stammdaten (``MIXED_ENTRY_JS``) und für „Steuersatz je Position“ (``MIXED_TAX_JS``) und der Liste der wählbaren
-    Steuersätze (``choices``: ``entry_choices(db)``; Vorgabe die Sätze von ``tax_groups.MIXED_TAX_RATES`` ohne Eintrag), vor dem Skript der Maske."""
+    """Der Skriptblock mit den Bausteinen für die Steuersätze der Stammdaten (``MIXED_ENTRY_JS``), für „Steuersatz je Position“ (``MIXED_TAX_JS``) und für die Abweichung vom Artikel
+    (``ARTICLE_MARK_JS`` mit seinen Texten ``ARTICLE_TEXTS``) und der Liste der wählbaren Steuersätze (``choices``: ``entry_choices(db)``; Vorgabe die Sätze von
+    ``tax_groups.MIXED_TAX_RATES`` ohne Eintrag), vor dem Skript der Maske."""
     rates = script_json([choice_json(choice) for choice in (legacy_choices() if choices is None else choices)])
-    return '<script>' + MIXED_ENTRY_JS + MIXED_TAX_JS.replace('__MIX_RATES__', rates) + '    </script>\n'
+    return ('<script>' + MIXED_ENTRY_JS + MIXED_TAX_JS.replace('__MIX_RATES__', rates)
+            + ARTICLE_MARK_JS.replace('__ART_TEXTS__', script_json(ARTICLE_TEXTS)) + '    </script>\n')
 
 
 # Stornieren (db/invoice_storno.py): Rückfrage mit Stornodatum; eine Stornorechnung lässt sich nicht kopieren
@@ -2119,18 +2342,8 @@ function copyInvoiceAsNew(invId) {{
         const articlesData = '''
     
     # Build JavaScript articles data object
-    articles_dict = {}
-    for article in articles:
-        articles_dict[str(article[0])] = {
-            'id': article[0],
-            'name': article[1] or '',
-            'unit': unit_display(article[2]),
-            'price': float(article[3]) if article[3] is not None else 0,  # Decimal -> JSON-fähig
-            'taxRate': article[4] if article[4] is not None else 19,  # 0% nicht zu 19% verfälschen
-            'mixRate': rate_key(article[4]),  # Auswahlwert für „Steuersatz je Position“ (None: nicht lesbar)
-            'description': article[5] or ''
-        }
-    
+    articles_dict = {str(article[0]): article_json(article) for article in articles}
+
     s += _json_for_script(articles_dict)
     
     s += ''';
@@ -2421,6 +2634,7 @@ function copyInvoiceAsNew(invId) {{
             tbody.appendChild(newRow);
             attachCalculationListeners(newRow);
             calculateTotals();
+            artMark();
         }
         
         // Add row from article catalog (only quantity editable)
@@ -2454,6 +2668,7 @@ function copyInvoiceAsNew(invId) {{
             tbody.appendChild(newRow);
             attachCalculationListeners(newRow);
             calculateTotals();
+            artMark();
         }
         
         // Remove row
@@ -2462,6 +2677,7 @@ function copyInvoiceAsNew(invId) {{
             row.remove();
             renumberRows();
             calculateTotals();
+            artMark();
         }
         
         // Renumber rows
@@ -2539,6 +2755,7 @@ function copyInvoiceAsNew(invId) {{
         
         // Initial calculation
         calculateTotals();
+        artMark();
         
         // Initialize own company (load logo and data for preselected company)
         updateOwnCompany();

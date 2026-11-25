@@ -7,8 +7,8 @@
   ``/quote/pdf_generate``): GET ergibt 405 und ändert nichts, POST braucht Herkunft und Token.
 * Heruntergeladen wird nur, was abgelegt ist (``/quote/pdf_download``); ``/invoice/xml`` gibt es nicht
   mehr, ``/invoice/xml_download`` liefert die abgelegte Datei.
-* Die JSON-Routen (``app._JSON_PATHS``, seit 2.5.12 auch das Verknüpfen von Belegen, seit 2.5.13 der Neuaufbau einer Zuordnung, seit 2.6.0 das Lesen eines Belegs) antworten auf unbrauchbare Bodys mit 400
-  „Ungültige Anfrage.“ und danach weiter.
+* Die JSON-Routen (``app._JSON_PATHS``, seit 2.5.12 auch das Verknüpfen von Belegen, seit 2.5.13 der Neuaufbau einer Zuordnung, seit 2.6.0 das Lesen eines Belegs, seit 2.10.2 das Anlegen eines Artikels
+  aus einer Position) antworten auf unbrauchbare Bodys mit 400 „Ungültige Anfrage.“ und danach weiter.
 * Jede Antwort trägt ``X-Content-Type-Options: nosniff`` und ``X-Frame-Options: DENY`` – auch die
   Fehlerantwort auf eine kaputte Anfragezeile.
 * „In Rechnung umwandeln“ (``POST /quote/convert``) schickt das CSRF-Token mit; ohne Token 403.
@@ -31,6 +31,7 @@ from db.invoices import InvoiceCol
 from export.pdf_worktime import generate_worktime_pdf
 from server import app as server_app
 from server import handlers
+from server.handlers import ARTICLE_NAME_INVALID
 from server.pages_quote import PageQuote
 from server.pages_transactions import PageTransactions
 from tests import installation
@@ -294,6 +295,7 @@ HANDLER = {                     # Route -> Handler, den `_post_json_route` aufru
     '/bookings/link-document': 'handle_booking_link_document',
     '/bookings/unlink-document': 'handle_booking_unlink_document',
     '/receipts/read': 'handle_receipt_read',
+    '/articles/quick-add': 'handle_article_quick_add',
 }
 # Feld, das die Beleg-/Zahlungs-ID trägt (die Speichern-Routen lesen invoiceId/quoteId optional)
 ID_FIELD = {'/invoice/send-email': 'invoice_id', '/invoice/link-payment': 'invoice_id',
@@ -307,7 +309,7 @@ INVALID_REQUEST = {'success': False, 'error': 'Ungültige Anfrage.'}
 def test_json_route_expectations_cover_all_json_paths():
     # Kommt eine JSON-Route hinzu, braucht sie hier einen Handler und eine Erwartung
     assert set(HANDLER) == set(server_app._JSON_PATHS)
-    assert len(JSON_ROUTES) == 13
+    assert len(JSON_ROUTES) == 14
 
 
 UNUSABLE_BODIES = {
@@ -352,6 +354,7 @@ EMPTY_OBJECT = {
     '/bookings/link-document': (400, 'Ungültige Anfrage.'),
     '/bookings/unlink-document': (400, 'Ungültige Anfrage.'),
     '/receipts/read': (400, 'Ungültige Anfrage.'),
+    '/articles/quick-add': (400, ARTICLE_NAME_INVALID),             # ein Objekt ohne Name: der erste Satz der Prüfung
 }
 
 

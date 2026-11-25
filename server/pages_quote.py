@@ -18,8 +18,8 @@ from money import fmt_eur
 from export.einvoice_model import unit_display
 from export.invoice_files import stored_invoice_path
 from .pages import Header1, Header2, Header3, Footer, logo_url, script_json
-from .pages_invoice import (ITEM_TAX_RATE, MIXED_HEAD_CELL, TAX_LINK_HTML, TAX_NOTE_HTML, TAX_PREFILL_NOTE, _json_for_script, document_submenu,
-                            entry_choices, head_select, item_snapshot, mixed_cell_html, mixed_checkbox_html, mixed_tax_script, rate_key)
+from .pages_invoice import (ITEM_TAX_RATE, MIXED_HEAD_CELL, TAX_LINK_HTML, TAX_NOTE_HTML, TAX_PREFILL_NOTE, _json_for_script, article_json, document_submenu,
+                            entry_choices, head_select, item_snapshot, mixed_cell_html, mixed_checkbox_html, mixed_tax_script)
 from .richtext import sanitize_richtext
 
 
@@ -456,12 +456,7 @@ def _quote_form_html(db: Database, quote_id=None):
         'customer_number': c[2] or '', 'name': c[3] or '', 'company': c[4] or '',
         'address_line1': c[25] if len(c) > 25 and c[25] else '',
         'street': c[5] or '', 'postal': c[6] or '', 'city': c[7] or ''} for c in customers}
-    art_dict = {str(a[0]): {
-        'name': a[1] or '', 'unit': unit_display(a[2]),
-        'price': float(a[3]) if a[3] is not None else 0,
-        'taxRate': a[4] if a[4] is not None else 19,  # 0% nicht zu 19% verfälschen
-        'mixRate': rate_key(a[4]),  # Auswahlwert für „Steuersatz je Position“ (None: nicht lesbar)
-        'description': a[5] or ''} for a in articles}
+    art_dict = {str(a[0]): article_json(a) for a in articles}
 
     s += mixed_tax_script(choices)
     s += '<script>\n'
@@ -546,7 +541,7 @@ def _quote_form_html(db: Database, quote_id=None):
                 <td class="item-total" style="text-align:right;">0,00 €</td>
                 <td class="no-pdf"><button type="button" onclick="removeRow(this)" style="color:red;">✕</button></td>`;
             mixAddCell(r, mixDefaultRate());
-            tb.appendChild(r); attachCalculationListeners(r); calculateTotals();
+            tb.appendChild(r); attachCalculationListeners(r); calculateTotals(); artMark();
         }
         function addArticleRow(articleId) {
             const a = articlesData[articleId]; if (!a) return;
@@ -568,9 +563,9 @@ def _quote_form_html(db: Database, quote_id=None):
             r.querySelector('.item-description').value = a.description ? a.name + ' - ' + a.description : a.name;
             r.querySelector('.item-price').value = a.price;
             mixAddCell(r, mixArticleRate(a));
-            tb.appendChild(r); attachCalculationListeners(r); calculateTotals();
+            tb.appendChild(r); attachCalculationListeners(r); calculateTotals(); artMark();
         }
-        function removeRow(b){ b.closest('tr').remove(); renumberRows(); calculateTotals(); }
+        function removeRow(b){ b.closest('tr').remove(); renumberRows(); calculateTotals(); artMark(); }
         function renumberRows(){
             const rows = document.querySelectorAll('.invoice-item-row');
             rows.forEach((row,i)=>{ row.querySelector('td:first-child').textContent=i+1; row.setAttribute('data-row', i+1); });
@@ -615,6 +610,7 @@ def _quote_form_html(db: Database, quote_id=None):
         document.getElementById('tax_rate').addEventListener('input', calculateTotals);
         document.querySelectorAll('.invoice-item-row').forEach(attachCalculationListeners);
         calculateTotals();
+        artMark();
         updateOwnCompany();
         if (isEditMode) { updateCustomerAddress(); }
 

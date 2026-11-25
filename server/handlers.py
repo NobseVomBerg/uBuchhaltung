@@ -26,6 +26,7 @@ from . import receipt_links
 from . import receipt_reader
 from . import wiso_upload
 from .pages import Header1, Header2, Header3, Footer
+from .pages_invoice import article_json
 from .pages_receipts import suggestions_empty_text
 from .import_preview import (UploadClassifier, bank_stock_for, classify_duplicates, duplicate_rows, file_transactions,
                              match_account)
@@ -52,6 +53,7 @@ from db.invoice_repair import REBUILD_WARNING
 from db.numbering import NumberRangeError, number_format_error
 from db.matching import FORM_LIQUID_FIRST, FORM_TRANSFER, is_bank_effective, is_mirror_row, purpose_in_counter, read_entry_form
 from db.accounts import DEFAULT_CASH_ACCOUNT
+from db.articles import ArticleExists
 from db.tax_rates import FIXED_TAX_BPS, entry_snapshot, legacy_expressible
 from money import to_minor, from_minor, multiply, tax_from_gross, round_minor, fmt_eur
 from tax_groups import MIXED_TAX_RATES, STANDARD, bp_pct, group_label, rate_groups
@@ -2883,6 +2885,65 @@ def handle_update_article(db: Database, post_data):
     )
     
     return 303, "/masterdata/articles"
+
+
+# „Als Artikel speichern“ in den Masken von Rechnung und Angebot (``POST /articles/quick-add``): feste Sätze der Ablehnungen – nie der Text einer Ausnahme
+ARTICLE_NAME_INVALID = 'Die Bezeichnung des Artikels muss aus 1 bis 200 druckbaren Zeichen bestehen.'
+ARTICLE_UNIT_INVALID = 'Die Einheit des Artikels muss aus 1 bis 20 druckbaren Zeichen bestehen.'
+ARTICLE_PRICE_INVALID = 'Der Preis des Artikels muss eine Zahl von 0 bis unter 1.000.000.000 sein.'
+ARTICLE_RATE_INVALID = 'Der Steuersatz des Artikels muss eine Zahl von 0 bis 100 sein.'
+ARTICLE_EXISTS = 'Einen Artikel mit dieser Bezeichnung gibt es schon.'
+ARTICLE_SAVE_FAILED = 'Der Artikel konnte nicht gespeichert werden. Einzelheiten stehen im Server-Log.'
+ARTICLE_NAME_MAX, ARTICLE_UNIT_MAX, ARTICLE_PRICE_LIMIT, ARTICLE_RATE_LIMIT = 200, 20, 10 ** 9, 100
+
+
+def _article_text(value, limit):
+    """Ein Text des Artikels aus dem JSON-Body: ein ``str``, außen ohne Leerraum, 1 bis ``limit`` Zeichen, nur druckbare Zeichen (``str.isprintable``: kein Steuerzeichen, kein
+    Zeilenumbruch) – sonst ``None``."""
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    return text if 1 <= len(text) <= limit and text.isprintable() else None
+
+
+def _article_number(value, limit, inclusive):
+    """Eine Zahl des Artikels aus dem JSON-Body: ``int`` oder ``float`` (kein Wahrheitswert), endlich, von 0 bis ``limit`` (``inclusive``: einschließlich) – sonst ``None``."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or (isinstance(value, float) and not math.isfinite(value)):
+        return None
+    return value if 0 <= value and (value <= limit if inclusive else value < limit) else None
+
+
+def handle_article_quick_add(db, post_body: bytes):
+    """Aus einer Position einer Maske einen NEUEN Artikel anlegen (``POST /articles/quick-add``, JSON ``{"name", "unit", "price", "taxRate"}``) – ein vorhandener Artikel wird nie
+    geändert. ``name``: Text, außen ohne Leerraum 1 bis 200 druckbare Zeichen; ``unit``: ebenso 1 bis 20; ``price``: Zahl von 0 bis unter eine Milliarde, über ``money`` auf den Cent
+    gerundet (kein Gleitkomma-Rechnen); ``taxRate``: Zahl von 0 bis 100 (Prozent). Jede andere Form ist 400 mit festem Satz, nichts angelegt; ein Body, der kein JSON-Objekt ist, die
+    400 „Ungültige Anfrage.“ jeder JSON-Route. Gibt es schon einen Artikel, dessen Bezeichnung bis auf Schreibweise und Leerraum gleich ist (aktiv oder nicht): 409 ``ARTICLE_EXISTS``,
+    nichts angelegt – Prüfung und Anlegen laufen in EINER Transaktion (``Database.insert_article_unique``). Im Demo-Modus erlaubt (es ist keine Datei im Spiel).
+
+    Erfolg: 200 ``{"success": true, "article": {…}}`` – der Artikel in der Form eines Eintrags von ``articlesData`` (``pages_invoice.article_json``). Ein unerwarteter Fehler: 500 mit
+    ``ARTICLE_SAVE_FAILED``, der Ausnahmetext nur im Server-Log.
+
+    Returns tuple: (status_code, json_body)
+    """
+    data = _json_request(post_body)
+    name = _article_text(data.get('name'), ARTICLE_NAME_MAX)
+    unit = _article_text(data.get('unit'), ARTICLE_UNIT_MAX)
+    price = _article_number(data.get('price'), ARTICLE_PRICE_LIMIT, False)
+    rate = _article_number(data.get('taxRate'), ARTICLE_RATE_LIMIT, True)
+    for invalid, sentence in ((name is None, ARTICLE_NAME_INVALID), (unit is None, ARTICLE_UNIT_INVALID),
+                              (price is None, ARTICLE_PRICE_INVALID), (rate is None, ARTICLE_RATE_INVALID)):
+        if invalid:
+            return 400, json.dumps({'success': False, 'error': sentence})
+    unit_price = from_minor(round_minor(to_minor(price), 2))
+    try:
+        article = db.insert_article_unique(name, unit, unit_price, float(rate))
+        return 200, json.dumps({'success': True, 'article': article_json(article)})
+    except ArticleExists:
+        return 409, json.dumps({'success': False, 'error': ARTICLE_EXISTS})
+    except Exception:
+        import traceback
+        traceback.print_exc()                       # der volle Fehler nur ins Server-Log, nie in die Antwort
+        return 500, json.dumps({'success': False, 'error': ARTICLE_SAVE_FAILED})
 
 
 def handle_add_number_range(db: Database, post_data):

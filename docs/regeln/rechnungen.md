@@ -206,6 +206,28 @@
   `tests/test_tax_entries_save.py`, `tests/test_tax_entries_mask.py`, `tests/test_tax_entries_storno.py`, `tests/test_tax_entries_bookings.py`, `tests/test_tax_entries_reports.py`, `tests/test_tax_entries_documents.py`, `tests/test_tax_entries_demo_samples.py`,
   `tests/test_tax_accounts_reports.py`, `tests/test_standard_accounts_purchase.py`.
 
+## Abweichung vom Artikel (Maske von Rechnung und Angebot)
+
+- **Reine Anzeige:** Eine Position, die vom gespeicherten Artikel abweicht, fällt in der Maske auf; Speichern, Payload, Sperre und Summen bleiben, wie sie waren (`tests/test_mixed_tax_mask.py`,
+  `tests/test_tax_entries_mask.py`). EIN Skriptblock für beide Masken (`ARTICLE_MARK_JS` in `server/pages_invoice.py`, im Block von `MIXED_TAX_JS`, nur `var`/`function`, Präfix `art`, Texte
+  `ARTICLE_TEXTS` über `script_json`). Das Zeilen-Markup des Servers bleibt unverändert: Klassen, Tooltips und das „+“ setzt allein das Skript. `artMark()` läuft nach dem Laden, nach dem Hinzufügen und Entfernen
+  einer Zeile und bei jedem `input`/`change` der Tabelle (Zeilen, „Steuersatz je Position“, „Umsatzsteuer ausweisen“, Feld „Mehrwertsteuer“ im Kopf).
+- **Welcher Artikel (`artFind`, rein):** `data-article-id` der Zeile (aus der Artikelsuche), sonst beginnt die Beschreibung – normalisiert: außen ohne Leerraum, Leerraum zusammengefasst, `toLowerCase()` – mit dem
+  Namen eines aktiven Artikels, und danach folgt das Ende oder ein Zeichen, das weder Buchstabe noch Ziffer ist („Beratung“ trifft nicht „Beratungspaket“). Mehrere: der längste Name, gleich lange keiner. Namen
+  unter 3 Zeichen nehmen nur über die ID teil.
+- **Was markiert wird:** Menge und Beschreibung nie. Ein Feld, das abweicht, bekommt `itemDeviates` und den Tooltip „Artikel: …“ (er verschwindet mit der Abweichung; das Auswahlfeld des Satzes behält den Tooltip von
+  `mixTotals`): Einheit (außen ohne Leerraum, Kleinbuchstaben), Netto-Einzelpreis (in ganzen Cent), Steuersatz – mit „Steuersatz je Position“ die Auswahl der Zeile gegen `mixRate` des Artikels, sonst der Satz des Belegs
+  (Zelle der Positionsnummer). Ohne Steuerausweis (§ 19) und bei einem Artikelsatz, der sich nicht lesen lässt, keine Steuer-Markierung. Eine Zeile mit Beschreibung ohne Artikel trägt `itemNoArticle` (Rand links);
+  eine Zeile ohne Beschreibung bleibt unmarkiert. **In einer gesperrten Rechnung (`#invoice_locked`) läuft nichts, es gibt kein „+“.** `buch.css`: Das Blatt ist in beiden Farbschemata weiß (`.invoice-container`),
+  die Regeln brauchen `!important` gegen `.invoice-container *`; der Platz des „+“ bleibt reserviert (`visibility`), sonst spränge die Spalte beim Tippen.
+- **„+“ (`.itemAddArticle`, sichtbar an einer Zeile mit `itemCanSave`):** nach Rückfrage `POST /articles/quick-add` (`_JSON_PATHS` + `_POST_ONLY_JSON_PATHS`: GET 405, Herkunft und CSRF-Token wie jede JSON-Route;
+  JSON `{name, unit, price, taxRate}`, `handlers.handle_article_quick_add`): `name` ist die Beschreibung der Zeile (Leerraum zusammengefasst, höchstens 200 Zeichen), `unit` ihre Einheit, `taxRate` der Satz der
+  Zeile bzw. des Belegs (ohne Steuerausweis 0); der Server verlangt Name 1–200 und Einheit 1–20 druckbare Zeichen, Preis 0 bis unter 10⁹ über `money` auf den Cent gerundet, Satz 0–100; jede andere Form 400 mit
+  festem Satz, nichts angelegt. **Es wird nur angelegt, nie ein vorhandener Artikel geändert:** Gibt es schon einen mit derselben Bezeichnung (aktiv oder nicht, ohne Rücksicht auf Schreibweise und Leerraum:
+  `db.articles.article_key`, dieselbe Regel wie `artNorm`), 409 `ARTICLE_EXISTS`. Prüfung und Anlegen laufen in EINER Transaktion (`insert_article_unique`, `BEGIN IMMEDIATE`). Antwort: der Artikel in der Form
+  eines Eintrags von `articlesData` (`pages_invoice.article_json`: EINE Funktion für beide Masken und die Antwort). Im Demo-Modus erlaubt (keine Datei).
+- Tests: `tests/test_article_marks.py`, `tests/test_article_quick_add.py`.
+
 ## Pflichtangaben und Hinweise im Dokument
 
 - **§ 19-Hinweis:** Beleg ohne Steuerausweis (`Invoices.TaxRate` = Platzhalter −1) trägt ihn automatisch (Rechnung, Stornorechnung,

@@ -10,6 +10,16 @@ from money import to_minor, from_minor
 from .core import DeleteRefused, reference_texts
 
 
+class ArticleExists(ValueError):
+    """Es gibt schon einen Artikel mit dieser Bezeichnung (aktiv oder nicht, ohne Rücksicht auf Schreibweise und Leerraum). Der Aufrufer sagt es dem Nutzer mit eigenem Klartext."""
+
+
+def article_key(name):
+    """Der Vergleichsschlüssel einer Bezeichnung: Leerraum zusammengefasst und außen entfernt, Kleinbuchstaben – dieselbe Regel wie ``artNorm`` der Masken von Rechnung und Angebot:
+    Zwei Artikel, die die Maske nicht auseinanderhält, gibt es nicht (sie fände zu keiner Zeile mehr einen von beiden)."""
+    return ' '.join(str(name or '').split()).lower()
+
+
 class ArticlesMixin:
     def fetch_articles(self, active_only=False):
         """Fetch all articles
@@ -63,6 +73,30 @@ class ArticlesMixin:
             conn.rollback()
         finally:
             conn.close()
+    def insert_article_unique(self, name, unit, unit_price, tax_rate, description=""):
+        """Einen aktiven Artikel anlegen – nur, wenn es keinen mit derselben Bezeichnung gibt (``article_key``, aktive und inaktive; sonst ``ArticleExists``, nichts geschrieben).
+        Prüfung und Anlegen laufen in EINER Transaktion (``BEGIN IMMEDIATE``): Zwei gleichzeitige Anfragen legen nie zwei Artikel an. Verglichen wird in Python, nicht in SQL
+        (``LOWER()`` von SQLite kennt nur ASCII). Liefert den Artikel wie ``get_article_by_id`` (Preis in Euro)."""
+        conn = self._get_connection()
+        try:
+            conn.execute('BEGIN IMMEDIATE')
+            key = article_key(name)
+            if any(article_key(existing) == key for (existing,) in conn.execute('SELECT Name FROM Articles')):
+                raise ArticleExists(name)
+            sql_template = '''
+                INSERT INTO Articles (Name, Unit, UnitPrice, TaxRate, Description, Active)
+                VALUES (?, ?, ?, ?, ?, ?)'''
+            params = (name, unit, to_minor(unit_price or 0), tax_rate, description, 1)
+            article_id = conn.execute(sql_template, params).lastrowid
+            row = conn.execute('SELECT * FROM Articles WHERE ID = ?', (article_id,)).fetchone()
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+        self._log_sql(sql_template, params, "Insert article")
+        return self._euro_row(row, 3)
     def update_article(self, article_id, name, unit="Stk.", unit_price=0, tax_rate=19, description="", active=1):
         """Update existing article"""
         conn = self._get_connection()

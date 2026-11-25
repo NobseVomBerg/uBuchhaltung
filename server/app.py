@@ -370,7 +370,8 @@ _GENERATE_PATHS = frozenset({
 })
 
 # Rechnungen und Angebote per fetch: JSON hinein, JSON hinaus, siehe `_post_json_route`. Dazu das Verknüpfen von Belegen
-# und Buchungen (2.5.12), das Neuaufbauen einer Zahlungszuordnung (2.5.13) und das Lesen eines Belegs (2.6.0).
+# und Buchungen (2.5.12), das Neuaufbauen einer Zahlungszuordnung (2.5.13), das Lesen eines Belegs (2.6.0) und das Anlegen
+# eines Artikels aus einer Position (2.10.2).
 _JSON_PATHS = frozenset({
     "/invoice/save",
     "/invoice/send-email",
@@ -385,6 +386,7 @@ _JSON_PATHS = frozenset({
     "/bookings/link-document",
     "/bookings/unlink-document",
     "/receipts/read",
+    "/articles/quick-add",
 })
 
 # Aktionen mit Seiteneffekt unter den JSON-Routen: GET ergibt 405 (wie bei `_ACTION_PATHS`/`_GENERATE_PATHS`).
@@ -392,7 +394,8 @@ _JSON_PATHS = frozenset({
 # `handlers.handle_invoice_reissue`. Belege verknüpfen (2.5.12): `handlers.handle_booking_link_document` und
 # `handlers.handle_booking_unlink_document`. Zuordnung neu aufbauen (2.5.13): `handlers.handle_invoice_rebuild_payments` –
 # auch der Probelauf ist ein POST (er nimmt kurz die Schreibsperre). Einen Beleg lesen (2.6.0): `handlers.handle_receipt_read` –
-# schreibt die Lesung in die Datenbank und startet einen Kindprozess.
+# schreibt die Lesung in die Datenbank und startet einen Kindprozess. Einen Artikel aus einer Position anlegen (2.10.2):
+# `handlers.handle_article_quick_add` – legt nur an, ein vorhandener Artikel wird nie geändert.
 _POST_ONLY_JSON_PATHS = frozenset({
     "/invoice/cancel",
     "/invoice/reissue",
@@ -400,6 +403,7 @@ _POST_ONLY_JSON_PATHS = frozenset({
     "/bookings/link-document",
     "/bookings/unlink-document",
     "/receipts/read",
+    "/articles/quick-add",
 })
 
 # Die Suchen der Belege und Buchungen (2.5.12), die Vorschläge zu einem Beleg (2.6.0, `handlers.handle_receipt_suggestions`), der Buchungsvorschlag
@@ -1357,8 +1361,8 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         self._respond_json(status_code, payload)
 
     def _post_json_route(self, path, db):
-        """POST-Routen der Rechnungen und Angebote, des Verknüpfens von Belegen, des Neuaufbaus einer Zahlungszuordnung und des Lesens
-        eines Belegs, die JSON lesen und JSON antworten (fetch).
+        """POST-Routen der Rechnungen und Angebote, des Verknüpfens von Belegen, des Neuaufbaus einer Zahlungszuordnung, des Lesens
+        eines Belegs und des Anlegens eines Artikels aus einer Position, die JSON lesen und JSON antworten (fetch).
 
         Ein unbrauchbarer Body – fehlende oder ungültige Content-Length, kein JSON-Objekt,
         fehlende Pflichtfelder (``handlers.InvalidRequest``) – wird mit 400 „Ungültige Anfrage.“
@@ -1382,11 +1386,12 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 response = json.dumps({'success': True} if status_code == 200
                                       else {'success': False, 'error': msg})
             elif path in ("/bookings/link-document", "/bookings/unlink-document", "/invoice/rebuild-payments",
-                          "/receipts/read"):
+                          "/receipts/read", "/articles/quick-add"):
                 handler = {"/bookings/link-document": handlers.handle_booking_link_document,
                            "/bookings/unlink-document": handlers.handle_booking_unlink_document,
                            "/invoice/rebuild-payments": handlers.handle_invoice_rebuild_payments,
-                           "/receipts/read": handlers.handle_receipt_read}[path]
+                           "/receipts/read": handlers.handle_receipt_read,
+                           "/articles/quick-add": handlers.handle_article_quick_add}[path]
                 status_code, response = handler(db, post_body)
             else:                  # /invoice/status, /invoice/cancel, /invoice/reissue, /quote/status
                 handler = {"/invoice/status": handlers.handle_update_invoice_status,
