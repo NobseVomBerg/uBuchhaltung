@@ -6,9 +6,11 @@ Master Data (Stammdaten) page generation functions
 Contains: Articles, Contacts, Chart of Accounts (SKR)
 """
 import html as _html
+from decimal import Decimal
 from db import Database
 from db.accounts import is_business_only
 from money import fmt_eur
+from tax_groups import pct_text
 from .handlers import BANK_SKR_RANGE, CASH_SKR_RANGE, free_bank_skr_number
 
 BUSINESS_ONLY_HINT = ('Auf einem reinen Geschäftskonto werden Kontoauszüge vollständig importiert; einzelne private Umsätze '
@@ -119,11 +121,22 @@ def PageMasterData(db: Database):
 # ARTICLES (Artikel)
 # ══════════════════════════════════════════════════════════════════════
 
+def _article_rate(value):
+    """Der Steuersatz eines Artikels (Prozentzahl, REAL) exakt und ohne überflüssige Nullen – 19, 7, 5,5 –, nie auf eine ganze Zahl gekürzt. Nicht über ``tax_groups.rate_pct``: Es läse einen
+    Wert zwischen 0 und 1 als Bruch, die Seite zeigt aber, was im Artikel steht. Text: ``format(rate, 'f')`` (Wert von ``data-tax`` und des Filters), ``pct_text(rate)`` (mit Komma)."""
+    return Decimal(str(value)).normalize()
+
+
 def PageArticles(db: Database, edit_article_id=None, error=None):
     """Generate articles management page with inline edit form (grid2Cols layout)
 
     ``error``: Meldung nach einem abgelehnten Speichern (``?error=`` der Weiterleitung)."""
     articles = db.fetch_articles()
+    # Ein leerer Satz zeigt 19 % (0 % wird nicht zu 19 % verfälscht)
+    article_rates = [_article_rate(article[4] if article[4] is not None else 19) for article in articles]
+    # Die Auswahl des Filters: die festen Sätze und jeder Satz, den ein Artikel trägt – ihr Wert ist der von ``data-tax``, der Filter vergleicht ihn genau
+    filter_options = ''.join(f'<option value="{format(rate, "f")}">{pct_text(rate)}%</option>'
+                             for rate in sorted(set(article_rates) | {Decimal(0), Decimal(7), Decimal(19)}))
 
     # Artikel zum Bearbeiten laden
     edit_article = None
@@ -134,7 +147,7 @@ def PageArticles(db: Database, edit_article_id=None, error=None):
     submenu = '<a href="/masterdata">Stammdaten</a> -> <span id="ActivePage">📦 Artikel</span>'
     s += Header2(submenu)
 
-    header3_content = '''
+    header3_content = f'''
         <div class="rowWithObjects">
             <div>
                 <label>🔍 Suche:</label>
@@ -152,9 +165,7 @@ def PageArticles(db: Database, edit_article_id=None, error=None):
                 <label>MwSt:</label>
                 <select id="taxFilter" onchange="filterArticles()">
                     <option value="">Alle</option>
-                    <option value="0">0%</option>
-                    <option value="7">7%</option>
-                    <option value="19">19%</option>
+                    {filter_options}
                 </select>
             </div>
             <div>
@@ -190,7 +201,7 @@ def PageArticles(db: Database, edit_article_id=None, error=None):
     if ea_unit and ea_unit not in dict(unit_options):
         unit_options.append((ea_unit, ea_unit))
     if all(float(r) != ea_tax_rate for r, _label in tax_options):
-        tax_options.append((repr(ea_tax_rate), f'{ea_tax_rate:g}%'))
+        tax_options.append((repr(ea_tax_rate), f'{pct_text(_article_rate(ea_tax_rate))}%'))
     unit_select = ''.join(
         f'<option value="{_html.escape(str(u), quote=True)}" {"selected" if u == ea_unit else ""}>'
         f'{_html.escape(label, quote=True)}</option>'
@@ -239,12 +250,11 @@ def PageArticles(db: Database, edit_article_id=None, error=None):
             <tr><th>Bezeichnung</th><th>Einheit</th><th>Preis (netto)</th><th>MwSt</th><th>Beschreibung</th><th>Aktionen</th></tr>
     '''
 
-    for article in articles:
+    for article, tax_rate in zip(articles, article_rates):
         article_id  = article[0]
         name        = _html.escape(str(article[1] or ''))
         unit        = _html.escape(str(article[2] or 'Stk.'))
         unit_price  = article[3] or 0
-        tax_rate    = article[4] if article[4] is not None else 19  # 0% nicht zu 19% verfälschen
         description = _html.escape(str(article[5] or ''))
         active      = article[6] if len(article) > 6 else 1
 
@@ -253,12 +263,12 @@ def PageArticles(db: Database, edit_article_id=None, error=None):
                         "<span class='badge bg-orange' title='Inaktiv'>✗</span>")
         s += (f"<tr class='article-row' "
               f"data-active='{active}' "
-              f"data-tax='{int(tax_rate)}' "
+              f"data-tax='{format(tax_rate, 'f')}' "
               f"data-price='{unit_price}'>")
         s += f"<td>{name}</td>"
         s += f"<td>{unit}</td>"
         s += f"<td style='text-align:right;'>{fmt_eur(unit_price, symbol=False)}&nbsp;€</td>"
-        s += f"<td>{int(tax_rate)}%</td>"
+        s += f"<td>{pct_text(tax_rate)}%</td>"
         s += f"<td>{description[:50]}</td>"
         s += (f"<td>{active_badge}"
               f" <a href='javascript:void(0)' onclick='openEditForm(\"/masterdata/articles/edit?id={article_id}\")' class='action-icon' title='Bearbeiten'>&#9998;</a>"

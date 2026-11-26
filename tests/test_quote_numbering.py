@@ -19,7 +19,10 @@ import threading
 import pytest
 
 import server.handlers as handlers
+from db import numbering
+from db.numbering import NumberRangeError, number_format_error
 from server.pages_quote import _quote_form_html
+from tests.document_helpers import add_contacts, add_document
 from tests.dom_helpers import Dom
 from tests.test_invoice_numbering import _payload as _invoice_payload
 from tests.test_invoice_recompute import _make_contacts
@@ -310,6 +313,42 @@ def test_saving_with_a_template_without_a_counter_is_refused_in_plain_words(worl
     assert resp['success'] is False and 'Formatvorlage' in resp['error'] and 'Zähler' in resp['error']
     assert 'Traceback' not in json.dumps(resp) and db.fetch_number_ranges('quote') == before and db.fetch_quotes() == []
     assert _save(_payload(own, cust, quoteNumber='ANG-1'))['success'] is True       # eine eigene Nummer hindert die Vorlage nicht
+
+
+# ── die Meldung eines Kreises ohne brauchbare Nummer nennt die Art des Belegs ─
+
+NO_COUNTER_FORMAT = '{yy}{l}'
+
+
+def test_saving_a_quote_with_a_template_without_a_counter_names_the_quote_number(world):
+    """„Der Nummernkreis liefert keine Rechnungsnummer“ stand auch bei einem Angebot."""
+    db, own, cust = world
+    db.insert_number_range('quote', 2026, 'A', current_number=3, number_format=NO_COUNTER_FORMAT)
+    resp = _save(_payload(own, cust, quoteNumber='26A', numberSuggestion='26A'))
+    assert resp == {'success': False, 'error': 'Der Nummernkreis liefert keine Angebotsnummer. ' + number_format_error(NO_COUNTER_FORMAT)}
+
+
+@pytest.mark.parametrize('range_type, noun', [('quote', 'Angebotsnummer'), ('invoice', 'Rechnungsnummer')])
+def test_a_range_whose_template_has_no_counter_names_the_kind_of_document(tmp_db, range_type, noun):
+    tmp_db.insert_number_range(range_type, 2026, 'X', current_number=3, number_format=NO_COUNTER_FORMAT)
+    with tmp_db.transaction() as tx:
+        with pytest.raises(NumberRangeError) as caught:
+            tmp_db.allocate_document_number(tx.conn, range_type, '2026-03-04')
+    assert str(caught.value) == f'Der Nummernkreis liefert keine {noun}. ' + number_format_error(NO_COUNTER_FORMAT)
+
+
+@pytest.mark.parametrize('range_type, noun', [('quote', 'Angebotsnummer'), ('invoice', 'Rechnungsnummer')])
+def test_too_many_taken_numbers_in_a_row_name_the_kind_of_document(tmp_db, monkeypatch, range_type, noun):
+    """Rechnungen und Angebote teilen sich die Nummern: Hinter dem Zähler stehen ein Angebot und eine Rechnung, und der Kreis überspringt höchstens zwei."""
+    own, cust = add_contacts(tmp_db)
+    tmp_db.insert_number_range(range_type, 2026, 'X', current_number=0)
+    add_document(tmp_db, '26X001', 'quote', own, cust)
+    add_document(tmp_db, '26X002', 'invoice', own, cust)
+    monkeypatch.setattr(numbering, '_MAX_SKIPPED_NUMBERS', 2)
+    with tmp_db.transaction() as tx:
+        with pytest.raises(NumberRangeError) as caught:
+            tmp_db.allocate_document_number(tx.conn, range_type, '2026-03-04')
+    assert str(caught.value) == f'Im Nummernkreis ist keine freie {noun} zu finden.'
 
 
 # ── ändern und löschen ───────────────────────────────────────────────────────

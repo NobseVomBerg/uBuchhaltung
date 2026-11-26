@@ -11,6 +11,9 @@
 - **Actions sind auf einen Commit festgelegt** (`uses: …@<40 Hex-Zeichen>  # vX.Y.Z`, in ALLEN Workflows, auch dem für Image und Release). Aktualisieren: neuen Commit des Versions-Tags eintragen
   (`git ls-remote https://github.com/<action> refs/tags/vX.Y.Z`), Kommentar mitziehen; je Action derselbe Commit in allen Workflows (`tests/test_workflow_pins.py`).
 - Jeder Push (alle Branches) → `.github/workflows/tests.yml`: Anonymisierungs-Guard + pytest (Python 3.13, wie das Docker-Image – die Mindestversion).
+- **Validator im Zwischenspeicher** (Job `einvoice` derselben Datei, `rechnungen.md` Abschnitt Dokumente): Die Mustang-JAR kommt über `actions/cache` (Pfad `mustang.jar`, Schlüssel `mustang-<Version>-<SHA-256>`);
+  von Maven Central wird nur bei einem Fehltreffer geladen (ein Lauf scheiterte dort einmal an HTTP 429). **Die SHA-256-Prüfung läuft immer, auch nach einem Treffer** – der Zwischenspeicher ersetzt sie nie
+  (`tests/test_workflow_mustang_cache.py`). Neue Version = neue Prüfsumme = neuer Eintrag.
 - **Testdaten im Arbeitsspeicher:** `tests.yml`, `docker-publish.yml`, `tests-python-versions.yml` legen vor pytest `data/tests` als Verweis nach `/dev/shm` – ein Verweis statt `--basetemp`, damit `tests/conftest.py` zuständig bleibt und
   `tests/test_test_isolation.py` nicht übersprungen wird. Die Schritte sind in den drei Workflows kopiert; `tests/test_workflow_test_steps.py` hält sie gleich. Lokal nicht nötig.
 - **Vier Prozesse in der CI:** `pytest-xdist` (`requirements-dev.txt`), Aufruf `python -m pytest -q -rs -n 4`. Das `-n` steht nur im Aufruf der drei Workflows, nie in `pytest.ini` (lokal bleibt `python -m pytest` ein Prozess ohne Plugin;

@@ -453,9 +453,21 @@ MIXED_TAX_JS = r'''
             return MIX_RATES.length ? MIX_RATES[0].value : '';
         }
 
-        // Der Wert einer Artikelzeile: die Option für den Satz des Artikels (vom Server als Satz geliefert), wenn die Liste ihn kennt, sonst wie eine neue Zeile.
+        // Der Wert einer Artikelzeile: Trägt GENAU EINE Option der Liste den Satz des Artikels (vom Server als Satz geliefert) – mit oder ohne ID eines Eintrags der Stammdaten –, ist es
+        // diese. Bei keiner oder mehreren die Option, die den Satz allein trägt (die Vorbelegung), sonst wie eine neue Zeile.
         function mixArticleRate(article) {
             var key = article.mixRate;
+            var wanted = key ? mixKey(key) : '';
+            var found = '';
+            var count = 0;
+            for (var i = 0; wanted !== '' && i < MIX_RATES.length; i++) {
+                var rate = MIX_RATES[i].rate === undefined ? MIX_RATES[i].value : MIX_RATES[i].rate;
+                if (mixKey(rate) === wanted) {
+                    found = MIX_RATES[i].value;
+                    count++;
+                }
+            }
+            if (count === 1) return found;
             return (key && mixKnown(key)) ? key : mixDefaultRate();
         }
 
