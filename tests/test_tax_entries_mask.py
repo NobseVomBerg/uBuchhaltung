@@ -931,22 +931,90 @@ def test_a_new_row_with_an_entry_chosen_sends_its_id(world, entries, tmp_path, k
     assert [i.get('taxRateId') for i in payload['items']] == [None, None, entries.reduced] and payload['items'][2]['taxRate'] == 5.5
 
 
+def article_ids(html):
+    """``{Name: ID}`` der Artikel, die die Maske kennt (``articlesData``)."""
+    return {a['name']: key for key, a in data_block(Dom(html), 'articlesData').items()}
+
+
+def rate_of_article_rows(by_name, names):
+    """Der Programmteil, der die Artikel ``names`` nacheinander als Zeile einsetzt und den Wert ihres Auswahlfelds „USt“ in ``got`` sammelt."""
+    return ''.join(f"addArticleRow('{by_name[name]}'); got.push(rows()[rows().length - 1].querySelector('.item-tax').value);" for name in names)
+
+
 @NO_NODE
 @pytest.mark.parametrize('kind', KINDS)
-def test_an_article_row_takes_its_rate_only_from_a_preset_option_else_it_acts_like_a_new_row(world, entries, tmp_path, kind):
-    for name, rate in (('Fachbuch', 7), ('Kurios', 5.5), ('Frei', 0), ('Neunzehn', 19), ('Text', 'abc')):
+def test_an_article_row_takes_the_one_option_that_carries_its_rate_else_it_acts_like_a_new_row(world, entries, tmp_path, kind):
+    """Gibt es unter den Optionen GENAU EINE mit dem Satz des Artikels – mit oder ohne ID –, wählt die Zeile sie: Ein Artikel mit 5,5 % oder 0 % startete früher mit 19 %. Tragen mehrere den
+    Satz (19 %: die Vorbelegung und der Eintrag mit Sonderkonto), gilt die, die nur den Satz trägt; bei keiner (16 %) und bei einem Satz, der keiner ist („abc“), startet die Zeile wie eine
+    neue – mit dem Eintrag, den der Kopf gewählt hat."""
+    names = ('Fachbuch', 'Kurios', 'Frei', 'Neunzehn', 'Sechzehn', 'Text')
+    for name, rate in zip(names, (7, 5.5, 0, 19, 16, 'abc')):
         world.db.insert_article(name, unit_price=10, tax_rate=rate)
     html = page_of(kind, world)
-    by_name = {a['name']: key for key, a in data_block(Dom(html), 'articlesData').items()}
-    program = (JS + "var got = []; chooseHead('" + e(entries.reduced) + "');" + ''.join(
-        f"addArticleRow('{by_name[name]}'); got.push(rows()[rows().length - 1].querySelector('.item-tax').value);"
-        for name in ('Fachbuch', 'Kurios', 'Frei', 'Neunzehn', 'Text')) + "emit('got', got);")
+    program = JS + "var got = []; chooseHead('" + e(entries.special) + "');" + rate_of_article_rows(article_ids(html), names) + "emit('got', got);"
 
     out = run_mask(tmp_path, html, kind, program)
 
-    # 7 und 19 trägt die Vorbelegung allein; 5,5 und 0 hat nur ein Eintrag mit eigenem Konto (den wählt der Nutzer selbst), „abc“ ist kein Satz:
-    # sie alle starten wie eine neue Zeile – mit dem Eintrag, den der Kopf gewählt hat
-    assert out['got'] == ['7', e(entries.reduced), e(entries.reduced), '19', e(entries.reduced)]
+    assert out['got'] == ['7', e(entries.reduced), e(entries.free), '19', e(entries.special), e(entries.special)]
+
+
+@NO_NODE
+@pytest.mark.parametrize('kind', KINDS)
+def test_an_option_that_carries_the_rate_alone_wins_even_when_it_is_no_preset_and_two_of_them_act_like_none(world, entries, tmp_path, kind):
+    """Die einzige Option eines Satzes zählt, auch wenn sie einen Eintrag mit ID trägt (die Vorbelegung 19 % abgeschaltet: der Eintrag mit Sonderkonto); zwei Einträge desselben Satzes
+    ohne Vorbelegung bestimmen nichts – die Zeile startet wie eine neue."""
+    world.db.insert_article('Neunzehn', unit_price=10, tax_rate=19)
+    world.db.insert_article('Kurios', unit_price=10, tax_rate=5.5)
+    world.db.set_tax_rate_active(entries.preset19, False)
+    world.db.insert_tax_rate(label='Ermäßigt 5,5 % zweiter (erfunden)', bp=550, kind=STANDARD, revenue_coa_id=entries.coa[4150])
+    html = page_of(kind, world)
+    program = JS + "var got = []; chooseHead('7');" + rate_of_article_rows(article_ids(html), ('Neunzehn', 'Kurios')) + "emit('got', got);"
+
+    out = run_mask(tmp_path, html, kind, program)
+
+    assert out['got'] == [e(entries.special), '7']
+
+
+@NO_NODE
+@pytest.mark.parametrize('kind', KINDS)
+def test_with_the_checkbox_an_article_with_the_rate_of_an_entry_sends_its_id_and_shows_no_deviation(world, entries, tmp_path, kind):
+    """Der Artikel mit 5,5 % bzw. 0 % landet auf seinem Eintrag: Der Payload trägt dessen ID (``taxRateId`` als letzter Schlüssel der Position), der Server schreibt die Momentaufnahme, und „Abweichung
+    vom Artikel“ zeigt direkt nach dem Einsetzen nichts – weder am Auswahlfeld noch an der Positionsnummer."""
+    names = ('Heft', 'Nachhilfe')
+    world.db.insert_article('Heft', unit='Stk.', unit_price=10, tax_rate=5.5)
+    world.db.insert_article('Nachhilfe', unit='Std.', unit_price=80, tax_rate=0)
+    doc_id = make_doc(kind, world, ONE_RATE, mixed=False)
+    html = page_of(kind, world, doc_id)
+    by_name = article_ids(html)
+    program = (JS + "tick('mixed_tax', true); var got = [];" + rate_of_article_rows(by_name, names)
+               + "emit('marks', rows().slice(-2).map(function (row) { return [row.querySelector('.item-tax').classList.contains('itemDeviates'), "
+                 "row.querySelector('td:first-child').classList.contains('itemDeviates'), row.classList.contains('itemNoArticle')]; }));"
+               + f"emit('got', got); {SAVE_FUNCTION[kind]}();")
+
+    out = run_mask(tmp_path, html, kind, program)
+
+    assert out['got'] == [e(entries.reduced), e(entries.free)] and out['marks'] == [[False, False, False]] * 2
+    payload = sent_payload(out, kind)
+    assert [(i['taxRate'], i.get('taxRateId')) for i in payload['items']] == [(19, None), (19, None), (5.5, entries.reduced), (0, entries.free)]
+    answer = post_save(kind, payload)
+    assert answer['success'] is True, answer
+    assert snapshot_columns(world.db, doc_id) == [NO_SNAPSHOT, NO_SNAPSHOT, ('S', 550, None, entries.coa[4150]), ('E', 0, REASON, entries.coa[4120])]
+
+
+@NO_NODE
+@pytest.mark.parametrize('kind', KINDS)
+def test_without_the_checkbox_the_choice_of_an_article_row_changes_nothing_in_the_payload(world, entries, tmp_path, kind):
+    """Ohne das Häkchen liegt die Spalte „USt“ versteckt: Was die Artikelzeile dort wählt, geht nie in den Payload – kein ``taxMode``, keine ID, der Satz des Kopfs für jede Position."""
+    world.db.insert_article('Heft', unit_price=10, tax_rate=5.5)
+    doc_id = make_doc(kind, world, ONE_RATE, mixed=False)
+    html = page_of(kind, world, doc_id)
+    program = JS + f"addArticleRow('{article_ids(html)['Heft']}'); emit('chosen', rows()[2].querySelector('.item-tax').value); {SAVE_FUNCTION[kind]}();"
+
+    out = run_mask(tmp_path, html, kind, program)
+
+    payload = sent_payload(out, kind)
+    assert out['chosen'] == e(entries.reduced)
+    assert 'taxMode' not in payload and all('taxRateId' not in i for i in payload['items']) and [i['taxRate'] for i in payload['items']] == [19, 19, 19]
 
 
 @NO_NODE

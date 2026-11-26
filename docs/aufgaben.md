@@ -2,6 +2,7 @@
 
 Kurzliste, öffentlich. Erledigtes wird gelöscht, nicht abgehakt – die Historie
 steht in `git log`. Eine Zeile je Punkt; Details gehören in Commit, Issue oder `docs/regeln/`.
+Fragen zu Steuern, Kontierung und DATEV, die ein Steuerbüro beantworten kann, stehen in `docs/fachfragen.md`.
 
 ## Repo & Veröffentlichung
 - Docker-Demo (`-e UBUCHHALTUNG_DEMO=1`) einmal im echten Container prüfen, ebenso den Umzug einer 1.x-Installation
@@ -16,7 +17,7 @@ steht in `git log`. Eine Zeile je Punkt; Details gehören in Commit, Issue oder 
 - Leistungszeitraum im Angebot (heute nur in der Rechnung)
 - Lastschrift (59) in der E-Rechnung: Mandatsreferenz, Gläubiger-ID und IBAN des Kunden (BR-DE-25, -30, -31) – heute gibt es keine Zahlungsart 59
 - Karte in der XRechnung: Ziffern der Kartennummer (BT-87, BR-DE-24) – heute lässt die Karte das UBL aus, die CII im PDF entsteht
-- Skonto bei der Zahlungszuordnung, offen: weitere Sätze (5,5 %, 16 % …: ein Skonto-Konto je Eintrag der Stammdaten oder die Steuer auf 4730 – braucht die Klärung mit dem Steuerbüro); bei mehreren Steuersätzen lehnt das Skonto nach Teilzahlungen ab, deren gerundete Steuer die einer kleinen Gruppe aufbraucht (`SKONTO_MIXED_SPLIT`; die Zahlung ohne Skonto geht); Zahlungsumzug auf eine Ersatzrechnung und „Zuordnung neu aufbauen“ für Zahlungen mit Skonto; Kleindifferenzen und Nachlässe ohne Skonto-Bedingung; Darstellung im DATEV-Stapel (zweite Bankzeile, bei mehreren Sätzen je Satz eine) vor der ersten Weitergabe mit dem Steuerbüro klären
+- Skonto bei der Zahlungszuordnung, offen: weitere Sätze (5,5 %, 16 % …: ein Skonto-Konto je Eintrag der Stammdaten oder die Steuer auf 4730 – Fachfrage in `docs/fachfragen.md`); bei mehreren Steuersätzen lehnt das Skonto nach Teilzahlungen ab, deren gerundete Steuer die einer kleinen Gruppe aufbraucht (`SKONTO_MIXED_SPLIT`; die Zahlung ohne Skonto geht); Zahlungsumzug auf eine Ersatzrechnung und „Zuordnung neu aufbauen“ für Zahlungen mit Skonto; Kleindifferenzen und Nachlässe ohne Skonto-Bedingung; Darstellung im DATEV-Stapel (zweite Bankzeile, bei mehreren Sätzen je Satz eine) – Fachfrage in `docs/fachfragen.md`
 - Kleinunternehmer-Erlöse (4184 ab 2026), offen: ausgewiesene 0 % ohne Eintrag der Stammdaten buchen weiter auf 4185; ältere Zahlungen ab 2026 auf 4185 bleiben dort (Umstellung mit Probelauf fehlt)
 - Zahlungsvorschläge, offen: Teilbeträge, Wahl des Erlöskontos im Kasten, von der Bank mitten in den Ziffern umbrochene Rechnungsnummern, andere Währungen als Euro
 - Zuordnung neu aufbauen, Schritt 2: markierte Zahlungssätze ohne Zuordnung (wiederherstellen oder entfernen, Wahl im Probelauf) und Sätze „Bank an Debitoren“ ohne Forderung
@@ -58,7 +59,7 @@ Heute ist nur SKR04 ausgebaut, und auch dort nur eine Grundauswahl; die Auswahl 
 - Prüfliste für Spiegel und Umbuchungen des Bestands (Seite *Daten*, nur lesend, mit Probelauf): Spiegel mit unbekannter Lesart (`mirror_legacy`) und Sätze ohne Geldseite auf einem inzwischen liquiden Konto, mit Vorschlag und Wirkung; Übernehmen nur nach Bestätigung und Sicherung, „unklar“ wird nie geändert
 - Ein Importsatz ohne liquide Seite und mit leerem oder unbekanntem Gegenkonto (Form `transfer`, z. B. „6815 an –“) steht unter einer Bankbewegung in der EÜR ohne Vorsteuer: Die EÜR liest ihn als Umbuchung, ein Zweckkonto für die Vorsteuer 1406 gibt es nicht
 - Die Übernahme CSV → Datenbank erkennt eine Zeile auf Konten 1000–1099 aus 2.0.x nur, wenn ihr Konto im Kontenrahmen stand (`COA_ID` gesetzt); sonst entsteht eine zweite Buchung. Der Re-Import des Textexports erkennt sie
-- Umbuchungen Privat ↔ Erfolgskonto ohne Bankbezug (z. B. Kfz-Privatnutzung „2100 an 4645“, „6815 an 2180“) fehlen in der EÜR – fachlich mit dem Steuerbüro klären
+- Umbuchungen Privat ↔ Erfolgskonto ohne Bankbezug (z. B. Kfz-Privatnutzung „2100 an 4645“, „6815 an 2180“) fehlen in der EÜR – Fachfrage in `docs/fachfragen.md`
 - Alte AfA-Sätze (vor 2.0.5: Aufwandskonto auf einem Bank-/Kassenkonto, kein Gegenkonto) stehen im DATEV-Export ohne Gegenkonto; keine automatische Reparatur – Buchung löschen und neu buchen
 - Anlage wieder auf „aktiv“ setzen leert das Abgangsdatum nicht (AfA der Folgejahre bleibt gesperrt); Status „verschrottet“ ohne Datum sperrt nicht
 - WISO-Textimport nach einer in der App gebuchten AfA desselben Jahres zählt das Jahr doppelt (nur bei paralleler Nutzung beider Programme); der Datenbank-Import lässt den Satz aus (`depreciation_conflicts`)

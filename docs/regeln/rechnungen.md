@@ -169,6 +169,9 @@
   - **Ein geladener Beleg wählt den Eintrag nach seiner Momentaufnahme** (`entry_snapshot` gleich Art, Satz, Grund, Erlöskonto; auch bei
     „Als neu kopieren“, Angebot → Rechnung, Ersatzrechnung). Gibt es ihn nicht mehr: Option `e0` (`taxRateId: 0`, der Server lehnt ab,
     bis neu gewählt ist). Ohne Momentaufnahme: Vorbelegung nach Satz, sonst Satz als eigene Option ohne ID.
+  - **Eine Zeile aus dem Artikelfeld** (`mixArticleRate`) wählt die Option, die den Satz des Artikels trägt, wenn es GENAU EINE gibt – mit oder ohne ID (ein Artikel mit 5,5 % oder 0 % startet auf seinem
+    Eintrag, nicht auf 19 %). Bei keiner oder mehreren gilt die Option, die nur den Satz trägt (die Vorbelegung), sonst wie bei einer neuen Zeile der Satz des Kopfs. Ohne das Häkchen „Steuersatz je Position“
+    geht die Wahl nie in den Payload (`tests/test_tax_entries_mask.py`).
   - Zwei Skriptkonstanten in EINEM Block (`MIXED_ENTRY_JS` vor `MIXED_TAX_JS`); Befreiungsgrund `#tax_note` über `textContent`.
     `buch.css`: `.invoice-items .item-tax` ≤ 130px, `.taxChoice` ≤ 260px.
   - **Platzhalter (`__…__`) nur in konstanten Skriptblöcken ersetzen, nie per `s.replace` über eine Seite mit Datenbankwerten**
@@ -485,7 +488,7 @@
   heißt nach der Zahl.
 - Eine Formatvorlage braucht **genau einen Zähler** (`{n}`, `{nn}`, `{nnn}`, `number_format_error`): sonst Ablehnung beim Speichern eines
   Kreises; ein Altbestand mit anderer Vorlage lässt den Vorschlag leer (`peek_next_number` wirft nie) und das Speichern mit
-  `NumberRangeError` scheitern, nie die Seite.
+  `NumberRangeError` scheitern, nie die Seite. Die Meldung nennt die Art des Belegs („Rechnungsnummer“, „Angebotsnummer“: `DOCUMENT_NUMBER_NAMES`).
 - **Angebote auf demselben Weg** (`allocate_document_number(conn, 'quote', Datum, requested)`; `allocate_invoice_number` ist dieselbe
   Funktion für `'invoice'`): Kreis der Art `quote` entsteht beim ersten Speichern (Buchstabe `A`, `DOCUMENT_LETTERS`). Vorschlag
   (`peek_next_number('quote', Jahr)`) = die vom Speichern vergebene Nummer (auch ohne Kreis des Jahres); `/quote/save` antwortet

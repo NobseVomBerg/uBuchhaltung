@@ -161,6 +161,7 @@ Alle Funktionen ausführlich: [Funktionen im Detail](#funktionen-im-detail).
 
 Fehler gefunden oder eine Idee? → [Issues](https://github.com/NobseVomBerg/uBuchhaltung/issues).
 Beiträge sind willkommen, siehe [CONTRIBUTING.md](CONTRIBUTING.md).
+Offene Fachfragen zu Kontierung und DATEV stehen in [docs/fachfragen.md](docs/fachfragen.md) – wer eine Antwort kennt, ist willkommen.
 
 ---
 

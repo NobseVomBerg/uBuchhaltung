@@ -309,6 +309,10 @@ Eine **Zahlungszuordnung** ist genau eine `InvoicePayments`-Zeile plus die Sätz
 (`db/invoice_payments.py`), `assign_storno_refund` (Erstattung), `rebuild_invoice_payments` (`db/invoice_repair.py`), `find_payment_inconsistencies`
 (Prüfliste, Seite *Daten*, nur auf Klick). Forderung, Erlöskonto, Teil- und Sammelzahlung, Skonto, Entfernen, Prüfliste, Neuaufbau: **`docs/regeln/zahlungen.md`**.
 
+Vorschläge für eine Zuordnung (`db/payment_matching.py` rein, Abfragen in `db/payment_suggestions.py`) schreiben nichts; `payment_matching.is_certain` kennzeichnet die eindeutigen
+(Rechnungsnummer im Verwendungszweck und Betrag stimmen), die „Alle eindeutigen zuordnen“ nacheinander über den Weg der Einzelzuordnung zuordnet. Schließt eine Zahlung mit Skonto
+einen Beleg mit Steuersatz je Position, verteilt `tax_groups.split_skonto` das Skonto im Verhältnis des Bruttos auf die Satzgruppen (je Satz ein Skonto-Satz unter der Bankbewegung).
+
 ### 9b. Stornorechnung
 
 `Database.cancel_invoice` (`db/invoice_storno.py`, Route `POST /invoice/cancel`) legt einen eigenen Beleg in `Invoices` an (`InvoiceKind='storno'`,
@@ -566,6 +570,7 @@ Regeln und Grenzen: `docs/regeln/import.md`.
 2. Original-Export (WISO)  → Bookings mit BookingType='entry' (TaxRate aus den Schlüsselregeln bzw. TaxKeys, DatevKey = SCHLUESSEL)
 3. link_bank_to_entries()  → Entry.ParentBooking_ID = Bank.ID (Stufen 0–7, mit Richtungsregel)
 4. Doppik-Spiegel (COA und Gegenkonto sind eigene Konten) werden in Anzeige und Editor ausgeblendet
+5. Die Sätze einer Rechnungszahlung (`Status='invoice_payment'`) zeigt der Editor schreibgeschützt (`Database.payment_row_ids`); geschrieben wird so ein Satz dort nie
 ```
 
 Stufen, Richtungsregel, Kandidaten und die bewusst nicht verknüpften Fälle: `docs/regeln/buchungen.md` (Abschnitt Automatischer Abgleich). Die
@@ -581,6 +586,9 @@ Forderung auf `resolved`, wenn ihre Zahlungen sie decken (`docs/regeln/zahlungen
 3. Database.save_document_reading → DocumentReadings; Documents bleibt unberührt
 4. GET /receipts/suggestions?id= → Database.suggest_bookings_for_receipt (rein lesend): receipt_match_candidates + receipt_matching.rank_candidates, höchstens 5 mit festen Begründungen
 5. „Zuordnen“ → POST /bookings/link-document (BookingDocuments) – der einzige Schritt, der etwas verknüpft
+6. „Als Buchungssatz“ an einem verknüpften Beleg → GET /transactions/receipt-proposal (handlers.handle_receipt_proposal, rein lesend): Database.receipt_proposal_inputs,
+   recipient_history_groups, vat_history_groups → receipt_proposal.build_proposal (db/receipt_proposal.py, rein); die Maske trägt die Zeile nur in einen leeren Editor ein –
+   gespeichert wird erst mit „Aktualisieren“
 ```
 
 Voraussetzungen, Fenster, Bewertung: `docs/regeln/belege.md`.
@@ -609,7 +617,8 @@ Dashboard-Töpfe; „Nicht zugeordnet“ ist die Differenz. Rein lesend. Regeln:
 ```
 1. NumberRanges → InvoiceNumber
 2. Contacts (ContactType='own') → Verkäufer-Momentaufnahme; Contacts (Kunde) → Käufer-Momentaufnahme; Accounts → Bank-Momentaufnahme
-3. Articles / TaxRates → InvoiceItems
+3. Articles / TaxRates → InvoiceItems (eine Position ohne Artikel legt das „+“ der Maske als NEUEN Artikel an: POST /articles/quick-add, `Database.insert_article_unique`;
+   ein vorhandener Artikel wird nie geändert)
 4. Status: draft → finalized → sent → paid (dazwischen partial_payment, overdue; cancelled)
 5. Versenden bucht die Forderung; Zahlungen lassen sich ab sent zuordnen (9a)
 6. Stornieren: Stornorechnung als eigener Beleg (9b); Erstatten: ausgehende Bankbewegung an der Stornorechnung zuordnen

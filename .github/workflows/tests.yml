@@ -80,11 +80,23 @@ jobs:
       - name: Beispiel-E-Rechnungen erzeugen
         run: python tools/make_einvoice_samples.py einvoice-samples
 
-      - name: Mustang-CLI laden (feste Version, Prüfsumme)
+      # Maven Central lieferte einmal HTTP 429: Die JAR liegt deshalb im Zwischenspeicher, geladen wird nur bei einem Fehltreffer. Der Schlüssel trägt Version und Prüfsumme (eine
+      # neue Version oder Prüfsumme ergibt einen neuen Eintrag). Die Prüfsumme wird IMMER geprüft, auch nach einem Treffer: Der Zwischenspeicher ersetzt sie nie.
+      - name: Mustang-CLI aus dem Zwischenspeicher holen
+        id: mustang-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
+        with:
+          path: mustang.jar
+          key: mustang-${{ env.MUSTANG_VERSION }}-${{ env.MUSTANG_SHA256 }}
+
+      - name: Mustang-CLI laden (feste Version)
+        if: steps.mustang-cache.outputs.cache-hit != 'true'
         run: |
           curl -sSfL --retry 5 --retry-delay 15 -o mustang.jar \
             "https://repo1.maven.org/maven2/org/mustangproject/Mustang-CLI/${MUSTANG_VERSION}/Mustang-CLI-${MUSTANG_VERSION}.jar"
-          echo "${MUSTANG_SHA256}  mustang.jar" | sha256sum -c -
+
+      - name: Mustang-CLI prüfen (Prüfsumme)
+        run: echo "${MUSTANG_SHA256}  mustang.jar" | sha256sum -c -
 
       - name: Mit Mustang validieren
         run: |
