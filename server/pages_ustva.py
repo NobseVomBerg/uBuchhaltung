@@ -26,10 +26,10 @@ from db import Database
 from db.bwa import format_amount
 from db.euer import german_date
 from db.ustva import (COLUMN_BASE, COLUMN_KZ, COLUMN_LABEL, COLUMN_TAX, COLUMN_WHOLE, KIND_LABELS, KIND_MONTH, KIND_QUARTER, LABEL_83, LABEL_VAT_TOTAL,
-                      RECON_COLUMNS, RECON_HEADING, UNASSIGNED_COLUMNS, UNASSIGNED_HEADING, UNASSIGNED_NONE_TEXT, UNASSIGNED_SUM_LABEL, UNBOOKED_LABEL,
-                      USTVA_DATE_TEXT, USTVA_HINT_TEXT, USTVA_KIND_LABEL, USTVA_KINDS, USTVA_NOT_SHOWN_TEXT, USTVA_OPEN_PERIOD_TEXT, USTVA_RECON_TEXT,
-                      USTVA_ROUNDING_TEXT, USTVA_SIGN_TEXT, USTVA_SMALL_BUSINESS_TEXT, USTVA_SOLL_TEXT, USTVA_TITLE, USTVA_UNASSIGNED_TEXT, USTVA_UNSET_TEXT,
-                      Figure, UstvaReport, account_label, format_whole, is_calendar_quarter, period_label, ustva_period)
+                      RECON_COLUMNS, RECON_HEADING, UNASSIGNED_COLUMNS, UNASSIGNED_HEADING, UNASSIGNED_NONE_TEXT, UNASSIGNED_SUM_LABEL, UNBALANCED_LABEL,
+                      UNBOOKED_LABEL, USTVA_DATE_TEXT, USTVA_HINT_TEXT, USTVA_KIND_LABEL, USTVA_KINDS, USTVA_NOT_SHOWN_TEXT, USTVA_OPEN_PERIOD_TEXT,
+                      USTVA_RECON_TEXT, USTVA_ROUNDING_TEXT, USTVA_SIGN_TEXT, USTVA_SMALL_BUSINESS_TEXT, USTVA_SOLL_TEXT, USTVA_TITLE, USTVA_UNASSIGNED_TEXT,
+                      USTVA_UNSET_TEXT, Figure, UstvaReport, account_label, format_recon, format_whole, is_calendar_quarter, period_label, ustva_period)
 from .pages import Footer, Header1, Header2, Header3, script_json
 from .pages_bwa import _single, parse_month, parse_year, reports_submenu
 from .period import MONTHS_ALWAYS, period_filter_widget
@@ -151,16 +151,17 @@ def _figures_table(report: UstvaReport) -> str:
 
 
 def _reconciliation_table(report: UstvaReport) -> str:
-    """Die Abstimmung: die Steuer der Kennzahlen gegen Umsatzsteuer abzüglich Vorsteuer laut EÜR, mit der Abweichung – eine Wertezeile."""
+    """Die Abstimmung: die Steuer der Kennzahlen gegen Umsatzsteuer abzüglich Vorsteuer laut EÜR, mit der Abweichung – eine Wertezeile (ein Wert, den die EÜR
+    nicht als ganze Zahl liefert, steht als „–“ da)."""
     heads = ''.join(f'<th class="num">{_esc(label)}</th>' for label in RECON_COLUMNS)
-    values = ''.join(_num(format_amount(value)) for value in (report.recon_page, report.recon_euer, report.recon_difference))
+    values = ''.join(_num(format_recon(value)) for value in (report.recon_page, report.recon_euer, report.recon_difference))
     return (f'<table class="reportTable"><thead><tr><th colspan="3">{_esc(RECON_HEADING)}</th></tr><tr>{heads}</tr></thead>'
             f'<tbody><tr>{values}</tr></tbody></table>')
 
 
 def _unassigned_table(report: UstvaReport) -> str:
-    """„Nicht zugeordnet“: je Grund Anzahl, Netto und Steuer mit den Konten dahinter; Bankbewegungen ohne Satz stehen als eigene Zeile, zählen aber nicht in
-    der Summe (sie sind kein Satz)."""
+    """„Nicht zugeordnet“: je Grund Anzahl, Netto und Steuer mit den Konten dahinter; Bankbewegungen ohne Satz und Bankbewegungen, deren Sätze nicht ihren Betrag
+    ergeben, stehen als eigene Zeilen, zählen aber nicht in der Summe (sie sind kein Satz)."""
     s = f'<table class="bwaTable"><thead><tr><th colspan="4">{_esc(UNASSIGNED_HEADING)}</th></tr><tr><th>{_esc(UNASSIGNED_COLUMNS[0])}</th>'
     s += ''.join(f'<th class="num">{_esc(label)}</th>' for label in UNASSIGNED_COLUMNS[1:]) + '</tr></thead><tbody>'
     for group in report.unassigned:
@@ -172,7 +173,9 @@ def _unassigned_table(report: UstvaReport) -> str:
                   f'{_num(line.count)}{_num(format_amount(line.base))}{_num(format_amount(line.tax))}</tr>')
     if report.unbooked_count:
         s += f'<tr><td>{_esc(UNBOOKED_LABEL)}</td>{_num(report.unbooked_count)}{_num(format_amount(report.unbooked_amount))}{_num("")}</tr>'
-    if not report.unassigned and not report.unbooked_count:
+    if report.unbalanced_count:
+        s += f'<tr><td>{_esc(UNBALANCED_LABEL)}</td>{_num(report.unbalanced_count)}{_num(format_amount(report.unbalanced_amount))}{_num("")}</tr>'
+    if not report.unassigned and not report.unbooked_count and not report.unbalanced_count:
         s += f'<tr><td colspan="4">{_esc(UNASSIGNED_NONE_TEXT)}</td></tr>'
     s += (f'<tr class="bwaSum"><td>{_esc(UNASSIGNED_SUM_LABEL)}</td>{_num("")}'
           f'{_num(format_amount(report.unassigned_net))}{_num(format_amount(report.unassigned_tax))}</tr>')
@@ -201,7 +204,7 @@ def PageUstva(db: Database, query: UstvaQuery, date_from: str | None = None, dat
     s += f'<p class="hint">{_esc(USTVA_HINT_TEXT)} {_esc(USTVA_DATE_TEXT)} {_esc(USTVA_ROUNDING_TEXT)}</p>'
     if report.date_to > (today or datetime.date.today()).isoformat():
         s += f'<p class="hint warnColor">{_esc(USTVA_OPEN_PERIOD_TEXT)}</p>'
-    if report.unassigned or report.unbooked_count:
+    if report.unassigned or report.unbooked_count or report.unbalanced_count:
         s += f'<p class="hint warnColor">{_esc(USTVA_UNASSIGNED_TEXT)}</p>'
     if report.has_small_business:
         s += f'<p class="hint">{_esc(USTVA_SMALL_BUSINESS_TEXT)}</p>'

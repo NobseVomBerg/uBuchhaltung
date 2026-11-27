@@ -5,11 +5,11 @@
 
 Die Seite hat keine eigene Lesart der Buchungen. ``Database.get_ustva`` liest dieselben Sätze wie die Einnahmenüberschussrechnung
 (``Database._euer_entries``: nach dem Datum der Bankbewegung bzw. der Kassenbuchung, auch die Vorsteuer zählt mit der Zahlung) und dazu
-drei Ergänzungen, damit nichts still fehlt: Kinder einer Bankbewegung im Zeitraum, deren eigenes Datum außerhalb liegt; eigenständige Sätze
-ohne Bankbewegung, die die EÜR nicht liest; Bankbewegungen ohne Satz. Hier steht nur, wohin ein Satz gehört (``assign``) und wie daraus der Bericht
-wird (``build_ustva``).
+vier Ergänzungen, damit nichts still fehlt: Kinder einer Bankbewegung im Zeitraum, deren eigenes Datum außerhalb liegt; eigenständige Sätze
+ohne Bankbewegung, die die EÜR nicht liest (nicht die Forderung einer Rechnung); Bankbewegungen ohne Satz; Bankbewegungen, deren Sätze nicht ihren
+Betrag ergeben (die beiden Letzten nur gezählt). Hier steht nur, wohin ein Satz gehört (``assign``) und wie daraus der Bericht wird (``build_ustva``).
 
-Jeder Satz geht in genau eine Kennzahl (81: Umsätze zu 19 %, 86: zu 7 %, 66: Vorsteuer), in genau einen Grund unter „Nicht zugeordnet“ oder in
+Jeder Satz geht in genau eine Kennzahl (81: Umsätze zu 19 %, 86: zu 7 %, 66: Vorsteuer zu 19 und 7 %), in genau einen Grund unter „Nicht zugeordnet“ oder in
 „neutral“ (kein Umsatz, keine Steuer: Zahlung auf Debitoren, Spiegel, Privat, Aufwand ohne Steuer, Abschreibung …). Was sich nicht sicher
 zuordnen lässt, bleibt in keiner Kennzahl und steht mit Anzahl, Netto und Steuer da. Die Wartekonten (4340, 4345, 4405) zählen nie: Die Umsatzsteuer
 entsteht mit der Umbuchung auf das Erlöskonto bei der Zahlung (``reporting.NEUTRAL_ACCOUNT_NUMBERS``).
@@ -27,18 +27,24 @@ from decimal import ROUND_DOWN, Decimal
 
 from money import FACTOR, format_de
 from . import datev_keys
-from .bwa import month_label
+from .bwa import format_amount, month_label
 from .matching import FORM_PURPOSE_FIRST, FORM_TRANSFER, MIRROR_FORMS
 from .reporting import NEUTRAL_ACCOUNT_NUMBERS
+from .susa import TAX_ACCOUNTS
 
 # ── Konstanten ────────────────────────────────────────────────────────────────
 
 WAITING_NUMBERS = frozenset(number for number in NEUTRAL_ACCOUNT_NUMBERS if 4000 <= number <= 4999)     # 4340, 4345, 4405 – zählen nie
+#: Die Steuerkonten der Summen- und Saldenliste (``susa.TAX_ACCOUNTS``: 1401, 1406, 3801, 3806) – nicht die Zahllast- und Finanzamtskonten (3820 ff.)
+TAX_ACCOUNT_NUMBERS = frozenset(number for by_rate in TAX_ACCOUNTS.values() for number in by_rate.values())
 PRIVATE_RANGE = (2100, 2199)
 PL_RANGE = (4000, 7999)                       # wie matching.PL_ACCOUNT_RANGE
 ACCOUNT_4185 = 4185
 SMALL_BUSINESS_ACCOUNT = 4184
 RATE_81, RATE_86 = 19.0, 7.0                  # die Prozentzahlen von datev_keys.percent
+#: So weit darf die gebuchte Steuer bei 19 und 7 % von Netto × Satz abweichen (zwei Cent: die Steuer ist auf den Cent gerundet, auch bei Teilzahlungen); mehr ist
+#: ``rate_tax_mismatch``. Minor Units, ganzzahlig.
+TAX_TOLERANCE_MINOR = 2 * FACTOR // 100
 KZ_81, KZ_86, KZ_66 = 'kz81', 'kz86', 'kz66'  # Schlüssel der Kennzahlen (auch im HTML)
 NEUTRAL = 'neutral'
 UNREADABLE = 'unreadable'
@@ -57,6 +63,7 @@ SOURCE_EUER, SOURCE_OTHER_DATE, SOURCE_STANDALONE = 'euer', 'other_date', 'stand
 UNASSIGNED_REASONS = {
     'zero_rate': 'Erlöse ohne Steuer (0 %, steuerfrei, § 19 oder ohne Satz)',
     'other_rate': 'Erlöse zu einem anderen Steuersatz',
+    'input_other_rate': 'Vorsteuer zu einem anderen Steuersatz',
     'account_4185': 'Erlöse auf Konto 4185',
     'tax_without_rate': 'Steuerbetrag ohne Steuersatz',
     'rate_tax_mismatch': 'Steuersatz und Steuerbetrag passen nicht zusammen',
@@ -66,12 +73,14 @@ UNASSIGNED_REASONS = {
     'no_bank': 'Satz ohne Bankbewegung, den die EÜR nicht zählt',
     'transfer_other': 'Umbuchung, die die Seite nicht zuordnet',
     'tax_other': 'Steuer auf einem Konto ohne Umsatz- oder Vorsteuer',
+    'tax_account': 'Satz direkt auf einem Steuerkonto',
     'waiting': 'Satz auf einem Wartekonto (4340, 4345, 4405)',
     'no_account': 'Satz ohne Konto',
     UNREADABLE: 'Betrag nicht lesbar',
 }
-#: Bankbewegungen ohne Satz sind kein Satz und stehen deshalb außerhalb der Invariante
+#: Bankbewegungen ohne Satz und Bankbewegungen, deren Sätze nicht ihren Betrag ergeben, sind kein Satz und stehen deshalb außerhalb der Invariante
 UNBOOKED_LABEL = 'Bankbewegungen ohne Buchungssatz'
+UNBALANCED_LABEL = 'Bankbewegungen, deren Buchungssätze nicht den Betrag ergeben'
 
 # ── Texte (Seite und PDF) ─────────────────────────────────────────────────────
 
@@ -79,7 +88,7 @@ USTVA_TITLE = 'Umsatzsteuer-Voranmeldung'
 USTVA_MENU_LABEL = 'USt-Voranmeldung'
 USTVA_HINT_TEXT = ('Aus den Buchungen dieser App gerechnet, zum Übertragen in den Vordruck – die App übermittelt nichts. '
                    'Kein amtliches Formular; keine Steuerberatung, ersetzt nicht die Prüfung durch ein Steuerbüro.')
-USTVA_DATE_TEXT = ('Maßgeblich ist das Datum der Bankbewegung bzw. der Kassenbuchung. Auch die Vorsteuer zählt hier mit der Zahlung, '
+USTVA_DATE_TEXT = ('Die Seite rechnet nach dem Datum der Bankbewegung bzw. der Kassenbuchung. Auch die Vorsteuer zählt hier mit der Zahlung, '
                    'nicht mit dem Datum der Rechnung.')
 USTVA_ROUNDING_TEXT = ('Bemessungsgrundlage genau und in vollen Euro ohne Cent; Steuer wie gebucht, auf den Cent. Rechnet das Formular die '
                        'Steuer selbst aus den vollen Euro, kann sie um Cent abweichen.')
@@ -87,7 +96,7 @@ USTVA_OPEN_PERIOD_TEXT = 'Der Zeitraum ist noch nicht abgelaufen.'
 USTVA_UNASSIGNED_TEXT = 'Was die Seite keiner Kennzahl sicher zuordnet, steht unter „Nicht zugeordnet“ und zählt in keiner Kennzahl – bitte selbst prüfen.'
 USTVA_NOT_SHOWN_TEXT = ('Nicht abgebildet: Umsätze nach § 13b, innergemeinschaftliche Lieferungen und Erwerbe, Einfuhrumsatzsteuer, die '
                         'Sondervorauszahlung (Kz 39) und die Kennzahlen 65 und 69. Steuerfreie Umsätze ordnet die Seite keiner Kennzahl zu.')
-USTVA_SIGN_TEXT = 'Vorzeichen unter „Nicht zugeordnet“ wie in der EÜR: Einnahmen positiv, Ausgaben negativ.'
+USTVA_SIGN_TEXT = 'Vorzeichen unter „Nicht zugeordnet“ wie gebucht.'
 USTVA_RECON_TEXT = ('Die Steuer der Kennzahlen steht gegen Umsatzsteuer abzüglich Vorsteuer laut EÜR im selben Zeitraum. Eine Abweichung '
                     'entsteht durch die Posten unter „Nicht zugeordnet“ und durch Sätze mit anderem Datum als ihre Bankbewegung.')
 USTVA_SMALL_BUSINESS_TEXT = 'Bei Kleinunternehmerregelung ist in der Regel keine Voranmeldung abzugeben.'
@@ -105,6 +114,7 @@ LABEL_66 = 'Vorsteuer aus Rechnungen anderer Unternehmer'
 LABEL_83 = 'Verbleibende Vorauszahlung (Überschuss mit Minus)'
 RECON_HEADING = 'Abstimmung'
 RECON_COLUMNS = ('Steuer der Kennzahlen (81 + 86 − 66)', 'Umsatzsteuer abzüglich Vorsteuer laut EÜR', 'Abweichung')
+RECON_UNKNOWN = '–'          # steht für einen Wert der Abstimmung, den die EÜR nicht als ganze Zahl liefert
 UNASSIGNED_HEADING = 'Nicht zugeordnet'
 UNASSIGNED_COLUMNS = ('Grund', 'Anzahl', 'Netto €', 'Steuer €')
 UNASSIGNED_SUM_LABEL = 'Summe Nicht zugeordnet'
@@ -231,14 +241,6 @@ def _is_chain_side(number) -> bool:
     return number in WAITING_NUMBERS or datev_keys.is_debtor_number(number)
 
 
-def is_chain_without_revenue(entry: UstvaEntry) -> bool:
-    """Die Forderung einer Rechnung („10000 an 4405“) und die Gegenbuchung ihrer Stornorechnung: eine Umbuchung mit einem Debitor oder Wartekonto auf
-    einer Seite und ohne Erlöskonto. Sie bewegt kein Geld, die Steuer entsteht erst mit der Zahlung – ``Database.get_ustva`` liest sie nicht als eigenständigen
-    Satz."""
-    return (entry.form == FORM_TRANSFER and (_is_chain_side(entry.coa_number) or _is_chain_side(entry.counter_number))
-            and not (_is_sales(entry.coa_number) or _is_sales(entry.counter_number)))
-
-
 def _is_private_transfer(entry: UstvaEntry) -> bool:
     """Eine Umbuchung zwischen einem Privatkonto und einem Erfolgskonto (4000–7999)."""
     if entry.form != FORM_TRANSFER:
@@ -247,7 +249,16 @@ def _is_private_transfer(entry: UstvaEntry) -> bool:
     return ((_within(coa, PRIVATE_RANGE) and _within(counter, PL_RANGE)) or (_within(counter, PRIVATE_RANGE) and _within(coa, PL_RANGE)))
 
 
-def _revenue_target(number: int, pct: float, tax: int, sign_ok: bool) -> str:
+def _tax_fits(amount: int, tax: int, pct: float) -> bool:
+    """Passt die gebuchte Steuer zu Betrag und Satz? Betrag und Steuer sind ≠ 0 und haben dasselbe Vorzeichen, und die Steuer weicht von Netto × Satz
+    (Netto = Betrag − Steuer) höchstens um ``TAX_TOLERANCE_MINOR`` ab – gerechnet in ``Decimal``, nie mit ``float``."""
+    if amount == 0 or tax == 0 or (amount > 0) != (tax > 0):
+        return False
+    expected = Decimal(amount - tax) * Decimal(str(pct)) / 100
+    return abs(Decimal(tax) - expected) <= TAX_TOLERANCE_MINOR
+
+
+def _revenue_target(number: int, pct: float, amount: int, tax: int) -> str:
     """Erlösregel R: wohin ein Satz auf dem Erlöskonto ``number`` gehört."""
     if number == ACCOUNT_4185:
         return 'account_4185'
@@ -255,26 +266,25 @@ def _revenue_target(number: int, pct: float, tax: int, sign_ok: bool) -> str:
         return 'tax_without_rate' if tax != 0 else 'zero_rate'
     if pct not in (RATE_81, RATE_86):
         return 'other_rate'
-    if not sign_ok:
+    if not _tax_fits(amount, tax, pct):
         return 'rate_tax_mismatch'
     return KZ_81 if pct == RATE_81 else KZ_86
 
 
 def _classify(entry: UstvaEntry) -> tuple[str, int | None]:
     """Schritt 2 der Zuordnung (``(Ziel, Konto)``) für einen lesbaren Satz mit Betrag oder Steuer ≠ 0: das Zweckkonto wie in ``get_euer_data`` (bei
-    ``purpose_first`` das Konto, sonst das Gegenkonto; bei einer Umbuchung das Gegenkonto), danach die Regeln T1–T11 (Umbuchung, Spiegel), Z1–Z13
+    ``purpose_first`` das Konto, sonst das Gegenkonto; bei einer Umbuchung das Gegenkonto), danach die Regeln T1–T11 (Umbuchung, Spiegel), Z1–Z15
     (Zahlung) und R1–R7 (Erlöse) aus ``docs/regeln/auswertungen.md``."""
     coa, counter = entry.coa_number, entry.counter_number
     amount, tax = entry.amount, entry.tax
     pct = datev_keys.percent(entry.rate)
-    sign_ok = amount != 0 and tax != 0 and (amount > 0) == (tax > 0)
 
     if entry.form in MIRROR_FORMS:
         return (NEUTRAL, None) if tax == 0 else ('tax_other', counter)                                  # T1, T2
     if entry.form == FORM_TRANSFER:
         if _is_chain_side(coa) or _is_chain_side(counter):
             if _is_sales(counter):
-                return _revenue_target(counter, pct, tax, sign_ok), counter                             # T3 („4405 an 4400“)
+                return _revenue_target(counter, pct, amount, tax), counter                              # T3 („4405 an 4400“)
             if _is_sales(coa):
                 return 'transfer_other', coa                                                            # T4
             return (NEUTRAL, None) if tax == 0 else ('transfer_other', counter)                         # T5, T6
@@ -294,7 +304,7 @@ def _classify(entry: UstvaEntry) -> tuple[str, int | None]:
     if datev_keys.is_debtor_number(purpose):
         return (NEUTRAL, None) if tax == 0 else ('tax_other', purpose)                                  # Z3, Z4
     if _is_sales(purpose):
-        return _revenue_target(purpose, pct, tax, sign_ok), purpose                                     # Z5
+        return _revenue_target(purpose, pct, amount, tax), purpose                                      # Z5
     if _within(purpose, PRIVATE_RANGE):
         return (NEUTRAL, None) if tax == 0 else ('private_tax', purpose)                                # Z6, Z7
     if datev_keys.is_expense_or_asset_number(purpose):
@@ -302,10 +312,14 @@ def _classify(entry: UstvaEntry) -> tuple[str, int | None]:
             return NEUTRAL, None                                                                        # Z8
         if pct == 0:
             return 'tax_without_rate', purpose                                                          # Z9
-        if not sign_ok:
-            return 'rate_tax_mismatch', purpose                                                         # Z10
-        return KZ_66, purpose                                                                           # Z11
-    return (NEUTRAL, None) if tax == 0 else ('tax_other', purpose)                                      # Z12, Z13
+        if pct not in (RATE_81, RATE_86):
+            return 'input_other_rate', purpose                                                          # Z10
+        if not _tax_fits(amount, tax, pct):
+            return 'rate_tax_mismatch', purpose                                                         # Z11
+        return KZ_66, purpose                                                                           # Z12
+    if purpose in TAX_ACCOUNT_NUMBERS and amount != 0:
+        return 'tax_account', purpose                                                                   # Z13
+    return (NEUTRAL, None) if tax == 0 else ('tax_other', purpose)                                      # Z14, Z15
 
 
 def assign(entry: UstvaEntry, date_from: str, date_to: str) -> Assignment:
@@ -374,7 +388,9 @@ class UnassignedGroup:
 class UstvaReport:
     """Die Voranmeldung eines Zeitraums. ``figures``: 81 und 86 (immer da, auch bei 0); ``input_tax``: 66 (positiv: Vorsteuer); ``prepayment``: Kz 83.
     ``unassigned``: nur die Gründe mit Sätzen, in der Reihenfolge von ``UNASSIGNED_REASONS`` – auch ``unreadable``. ``unbooked_*``: Bankbewegungen ohne
-    Satz (kein Satz, nicht in der Invariante). ``recon_*``: die Steuer der Kennzahlen (81 + 86 − 66) gegen Umsatzsteuer plus Vorsteuer laut EÜR.
+    Satz, ``unbalanced_*``: Bankbewegungen, deren Sätze nicht ihren Betrag ergeben (Zahl und Summe der Reste ohne Vorzeichen) – beide kein Satz und nicht in
+    der Invariante. ``recon_*``: die Steuer der Kennzahlen (81 + 86 − 66) gegen Umsatzsteuer plus Vorsteuer laut EÜR; ``None`` bei ``recon_euer`` und
+    ``recon_difference``, wenn die EÜR die Summe nicht als ganze Zahl liefert (eine Kommazahl im Bestand – nichts wird abgeschnitten).
     ``read_*`` sind alle gelesenen Sätze (``read_net`` und ``read_tax`` nur die lesbaren, wie gebucht); jeder Satz steht in genau einer Kennzahl, einem
     Grund (mit ``unreadable``) oder bei ``neutral_*`` – daraus die Invarianten in ``tests/test_ustva.py``."""
     year: int
@@ -391,9 +407,11 @@ class UstvaReport:
     unassigned_tax: int
     unbooked_count: int
     unbooked_amount: int
+    unbalanced_count: int
+    unbalanced_amount: int
     recon_page: int
-    recon_euer: int
-    recon_difference: int
+    recon_euer: int | None
+    recon_difference: int | None
     read_count: int
     read_net: int
     read_tax: int
@@ -434,12 +452,19 @@ def account_label(line: AccountLine) -> str:
     return f'{line.number} {line.name}' if line.name else str(line.number)
 
 
-def build_ustva(year: int, month: int, kind: str, entries, names: dict, euer_vat_minor: int, euer_input_minor: int,
-                unbooked: tuple[int, int]) -> UstvaReport:
+def format_recon(minor) -> str:
+    """Ein Betrag der Abstimmung auf den Cent, deutsch; ``None`` (die EÜR liefert dort keine ganze Zahl) steht als ``RECON_UNKNOWN`` da."""
+    return RECON_UNKNOWN if minor is None else format_amount(minor)
+
+
+def build_ustva(year: int, month: int, kind: str, entries, names: dict, euer_vat_minor, euer_input_minor, unbooked: tuple[int, int],
+                unbalanced: tuple[int, int] = (0, 0)) -> UstvaReport:
     """Der Bericht zu den Sätzen ``entries`` (``UstvaEntry``) des Zeitraums von ``ustva_period`` (``ValueError`` wie dort). ``names``: Name je
     Kontonummer. ``euer_vat_minor`` und ``euer_input_minor``: Umsatzsteuer und Vorsteuer laut EÜR im selben Zeitraum (``EuerTotals``, Minor Units,
-    Vorzeichen wie dort) für die Abstimmung. ``unbooked``: ``(Summe, Zahl)`` der Bankbewegungen ohne Satz (``Database._liquidity_unbooked``).
-    Gerechnet wird nur mit ganzen Zahlen."""
+    Vorzeichen wie dort) für die Abstimmung; ist einer keine ganze Zahl (eine Kommazahl im Bestand), bleiben ``recon_euer`` und ``recon_difference``
+    ``None`` – sie werden nie abgeschnitten. ``unbooked``: ``(Summe, Zahl)`` der Bankbewegungen ohne Satz (``Database._liquidity_unbooked``),
+    ``unbalanced``: ``(Summe der Reste, Zahl)`` der Bankbewegungen, deren Sätze nicht ihren Betrag ergeben (``Database._susa_unbalanced``). Gerechnet wird
+    nur mit ganzen Zahlen."""
     date_from, date_to = ustva_period(year, month, kind)
     sums: dict[str, _Sum] = {}
     read_count = read_net = read_tax = 0
@@ -463,14 +488,16 @@ def build_ustva(year: int, month: int, kind: str, entries, names: dict, euer_vat
     neutral = sums.get(NEUTRAL, _Sum())
     vat_total = figure_81.tax + figure_86.tax
     recon_page = vat_total - input_tax.tax
-    recon_euer = euer_vat_minor + euer_input_minor
+    whole = all(isinstance(value, int) and not isinstance(value, bool) for value in (euer_vat_minor, euer_input_minor))
+    recon_euer = euer_vat_minor + euer_input_minor if whole else None
     unbooked_amount, unbooked_count = unbooked
+    unbalanced_amount, unbalanced_count = unbalanced
     return UstvaReport(
         year=year, month=month, kind=kind, date_from=date_from, date_to=date_to,
         figures=(figure_81, figure_86), vat_total=vat_total, input_tax=input_tax, prepayment=vat_total - input_tax.tax,
         unassigned=groups, unassigned_net=sum(group.net for group in groups), unassigned_tax=sum(group.tax for group in groups),
-        unbooked_count=unbooked_count, unbooked_amount=unbooked_amount,
-        recon_page=recon_page, recon_euer=recon_euer, recon_difference=recon_page - recon_euer,
+        unbooked_count=unbooked_count, unbooked_amount=unbooked_amount, unbalanced_count=unbalanced_count, unbalanced_amount=unbalanced_amount,
+        recon_page=recon_page, recon_euer=recon_euer, recon_difference=recon_page - recon_euer if whole else None,
         read_count=read_count, read_net=read_net, read_tax=read_tax,
         neutral_count=neutral.count, neutral_net=neutral.base, neutral_tax=neutral.tax,
         unreadable_count=sums[UNREADABLE].count if UNREADABLE in sums else 0,

@@ -26,8 +26,8 @@ from pdfminer.pdftypes import stream_value
 import auth
 import userctx
 from db import Database
-from db.ustva import (UNASSIGNED_REASONS, USTVA_DATE_TEXT, USTVA_FOOTER, USTVA_NOT_SHOWN_TEXT, USTVA_RECON_TEXT, USTVA_ROUNDING_TEXT, USTVA_SIGN_TEXT,
-                      USTVA_TITLE, build_ustva)
+from db.ustva import (UNASSIGNED_REASONS, UNBALANCED_LABEL, USTVA_DATE_TEXT, USTVA_FOOTER, USTVA_NOT_SHOWN_TEXT, USTVA_RECON_TEXT, USTVA_ROUNDING_TEXT,
+                      USTVA_SIGN_TEXT, USTVA_TITLE, build_ustva)
 from export import pdf_table, pdf_ustva
 from export.pdf_ustva import (ACCOUNT_INDENT, BASE_RIGHT, BOTTOM_Y, COMPANY_Y, FOOTER_TOP_Y, FOOTER_Y, HEADER_Y, LEFT_X, LINES_PER_PAGE, NAME_WIDTH, NAME_X, PAGE_SIZE,
                               ROW_H, TABLE_TOP, TAX_RIGHT, WHOLE_RIGHT, generate_ustva_pdf, page_layout)
@@ -83,8 +83,8 @@ def _words(pdf):
         return [page.extract_words() for page in document.pages]
 
 
-def _report(items, names=None, euer=(0, 0), unbooked=(0, 0), year=2026, month=3, kind='monat'):
-    return build_ustva(year, month, kind, items, names or {}, *euer, unbooked)
+def _report(items, names=None, euer=(0, 0), unbooked=(0, 0), year=2026, month=3, kind='monat', unbalanced=(0, 0)):
+    return build_ustva(year, month, kind, items, names or {}, *euer, unbooked, unbalanced)
 
 
 def _rows(pdf, page=0):
@@ -188,6 +188,42 @@ def test_the_pdf_prints_the_unassigned_items_with_their_count_net_and_tax():
     assert report.unbooked_amount == 12_340_000
 
 
+def test_the_pdf_prints_the_unbalanced_bank_movements_after_the_ones_without_an_entry_and_outside_the_sum():
+    """Bankbewegungen, deren Buchungssätze nicht den Betrag ergeben: Anzahl am Ende der (umbrochenen) Bezeichnung, die Summe der Reste in der Netto-Spalte, ohne Steuer –
+    hinter den Bankbewegungen ohne Satz und nicht in der Summe."""
+    items = [entry('purpose_first', 4400, 1800, '116.00', '16.00', 0.16)]
+    report = _report(items, {4400: 'Erlöse 19% USt'}, unbooked=(12_340_000, 2), unbalanced=(1_190_000, 3))
+    [lines] = _lines(generate_ustva_pdf(report, '', CREATED))
+    start = lines.index('Nicht zugeordnet')
+    assert lines[start:start + 7] == [
+        'Nicht zugeordnet', 'Erlöse zu einem anderen Steuersatz (1) 100,00 16,00', '4400 Erlöse 19% USt (1) 100,00 16,00',
+        'Bankbewegungen ohne Buchungssatz (2) 1.234,00', 'Bankbewegungen, deren Buchungssätze nicht den Betrag ergeben 119,00', '(3)',
+        'Summe Nicht zugeordnet 100,00 16,00']
+    assert UNBALANCED_LABEL == 'Bankbewegungen, deren Buchungssätze nicht den Betrag ergeben' and report.unbalanced_amount == 1_190_000
+    [words] = _words(generate_ustva_pdf(report, '', CREATED))
+    assert sorted(round(word['x1'], 1) for word in words if word['text'] == '119,00') == [BASE_RIGHT]
+
+
+def test_a_bank_movement_that_does_not_add_up_alone_is_no_empty_list():
+    """Auch wenn sonst nichts unter „Nicht zugeordnet“ steht, ist die Liste nicht leer: Die Zeile steht da, „Keine Posten.“ nicht."""
+    [lines] = _lines(generate_ustva_pdf(_report([], unbalanced=(1_190_000, 1)), '', CREATED))
+    start = lines.index('Nicht zugeordnet')
+    assert lines[start:start + 4] == ['Nicht zugeordnet', 'Bankbewegungen, deren Buchungssätze nicht den Betrag ergeben 119,00', '(1)', 'Summe Nicht zugeordnet 0,00 0,00']
+    assert 'Keine Posten.' not in lines
+
+
+def test_the_reconciliation_shows_a_dash_where_the_euer_gives_no_whole_number():
+    """Eine Kommazahl als Steuerbetrag im Bestand: ``recon_euer`` und ``recon_difference`` sind ``None`` – das PDF druckt „–“ (rechtsbündig auf der Kante der Steuer), die
+    Steuer der Kennzahlen steht da."""
+    items = [entry('purpose_first', 4400, 1800, '119.00', '19.00', 0.19)]
+    pdf = generate_ustva_pdf(_report(items, euer=(190000.5, 0)), '', CREATED)
+    [lines] = _lines(pdf)
+    start = lines.index('Abstimmung')
+    assert lines[start:start + 4] == ['Abstimmung', 'Steuer der Kennzahlen (81 + 86 - 66) 19,00', 'Umsatzsteuer abzüglich Vorsteuer laut EÜR –', 'Abweichung –']
+    [words] = _words(pdf)
+    assert [round(word['x1'], 1) for word in words if word['text'] == '–'] == [TAX_RIGHT, TAX_RIGHT]
+
+
 def test_a_long_reason_is_wrapped_and_keeps_its_count():
     """„Satz mit anderem Datum als seine Bankbewegung (anderer Zeitraum)“ passt mit der Anzahl nicht in die Spalte: Sie läuft in die nächste Zeile, die Anzahl bleibt am
     Ende (die Werte stehen in der ersten Zeile)."""
@@ -230,7 +266,7 @@ def test_every_page_has_head_and_foot_and_many_accounts_run_over_several_pages()
         rows.append(len(table))
     assert rows[:3] == [LINES_PER_PAGE, LINES_PER_PAGE, 50]                   # 56 + 56 + (41 Zeilen des Blocks 81, dazu 66/83, die Abstimmung, „Nicht zugeordnet“)
     assert 'Summe Nicht zugeordnet' in _texts(streams[2]) and 'Summe Nicht zugeordnet' not in _texts(streams[3])
-    assert [text for text in _texts(streams[3]) if text.startswith('Maßgeblich')] and 'Seite 4 von 4' in _texts(streams[3])
+    assert [text for text in _texts(streams[3]) if text.startswith(USTVA_DATE_TEXT[:20])] and 'Seite 4 von 4' in _texts(streams[3])
 
 
 def test_a_block_that_fits_on_a_page_is_not_split():

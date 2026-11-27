@@ -21,9 +21,9 @@ from typing import NamedTuple
 from db.bwa import format_amount
 from db.euer import german_date
 from db.ustva import (COLUMN_BASE, COLUMN_KZ, COLUMN_LABEL, COLUMN_TAX, COLUMN_WHOLE, LABEL_83, LABEL_VAT_TOTAL, RECON_COLUMNS, RECON_HEADING,
-                      UNASSIGNED_HEADING, UNASSIGNED_NONE_TEXT, UNASSIGNED_SUM_LABEL, UNBOOKED_LABEL, USTVA_DATE_TEXT, USTVA_FOOTER, USTVA_NOT_SHOWN_TEXT,
-                      USTVA_PERIOD_LINE, USTVA_RECON_TEXT, USTVA_ROUNDING_TEXT, USTVA_SIGN_TEXT, USTVA_TITLE, AccountLine, Figure, UstvaReport,
-                      account_label, format_whole, period_label)
+                      UNASSIGNED_HEADING, UNASSIGNED_NONE_TEXT, UNASSIGNED_SUM_LABEL, UNBALANCED_LABEL, UNBOOKED_LABEL, USTVA_DATE_TEXT, USTVA_FOOTER,
+                      USTVA_NOT_SHOWN_TEXT, USTVA_PERIOD_LINE, USTVA_RECON_TEXT, USTVA_ROUNDING_TEXT, USTVA_SIGN_TEXT, USTVA_TITLE, AccountLine, Figure,
+                      UstvaReport, account_label, format_recon, format_whole, period_label)
 from . import pdf_table
 from .pdf_core import build_multi_page_pdf
 
@@ -105,16 +105,18 @@ def _blocks(report: UstvaReport) -> list[list[Row]]:
     first = _figure_block(figure_81, True) + _figure_block(figure_86, True) + [Row('sum', '', LABEL_VAT_TOTAL, '', '', format_amount(report.vat_total))]
     second = _figure_block(report.input_tax, False) + [Row('sum', '83', LABEL_83, '', '', format_amount(report.prepayment))]
     recon = [Row('heading', '', RECON_HEADING, '', '', ''),
-             Row('figure', '', RECON_COLUMNS[0], '', '', format_amount(report.recon_page)),
-             Row('figure', '', RECON_COLUMNS[1], '', '', format_amount(report.recon_euer)),
-             Row('sum', '', RECON_COLUMNS[2], '', '', format_amount(report.recon_difference))]
+             Row('figure', '', RECON_COLUMNS[0], '', '', format_recon(report.recon_page)),
+             Row('figure', '', RECON_COLUMNS[1], '', '', format_recon(report.recon_euer)),
+             Row('sum', '', RECON_COLUMNS[2], '', '', format_recon(report.recon_difference))]
     unassigned = [Row('heading', '', UNASSIGNED_HEADING, '', '', '')]
     for group in report.unassigned:
         unassigned += _group_rows(f'{group.label} ({group.count})', format_amount(group.net), '', format_amount(group.tax))
         unassigned += _account_rows(group.accounts, True, True)
     if report.unbooked_count:
         unassigned += _group_rows(f'{UNBOOKED_LABEL} ({report.unbooked_count})', format_amount(report.unbooked_amount), '', '')
-    if not report.unassigned and not report.unbooked_count:
+    if report.unbalanced_count:
+        unassigned += _group_rows(f'{UNBALANCED_LABEL} ({report.unbalanced_count})', format_amount(report.unbalanced_amount), '', '')
+    if not report.unassigned and not report.unbooked_count and not report.unbalanced_count:
         unassigned.append(Row('figure', '', UNASSIGNED_NONE_TEXT, '', '', ''))
     unassigned.append(Row('sum', '', UNASSIGNED_SUM_LABEL, format_amount(report.unassigned_net), '', format_amount(report.unassigned_tax)))
     notes = [Row('text', '', '', '', '', '')]

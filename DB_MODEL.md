@@ -615,7 +615,8 @@ Dashboard-Töpfe; „Nicht zugeordnet“ ist die Differenz. Rein lesend. Regeln:
 ### Umsatzsteuer-Voranmeldung (`db/ustva.py`, `Database.get_ustva`, Seite `/ustva`)
 
 Die Kennzahlen 81, 86, 66 und 83 für einen Monat oder ein Quartal, nur bei Ist-Versteuerung (`Contacts.VatMethod`); keine eigene Lesart der Buchungen, nur die Sätze von
-`get_euer_data` (`_euer_entries`, `_euer_totals`) und drei Ergänzungen (Sätze mit anderem Datum als ihre Bankbewegung, eigenständige Sätze, Bankbewegungen ohne Satz). Was sich nicht
+`get_euer_data` (`_euer_entries`, `_euer_totals`) und vier Ergänzungen (Sätze mit anderem Datum als ihre Bankbewegung, eigenständige Sätze – nicht die Forderung einer Rechnung –,
+Bankbewegungen ohne Satz, Bankbewegungen, deren Sätze nicht ihren Betrag ergeben; die letzten beiden nur gezählt). Was sich nicht
 sicher zuordnen lässt, steht unter „Nicht zugeordnet“. Rein lesend, keine Schemaänderung. Regeln: `docs/regeln/auswertungen.md`, Abschnitt Umsatzsteuer-Voranmeldung.
 
 ### Rechnungserstellung

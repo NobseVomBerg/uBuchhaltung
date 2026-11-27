@@ -1059,22 +1059,24 @@ class ReportingMixin:
 
     def get_ustva(self, year: int, month: int, kind: str):
         """Umsatzsteuer-Voranmeldung für einen Monat oder ein Quartal (``db.ustva.UstvaReport``): die Kennzahlen 81, 86, 66 und 83 aus denselben Sätzen wie
-        die EÜR (``_euer_entries`` ohne Kontofilter – es zählt das Datum der Bankbewegung bzw. der Kassenbuchung, auch bei der Vorsteuer) und drei Ergänzungen,
+        die EÜR (``_euer_entries`` ohne Kontofilter – es zählt das Datum der Bankbewegung bzw. der Kassenbuchung, auch bei der Vorsteuer) und vier Ergänzungen,
         damit nichts still fehlt: (a) Kinder einer Bankbewegung im Zeitraum, deren eigenes Datum außerhalb liegt, (b) eigenständige Sätze ohne Bankbewegung, die die
-        EÜR nicht liest – außer der Forderung und der Gegenbuchung der Rechnungskette ohne Erlösseite: Sie bewegen kein Geld, die Steuer entsteht erst mit der Zahlung –
-        und (c) Bankbewegungen ohne Satz (``_liquidity_unbooked``, nur gezählt). Wohin ein Satz gehört, steht in ``db.ustva.assign``; die Abstimmung nimmt
-        Umsatzsteuer und Vorsteuer aus ``_euer_totals``. Rein lesend.
+        EÜR nicht liest – außer der Forderung einer Rechnung (Debitor und Wartekonto auf den zwei Seiten, ``datev_keys.is_receivable_row``) und der Gegenbuchung ihrer
+        Stornorechnung: Sie bewegen kein Geld, die Steuer entsteht erst mit der Zahlung –, (c) Bankbewegungen ohne Satz (``_liquidity_unbooked``, nur gezählt)
+        und (d) Bankbewegungen, deren Sätze nicht ihren Betrag ergeben (``_susa_unbalanced`` über den Zeitraum, nur gezählt). Wohin ein Satz gehört, steht in
+        ``db.ustva.assign``; die Abstimmung nimmt Umsatzsteuer und Vorsteuer aus ``_euer_totals``. Rein lesend.
 
         ``ValueError`` wie ``db.ustva.ustva_period``: Jahr außerhalb von 1 bis 9999, Monat außerhalb von 1 bis 12, unbekannte Art oder ein Quartal, dessen
         Monat nicht 3, 6, 9 oder 12 ist."""
-        from .ustva import SOURCE_EUER, SOURCE_OTHER_DATE, SOURCE_STANDALONE, build_ustva, is_chain_without_revenue, ustva_period
+        from .ustva import SOURCE_EUER, SOURCE_OTHER_DATE, SOURCE_STANDALONE, WAITING_NUMBERS, build_ustva, ustva_period
         date_from, date_to = ustva_period(year, month, kind)
         conn = self._get_connection()
         try:
             cursor = conn.cursor()
             scan = self._euer_entries(cursor, date_from, date_to)                                  # ohne Kontofilter, wie /euer
-            # ``_euer_totals`` rechnet nur mit Zahlen: Ein Satz, dessen Betrag, Steuerbetrag oder Satz Text ist (per SQL-Konsole schreibbar), brächte es zum
-            # Absturz, wie ``get_euer_data``. Er steht hier unter „Betrag nicht lesbar“ und fehlt nur in der Gegenrechnung mit der EÜR.
+            # ``_euer_totals`` rechnet nur mit Zahlen: Ein Satz, dessen Betrag, Steuerbetrag oder Steuersatz Text ist (per SQL-Konsole schreibbar), brächte es zum
+            # Absturz, wie ``get_euer_data``. Er fehlt nur in der Gegenrechnung mit der EÜR und steht in der Voranmeldung: bei Text als Betrag oder Steuerbetrag
+            # unter „Betrag nicht lesbar“, bei Text als Steuersatz wie ein Satz ohne Steuersatz (``tax_without_rate`` bzw. ``zero_rate``).
             summable = {booking_id: entry for booking_id, entry in scan.entries.items()
                         if all(isinstance(value, (int, float)) and math.isfinite(value) for value in (entry.amount, entry.tax_amount, entry.tax_rate))}
             euer = self._euer_totals(cursor, scan._replace(entries=summable))
@@ -1104,20 +1106,22 @@ class ReportingMixin:
                 if booking_id in scan.entries:
                     continue
                 entry = _ustva_entry(booking_id, EuerEntry(*values, 0), SOURCE_STANDALONE, scan, coa_numbers)
-                if not is_chain_without_revenue(entry):
+                if not datev_keys.is_receivable_row(entry.form, entry.coa_number, entry.counter_number, WAITING_NUMBERS):
                     entries.append(entry)
             # (c) Bankbewegungen ohne Satz, die kein Übertrag deckt
             scope = self._dashboard_scope(cursor, None)
             unbooked = self._liquidity_unbooked(cursor, date_from, date_to, scope[0]) if scope else (0, 0)
+            # (d) Bankbewegungen, deren Sätze nicht ihren Betrag ergeben: dieselbe Auswahl und Regel wie ``find_unbalanced_splits`` über den Zeitraum
+            unbalanced_count, unbalanced_amount = self._susa_unbalanced(cursor, date_to, _SUSA_MAX_MINOR, date_from)
         finally:
             conn.close()
-        return build_ustva(year, month, kind, entries, names, int(euer.vat_minor), int(euer.input_tax_minor), unbooked)
+        return build_ustva(year, month, kind, entries, names, euer.vat_minor, euer.input_tax_minor, unbooked, (unbalanced_amount, unbalanced_count))
 
-    def _susa_unbalanced(self, cursor, end: str, bound: int):
-        """Die Bankbewegungen bis ``end``, deren Buchungssätze nicht ihren Betrag ergeben – dieselbe Regel und dieselbe Auswahl wie
-        ``find_unbalanced_splits('0000-01-01', end)`` (Wirkung ``matching.bank_effect``), nur mit lesbaren Beträgen: ``find_unbalanced_splits`` bricht
-        mit einem Fehler ab, sobald ein Betrag unter einer Bankbewegung Text ist (per SQL-Konsole schreibbar); die Liste soll an so einem Bestand nicht
-        scheitern, der Betrag steht unter „nicht lesbar“. Returns ``(Zahl, Summe der Reste ohne Vorzeichen in Minor Units)``."""
+    def _susa_unbalanced(self, cursor, end: str, bound: int, start: str = '0000-01-01'):
+        """Die Bankbewegungen von ``start`` bis ``end`` (ohne ``start`` von Anfang an), deren Buchungssätze nicht ihren Betrag ergeben – dieselbe Regel und
+        dieselbe Auswahl wie ``find_unbalanced_splits(start, end)`` (Wirkung ``matching.bank_effect``), nur mit lesbaren Beträgen: ``find_unbalanced_splits``
+        bricht mit einem Fehler ab, sobald ein Betrag unter einer Bankbewegung Text ist (per SQL-Konsole schreibbar); die Liste und die Voranmeldung sollen an
+        so einem Bestand nicht scheitern, der Betrag steht unter „nicht lesbar“. Returns ``(Zahl, Summe der Reste ohne Vorzeichen in Minor Units)``."""
         bank_coa_ids = self._get_bank_coa_ids(cursor)
         account_coas = self._account_coa_sets(cursor)
         cursor.execute('''
@@ -1126,13 +1130,13 @@ class ReportingMixin:
             JOIN Bookings e ON e.ParentBooking_ID = p.ID
             WHERE p.BookingType = 'bank'
               AND p.ID IN (
-                  SELECT b.ID FROM Bookings b WHERE b.BookingType = 'bank' AND b.DateBooking BETWEEN '0000-01-01' AND ?
+                  SELECT b.ID FROM Bookings b WHERE b.BookingType = 'bank' AND b.DateBooking BETWEEN ? AND ?
                   UNION
-                  SELECT c.ParentBooking_ID FROM Bookings c WHERE c.ParentBooking_ID IS NOT NULL AND c.DateBooking BETWEEN '0000-01-01' AND ?
+                  SELECT c.ParentBooking_ID FROM Bookings c WHERE c.ParentBooking_ID IS NOT NULL AND c.DateBooking BETWEEN ? AND ?
               )
               AND typeof(p.Amount) = 'integer' AND p.Amount BETWEEN ? AND ?
               AND typeof(e.Amount) = 'integer' AND e.Amount BETWEEN ? AND ?
-        ''', [end, end, -bound, bound, -bound, bound])
+        ''', [start, end, start, end, -bound, bound, -bound, bound])
         amounts, sums = {}, {}
         for bank_id, amount, account_id, child_amount, coa, counter, form in cursor.fetchall():
             amounts[bank_id] = amount
