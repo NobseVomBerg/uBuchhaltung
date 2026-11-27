@@ -1,6 +1,8 @@
 # uBuchhaltung
 
 [![Tests](https://github.com/NobseVomBerg/uBuchhaltung/actions/workflows/tests.yml/badge.svg)](https://github.com/NobseVomBerg/uBuchhaltung/actions/workflows/tests.yml)
+![Unraid](https://img.shields.io/badge/unraid-%23F15A2C.svg?style=for-the-badge&logo=unraid&logoColor=white)
+![Docker](https://img.shields.io/badge/docker-%230db7ed.svg?style=for-the-badge&logo=docker&logoColor=white)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 
 **Selbst gehostete Buchhaltung für Selbstständige und kleine Unternehmen in
