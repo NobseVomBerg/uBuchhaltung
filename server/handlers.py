@@ -5373,6 +5373,26 @@ def handle_liquidity_pdf(db: Database, query, with_accounts: bool, today: dateti
         return None, None
 
 
+def handle_ustva_pdf(db: Database, query, today: datetime.date):
+    """PDF der Umsatzsteuer-Voranmeldung für den Download erzeugen. Returns (pdf_bytes, filename) oder (None, None).
+
+    ``query`` ist die geprüfte Abfrage (``pages_ustva.read_ustva_pdf_query``: ``year``, ``month``, ``kind``), ``today`` steht als „Erstellt am“ im Kopf. Die
+    Zahlen sind die der Seite (``Database.get_ustva``). Ob die Besteuerungsart Zahlen zulässt, prüft die Route vorher. Der Download ist ein GET: Er liest nur
+    und legt nichts auf der Platte ab. Der Firmenname im Kopf ist der des ersten eigenen Kontakts, sonst bleibt er weg. Ein Fehler steht nur im Server-Log."""
+    from db.ustva import ustva_filename
+    from export.pdf_ustva import generate_ustva_pdf
+    try:
+        report = db.get_ustva(query.year, query.month, query.kind)
+        own = list(db.fetch_contacts(contact_type='own'))
+        company = (own[0][3] if own else '') or ''
+        pdf_bytes = generate_ustva_pdf(report, company, today)
+        return pdf_bytes, ustva_filename(query.year, query.month, query.kind)
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        return None, None
+
+
 # ── Fahrten (Fahrtenbuch) ─────────────────────────────────────────────────────
 # Das Fahrtenbuch bleibt locker (einzelne Fahrten, ohne Tachostand, in beliebiger Reihenfolge nachgetragen): Beim
 # Speichern wird nie ein fehlender Anschluss an die Vorfahrt geprüft – abgelehnt wird nur, was unmöglich ist.

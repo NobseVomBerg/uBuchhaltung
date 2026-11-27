@@ -1374,7 +1374,7 @@ SAMPLE_VALUES = {
     "from": "2024-01-01", "to": "2024-12-31", "date_from": "2024-01-01", "date_to": "2024-12-31",
     "search": "R", "status": "paid", "type": "customer", "entity": "company",
     "error": "Fehlertext", "msg": "Hinweis", "info": "Hinweis", "err": "Fehler",
-    "variant": "vorjahr",
+    "variant": "vorjahr", "art": "quartal",
 }
 TOLERATED_SERVER_ERRORS = {"/invoice/reminders"}      # PageReminders scheitert mit den Seed-Daten in der App selbst
 NOT_ROUTED_WITH_QUERY = {"/"}                         # do_GET kennt das Dashboard unter "/" nur ohne Query (sonst /dashboard)

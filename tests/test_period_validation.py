@@ -582,8 +582,8 @@ def test_dashboard_keeps_valid_dates_in_their_old_form(tmp_db):
 
 
 # ── Über den echten Server ───────────────────────────────────────────────────
-# Seiten mit dem gemeinsamen Zeitraum – auch die vier Auswertungen (sie nehmen ihn seit 2.6.5 wie jede andere Seite)
-PAGES = ['/trips', '/worktime', '/dashboard', '/transactions', '/receipts', '/bwa', '/euer', '/susa', '/liquiditaet']
+# Seiten mit dem gemeinsamen Zeitraum – auch die fünf Auswertungen (sie nehmen ihn seit 2.6.5 wie jede andere Seite)
+PAGES = ['/trips', '/worktime', '/dashboard', '/transactions', '/receipts', '/bwa', '/euer', '/susa', '/liquiditaet', '/ustva']
 
 
 @pytest.fixture

@@ -70,3 +70,17 @@ Kanzlei ihn so annimmt, ist nicht bestätigt.
 17. **Degressive AfA und geringwertige Wirtschaftsgüter:** Die App rechnet fest mit 25 % bzw. einer
     Grenze von 800 €. Beide Werte hängen vom Anschaffungsjahr ab – welche Tabelle der Jahre wäre zu
     hinterlegen?
+
+## Umsatzsteuer-Voranmeldung
+
+18. **Rundung der Bemessungsgrundlage:** Die Seite zeigt die Bemessungsgrundlage in vollen Euro und lässt
+    die Cent weg (zur Null hin, auch bei negativen Beträgen). Ist das die richtige Richtung – und rechnet
+    das Formular die Steuer selbst aus den vollen Euro? Die App zeigt die Steuer wie gebucht, auf den Cent.
+19. **Vorsteuer über den Jahreswechsel:** Die App zählt die Vorsteuer mit dem Datum der Zahlung, nicht mit
+    dem der Rechnung. Wie ist eine Rechnung vom Dezember zu behandeln, die im Januar bezahlt wird – und
+    umgekehrt?
+20. **Kennzahl für Skonti ohne Steuer, steuerfreie Umsätze und 0 % mit Steuerausweis:** Zu welcher
+    Kennzahl gehören 4730, 4110 und Erlöse zu 0 % auf 4185? Die App ordnet sie keiner Kennzahl zu und
+    nennt sie unter „Nicht zugeordnet“.
+21. **Monatspflicht für Neugründer nach 2026:** Müssen Neugründer in den ersten Jahren wieder monatlich
+    anmelden? Die App lässt Monat oder Quartal frei wählen und prüft nichts.

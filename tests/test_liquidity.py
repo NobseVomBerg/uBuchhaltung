@@ -1444,7 +1444,7 @@ def test_the_page_names_no_brand(demo_db):
 def test_the_page_shows_the_submenu_of_the_reports_with_the_liquidity_active(tmp_db):
     page = PageLiquidity(tmp_db, BwaQuery(2026, 3, 'jahr'))
     assert ("<div class='header2'><a href=\"/bwa\">BWA</a> | <a href=\"/euer\">EÜR</a> | <a href=\"/susa\">Summen- und Saldenliste</a> | "
-            "<span id=\"ActivePage\">Liquidität</span></div>") in page
+            "<span id=\"ActivePage\">Liquidität</span> | <a href=\"/ustva\">USt-Voranmeldung</a></div>") in page
     assert reports_submenu('liquiditaet') in page and '<span id="ActivePage">Auswertungen</span>' in Header1('bwa')
     assert page.index('Auswertungen</span>') < page.index('<span id="ActivePage">Liquidität</span>') < page.index("<div class='header3'>")
     assert '<a href="/bwa">Auswertungen</a>' not in page

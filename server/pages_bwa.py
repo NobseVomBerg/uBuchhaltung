@@ -16,9 +16,9 @@ und leitet ihren Monat daraus ab (``period.period_month``); ihre Menüzeile ist 
 (``parse_year``, ``parse_month``, ``parse_variant``, ``read_pdf_query``): ein Schlüssel, der mehrfach vorkommt, ist ungültig.
 
 Das Untermenü der Auswertungen (``REPORT_PAGES``, ``reports_submenu``) steht hier und gilt für jede Seite darunter (BWA, EÜR, Summen- und
-Saldenliste, Liquidität): Sie rufen alle ``Header1('bwa')`` auf, damit der Menüpunkt „Auswertungen“ markiert bleibt. Hier stehen auch die
-Bausteine der drei Monatsauswertungen (``report_period``, ``reports_period_row``, ``variant_form``); die Seite der Liquiditätsrechnung
-(``pages_liquidity``) und die Summen- und Saldenliste (``pages_susa``) nutzen sie ebenso.
+Saldenliste, Liquidität, Umsatzsteuer-Voranmeldung): Sie rufen alle ``Header1('bwa')`` auf, damit der Menüpunkt „Auswertungen“ markiert bleibt. Hier stehen auch die
+Bausteine der Monatsauswertungen (``report_period``, ``reports_period_row``, ``variant_form``); die Seite der Liquiditätsrechnung
+(``pages_liquidity``) und die Summen- und Saldenliste (``pages_susa``) nutzen sie ebenso, die Voranmeldung (``pages_ustva``) die Lesehilfen und das Untermenü.
 """
 import calendar
 import html as _html
@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from db import Database
 from db.bwa import (DEFAULT_VARIANT, HINT_TEXT, OUTSIDE_HEADING, PERCENT_TEXT, SIGN_TEXT, TITLE, UNASSIGNED_TEXT, VARIANT_LABELS,
                     VARIANTS, BwaLine, BwaReport, block_headers, cells, column_labels, month_label, visible, visible_accounts)
+from db.ustva import USTVA_MENU_LABEL
 from .pages import Footer, Header1, Header2, Header3, script_json
 from .period import MONTHS_ALWAYS, period_filter_widget
 
@@ -38,7 +39,7 @@ BWA_CSV_FAILED_TEXT = 'Die Auswertung ließ sich nicht als CSV erstellen.'
 
 # Die Seiten unter „Auswertungen“ (Schlüssel, Adresse, Bezeichnung im Untermenü); jede ruft Header1('bwa') auf, damit der Menüpunkt markiert bleibt
 REPORT_PAGES = (('bwa', '/bwa', 'BWA'), ('euer', '/euer', 'EÜR'), ('susa', '/susa', 'Summen- und Saldenliste'),
-                ('liquiditaet', '/liquiditaet', 'Liquidität'))
+                ('liquiditaet', '/liquiditaet', 'Liquidität'), ('ustva', '/ustva', USTVA_MENU_LABEL))
 
 
 @dataclass(frozen=True)

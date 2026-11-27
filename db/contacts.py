@@ -12,7 +12,8 @@ from .core import DeleteRefused, reference_texts
 
 #: Besteuerungsart der Umsatzsteuer (``Contacts.VatMethod``, seit 2.4.0): Ist-Versteuerung (vereinnahmte Entgelte – die
 #: Umsatzsteuer entsteht mit der Zahlung) oder Soll-Versteuerung (vereinbarte Entgelte – sie entsteht mit der Leistung).
-#: Die Angabe wird nur gespeichert und angezeigt; keine Buchung, Auswertung und kein Export liest sie.
+#: Die Angabe wird gespeichert und angezeigt; keine Buchung liest sie. Die Seite Umsatzsteuer-Voranmeldung zeigt Zahlen nur bei Ist-Versteuerung, der DATEV-Export nennt bei
+#: Soll-Versteuerung einen Hinweis.
 VAT_METHODS = ('ist', 'soll')
 VAT_METHOD_LABELS = {'ist': 'Ist-Versteuerung (vereinnahmte Entgelte)',
                      'soll': 'Soll-Versteuerung (vereinbarte Entgelte)'}
@@ -132,7 +133,7 @@ class ContactsMixin:
     def get_vat_method(self):
         """Besteuerungsart der eigenen Firma (oder Person): ``'ist'``, ``'soll'`` oder ``None`` (nicht festgelegt). Gibt es
         mehrere eigene Kontakte, gilt der erste (nach ID) mit einem gültigen Wert; ein per SQL-Konsole gesetzter anderer
-        Wert gilt als nicht festgelegt. Rein lesend – keine Buchung, Auswertung und kein Export rechnet damit."""
+        Wert gilt als nicht festgelegt. Rein lesend – keine Buchung rechnet damit; die Seite Umsatzsteuer-Voranmeldung zeigt Zahlen nur bei ``'ist'``, der DATEV-Export nennt bei ``'soll'`` einen Hinweis."""
         conn = self._get_connection()
         try:
             rows = conn.execute("SELECT VatMethod FROM Contacts WHERE ContactType = 'own' ORDER BY ID").fetchall()

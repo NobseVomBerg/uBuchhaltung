@@ -126,7 +126,7 @@ Anmeldung). Vorher eine Datensicherung anlegen – Ablauf und Rückweg unter
 | **Buchen** | Bankbewegungen und Buchungssätze, Split-Buchungen, Kontierungs-Vorschlag aus der Historie, Belege verknüpfen. Zu einem Zahlungseingang schlägt die App die passende offene Rechnung vor – zugeordnet wird erst auf Klick |
 | **Belege** | Dateien hochladen, ansehen und mit Buchungen verknüpfen. E-Rechnungen (XRechnung, ZUGFeRD) werden strukturiert gelesen, PDFs mit Textebene über feste Regeln; dazu Vorschläge für die passende Bankbewegung – verknüpft wird erst auf Klick – und eine aus der Lesung vorbefüllte Zeile im Buchungssatz-Editor – gespeichert erst mit der Maske. Keine Texterkennung für Scans und Fotos; gelesene Werte sind zu prüfen |
 | **Kontenrahmen** | SKR04 vorbelegt, eigene Konten (auch weiterer Rahmen wie SKR03) anlegbar, DATEV-Steuerschlüssel |
-| **Auswertung** | Dashboard mit Monatsverlauf, Einnahmen-Überschuss-Rechnung (EÜR), betriebswirtschaftliche Auswertung, Summen- und Saldenliste und Liquiditätsrechnung – als Seite und PDF, die BWA und die Summen- und Saldenliste auch als CSV |
+| **Auswertung** | Dashboard mit Monatsverlauf, Einnahmen-Überschuss-Rechnung (EÜR), betriebswirtschaftliche Auswertung, Summen- und Saldenliste, Liquiditätsrechnung und Umsatzsteuer-Voranmeldung (Ist-Versteuerung, Zahlen zum Übertragen) – als Seite und PDF, die BWA und die Summen- und Saldenliste auch als CSV |
 | **Rechnungen & Angebote** | PDF als hybride E-Rechnung (ZUGFeRD/Factur-X, EN 16931) und XRechnung, Steuersatz je Position, E-Mail-Versand, Nummernkreise, Stornorechnung, offene Posten, Mahnwesen, Kleinunternehmerregelung |
 | **Anlagen** | Anlagenverzeichnis mit AfA (linear, degressiv, GWG) |
 | **Import & Export** | Kontoauszüge als CAMT.053 (XML oder ZIP, jede Bank), PDF (DKB, Volksbank Rottweil) oder CSV (Umsatzliste der DKB), [Datenübernahme aus WISO Mein Büro](#datenübernahme-aus-wiso-mein-büro), DATEV-Buchungsstapel |
@@ -140,7 +140,7 @@ Alle Funktionen ausführlich: [Funktionen im Detail](#funktionen-im-detail).
   Verantwortung für eine ordnungsgemäße Buchführung und für Steuererklärungen
   bleibt beim Anwender. Eine Prüfung oder Zusicherung der GoBD-Konformität gibt
   es nicht.
-- **Noch nicht enthalten:** Umsatzsteuer-Voranmeldung bzw. ELSTER-Übermittlung,
+- **Noch nicht enthalten:** Übermittlung der Umsatzsteuer-Voranmeldung,
   Soll-Versteuerung (die App führt Erlös und Umsatzsteuer nach dem Zahlungseingang; die
   Besteuerungsart lässt sich an der eigenen Firma festhalten, ändert aber keine Buchung),
   Bankanbindung per FinTS/PSD2 und Kontoauszüge im MT940-Format.
@@ -262,15 +262,16 @@ Jede Funktion mit ihrer Seite im Browser. Die Regeln hinter den Funktionen stehe
 - **Angebote** (`/quote`): gleiche Positionen und PDF-Logik, eigener Nummernkreis, Gültigkeitsdatum, Umwandlung in eine Rechnung.
 - Regeln: [`docs/regeln/rechnungen.md`](docs/regeln/rechnungen.md), [`docs/regeln/zahlungen.md`](docs/regeln/zahlungen.md); Datenmodell: [DB_MODEL.md](DB_MODEL.md)
 
-### Dashboard und Auswertungen (`/`, `/bwa`, `/euer`, `/susa`, `/liquiditaet`)
+### Dashboard und Auswertungen (`/`, `/bwa`, `/euer`, `/susa`, `/liquiditaet`, `/ustva`)
 - **Dashboard** (`/`): Monatsverlauf für Einnahmen, Betriebsausgaben und Privatentnahmen, Jahresübersicht mit Saldo (nach Konto filterbar) und
   EÜR-Kasten (Betriebseinnahmen, Betriebsausgaben, „Sonstige Ausgaben“ separat). Überträge zwischen eigenen Konten zählen weder als Einnahme noch als Ausgabe.
-- Unter *Auswertungen* vier Seiten, jede auch als PDF; der Zeitraum kommt aus der Zeitraum-Menüzeile:
+- Unter *Auswertungen* fünf Seiten, jede auch als PDF; der Zeitraum kommt aus der Zeitraum-Menüzeile:
   - **Betriebswirtschaftliche Auswertung** (`/bwa`): Monat und aufgelaufenes Jahr, im Vergleich mit dem Vorjahr oder mit Anteilen; Konten aufklappbar; auch als CSV.
   - **Einnahmenüberschussrechnung** (`/euer`): frei gewählter Zeitraum, dieselben Zahlen wie das Dashboard ohne Kontofilter. Kein amtliches Formular.
   - **Summen- und Saldenliste** (`/susa`): je Konto Anfangssaldo, Soll, Haben und Endsaldo, nach Kontenklassen; auch als CSV. Eine Eröffnungsbilanz
     und einen Jahresabschluss gibt es nicht. Kein amtliches Formular.
   - **Liquiditätsrechnung** (`/liquiditaet`): vom Ergebnis der BWA zur Veränderung der flüssigen Mittel, daneben die Bewegungen von Bank und Kasse.
+  - **Umsatzsteuer-Voranmeldung** (`/ustva`): Kennzahlen 81, 86, 66 und 83 für Monat oder Quartal, nur bei Ist-Versteuerung; was die Seite nicht sicher zuordnet, steht unter „Nicht zugeordnet“. Die App übermittelt nichts. Kein amtliches Formular.
 - Abschreibungen erscheinen in der EÜR, nicht in den Zahlungskarten des Dashboards. Keine Steuerberatung, kein Ersatz für die Auswertung eines Steuerbüros.
 - Regeln: [`docs/regeln/auswertungen.md`](docs/regeln/auswertungen.md)
 

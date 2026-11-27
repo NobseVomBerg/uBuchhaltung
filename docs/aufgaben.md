@@ -30,7 +30,7 @@ Fragen zu Steuern, Kontierung und DATEV, die ein Steuerbüro beantworten kann, s
 - Belegerkennung: Vorschläge auch in der Gegenrichtung – an einer Buchung die passenden gelesenen Belege nennen
 - Belegerkennung, Vorschläge und Buchungsvorschlag: die Abweichung zwischen Zahlbetrag und Brutto berücksichtigen (Skonto, Teilzahlung, Valuta) und eine Sammelüberweisung mehrerer Belege – heute zählt nur der gleiche Betrag auf den Cent
 - Belegerkennung, Buchungsvorschlag: Belege mit mehreren Steuersätzen (je Satz eine Zeile – braucht die Basis je Satz), auch für eigenständige Sätze und neue Buchungen, Konto über den exakten Absendernamen
-- Umsatzsteuer-Voranmeldung (ELSTER)
+- Umsatzsteuer-Voranmeldung, Stufe 2: Kz 39 als Eingabe; Zuordnung steuerfreier Erlöse über die Kontonummer (43/48/87/41); Steuerdatum der Vorsteuer (Belegdatum statt Zahlung); CSV; Soll-Versteuerung; Übermittlung offen
 - Liquiditätsrechnung: einen unstimmigen Split neben einem Übertrag kenntlich machen – sein Rest steht nur nachrichtlich unter den Überträgen
 - BWA: vom Nutzer pflegbare Gruppen (braucht Schemaänderung)
 - Summen- und Saldenliste: Saldenvorträge bzw. Eröffnungsbilanz (ein Konto ohne Buchungen vor dem ersten Kontoauszug beginnt bei null; braucht Schemaänderung)
@@ -59,7 +59,7 @@ Heute ist nur SKR04 ausgebaut, und auch dort nur eine Grundauswahl; die Auswahl 
 - Prüfliste für Spiegel und Umbuchungen des Bestands (Seite *Daten*, nur lesend, mit Probelauf): Spiegel mit unbekannter Lesart (`mirror_legacy`) und Sätze ohne Geldseite auf einem inzwischen liquiden Konto, mit Vorschlag und Wirkung; Übernehmen nur nach Bestätigung und Sicherung, „unklar“ wird nie geändert
 - Ein Importsatz ohne liquide Seite und mit leerem oder unbekanntem Gegenkonto (Form `transfer`, z. B. „6815 an –“) steht unter einer Bankbewegung in der EÜR ohne Vorsteuer: Die EÜR liest ihn als Umbuchung, ein Zweckkonto für die Vorsteuer 1406 gibt es nicht
 - Die Übernahme CSV → Datenbank erkennt eine Zeile auf Konten 1000–1099 aus 2.0.x nur, wenn ihr Konto im Kontenrahmen stand (`COA_ID` gesetzt); sonst entsteht eine zweite Buchung. Der Re-Import des Textexports erkennt sie
-- Umbuchungen Privat ↔ Erfolgskonto ohne Bankbezug (z. B. Kfz-Privatnutzung „2100 an 4645“, „6815 an 2180“) fehlen in der EÜR – Fachfrage in `docs/fachfragen.md`
+- Umbuchungen Privat ↔ Erfolgskonto ohne Bankbezug (z. B. Kfz-Privatnutzung „2100 an 4645“, „6815 an 2180“) fehlen in der EÜR – Fachfrage in `docs/fachfragen.md`; die Voranmeldung nennt sie unter „Nicht zugeordnet“
 - Alte AfA-Sätze (vor 2.0.5: Aufwandskonto auf einem Bank-/Kassenkonto, kein Gegenkonto) stehen im DATEV-Export ohne Gegenkonto; keine automatische Reparatur – Buchung löschen und neu buchen
 - Anlage wieder auf „aktiv“ setzen leert das Abgangsdatum nicht (AfA der Folgejahre bleibt gesperrt); Status „verschrottet“ ohne Datum sperrt nicht
 - WISO-Textimport nach einer in der App gebuchten AfA desselben Jahres zählt das Jahr doppelt (nur bei paralleler Nutzung beider Programme); der Datenbank-Import lässt den Satz aus (`depreciation_conflicts`)
