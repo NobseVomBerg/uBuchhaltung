@@ -84,3 +84,9 @@ Kanzlei ihn so annimmt, ist nicht bestätigt.
     nennt sie unter „Nicht zugeordnet“.
 21. **Monatspflicht für Neugründer nach 2026:** Müssen Neugründer in den ersten Jahren wieder monatlich
     anmelden? Die App lässt Monat oder Quartal frei wählen und prüft nichts.
+22. **Steuersatz und Steuerbetrag:** Die Seite zählt einen Satz nur dann in einer Kennzahl, wenn die
+    gebuchte Steuer höchstens zwei Cent von Netto × Satz abweicht. Bei sehr vielen Teilzahlungen einer
+    Rechnung sammelt sich der Rundungsrest im letzten Teil und kann darüber liegen. Welche Abweichung
+    ist in der Praxis üblich – wären fünf Cent die bessere Grenze?
+23. **Vorsteuer zu 16 % und 5 % (zweites Halbjahr 2020):** Die Seite zählt nur Vorsteuer zu 19 % und 7 %
+    in Kennzahl 66; andere Sätze nennt sie unter „Nicht zugeordnet“. Betrifft nur importierte Altbestände.
