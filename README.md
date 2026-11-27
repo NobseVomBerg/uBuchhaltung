@@ -2,6 +2,8 @@
 
 [![Tests](https://github.com/NobseVomBerg/uBuchhaltung/actions/workflows/tests.yml/badge.svg)](https://github.com/NobseVomBerg/uBuchhaltung/actions/workflows/tests.yml)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
+[![Docker Ready](https://img.shields.io/badge/Docker-Container-2496ed)](https://github.com/NobseVomBerg/uBuchhaltung/pkgs/container/ubuchhaltung)
+[![Unraid Community Apps](https://img.shields.io/badge/Unraid-Community%20Apps-f15a2c)](https://ca.unraid.net/apps/ubuchhaltung-1qctvlt0v4igqt)
 
 **Selbst gehostete Buchhaltung für Selbstständige und kleine Unternehmen in
 Deutschland** – Belege, Bankbuchungen, Einnahmen-Überschuss-Rechnung,
@@ -113,11 +115,6 @@ Ohne Docker: `pip install -r requirements.txt` und `python main.py`
 (Python 3.13 oder neuer, dann unter `http://localhost:8080`). Mehr dazu unter
 [Installation und Start](#installation-und-start) und in
 [DEPLOYMENT.md](DEPLOYMENT.md).
-
-Kommst du von Version 1.x? Der erste Start von Version 2 zieht eine bestehende
-Einzelbenutzer-Installation in die neue Ablage `data/users/admin/` um (weiterhin ohne
-Anmeldung). Vorher eine Datensicherung anlegen – Ablauf und Rückweg unter
-[Umzug auf Version 2](DEPLOYMENT.md#umzug-auf-version-2).
 
 ## Funktionen im Überblick
 
