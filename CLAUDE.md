@@ -19,7 +19,7 @@ stehen in `docs/regeln/` – vor einer Änderung dort die passende Datei lesen u
 | `buchungen.md` | Form eines Satzes (`EntryForm`), Vorzeichen, Zahlungskonten, Masken, Bank-Editor, Abgleich, Kasse, AfA, Stammdaten löschen, Standardkonten |
 | `zahlungen.md` | Rechnungszahlung, Forderung, Erstattung, Skonto, Kleinunternehmer-Erlöse, Zahlungsvorschläge, „Zuordnung neu aufbauen“ |
 | `rechnungen.md` | Rechnungen und Angebote: Dokumente, E-Rechnung, Steuersätze je Position und aus den Stammdaten, Sperre, Berichtigen, Status, Storno, Nummern |
-| `auswertungen.md` | DATEV-Export, Dashboard, BWA, EÜR, Summen- und Saldenliste, Liquidität |
+| `auswertungen.md` | DATEV-Export, Dashboard, BWA, EÜR, Summen- und Saldenliste, Liquidität, Umsatzsteuer-Voranmeldung |
 | `import.md` | Kontoauszug-Import (CAMT, PDF, CSV), WISO-Textexport und WISO-Datenbank |
 | `belege.md` | Belegdateien, Belege verknüpfen, Belegerkennung und Vorschläge |
 | `zeiten-fahrten.md` | Arbeitszeiten, Fahrtenbuch, Stundenzettel |
