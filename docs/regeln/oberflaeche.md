@@ -2,6 +2,7 @@
 
 ## Styling
 
+- **Für den PC-Bildschirm:** uBuchhaltung ist eine Webanwendung für den Schreibtisch – kompakte Dichte, keine Handy- oder Touch-Optik (große Knöpfe, hohe Zeilen). Eine Handy-App wäre ein eigenes Vorhaben.
 - **Rechnungen und Angebote:** Das Belegformular rechts ist fest 820px breit (bildet das Blatt nach); das Raster trägt die Breite (`.gridDocForm` neben `.grid2Cols`: `minmax(0, 1fr) 820px`), **nie ein Inline-`min-width`**.
   Liste links (`.docList`): jede Spalte so schmal wie der Inhalt, Kunde bekommt den Rest (gekürzt, ganzer Name im Tooltip); 1441–1700px: Netto und „gültig bis“ entfallen (`.docWide`); bis 1440px steht das Formular unter der niedrigen Liste.
   Gerechnet wird in CSS-Pixeln – die Seite nie selbst gegen die Skalierung verkleinern (`zoom`, `devicePixelRatio`). `tests/test_document_page_layout.py`
