@@ -243,12 +243,27 @@ def receipt_date(name, content):
 
 # ── Gespeicherter Pfad ───────────────────────────────────────────────────────
 def _candidate(path):
-    """Der absolute Pfad zu einem gespeicherten Wert (ein relativer hängt am Datenordner des Benutzers), Links nicht aufgelöst –
-    oder ``None``, wenn der Wert kein brauchbarer Pfad ist (kein Text, leer, NUL, über ``STORED_PATH_LIMIT`` Zeichen: ein sehr
-    langer, tief verschachtelter Wert bremste sonst jede Liste, die ihn auflöst)."""
+    """Der Pfad zu einem gespeicherten Wert, Links nicht aufgelöst – oder ``None``, wenn der Wert kein brauchbarer Pfad ist (kein
+    Text, leer, NUL, über ``STORED_PATH_LIMIT`` Zeichen: ein sehr langer, tief verschachtelter Wert bremste sonst jede Liste, die ihn
+    auflöst).
+
+    Ein relativer Wert hängt am Datenordner des Benutzers – außer er liegt schon vom Arbeitsverzeichnis aus darin (und das
+    Arbeitsverzeichnis selbst nicht): So schreibt der Umzug von 1.x (``layout.py``) die Pfade alter Belege um
+    (``./data/users/<Name>/Documents/…``, wie die Pfade der Rechnungen). Die Prüfung auf ``Belege/`` und ``Documents/`` des Benutzers
+    bleibt in beiden Fällen dieselbe (``stored_receipt_path``)."""
     if not isinstance(path, str) or not path.strip() or '\0' in path or len(path) > STORED_PATH_LIMIT:
         return None
-    return path if os.path.isabs(path) else os.path.join(userctx.user_data_dir(), path)
+    if os.path.isabs(path):
+        return path
+    base = userctx.user_data_dir()
+    try:
+        base_abs = os.path.abspath(base)
+        from_cwd = os.path.abspath(path)
+        if _inside(from_cwd, base_abs) and not _inside(os.getcwd(), base_abs):
+            return from_cwd
+    except OSError:                    # Arbeitsverzeichnis nicht mehr da: wie jeder andere relative Wert
+        pass
+    return os.path.join(base, path)
 
 
 def _resolve(path):
@@ -293,7 +308,7 @@ def _uploaded_shape(path):
 
 def stored_receipt_path(path, log=True):
     """Der aufgelöste Pfad (Links und ``..`` aufgelöst) zu dem Wert, der in ``Documents.Path`` steht – nur, wenn er in ``Belege/``
-    oder ``Documents/`` des angemeldeten Benutzers liegt; sonst ``None``. Ein relativer Wert hängt am Datenordner des Benutzers.
+    oder ``Documents/`` des angemeldeten Benutzers liegt; sonst ``None``. Wovon aus ein relativer Wert gilt, sagt ``_candidate``.
     Ein Wert, der keine Datei nennt (``None``, leer oder nur Leerraum), ergibt ``None`` ohne Meldung; jeder andere abgelehnte
     Wert steht mit einer Zeile im Server-Log (``log=False`` für Listen: eine Zeile je Beleg füllte das Log)."""
     real = _resolve(path)
