@@ -29,7 +29,8 @@ import userctx
 from db import Database
 from server import app as server_app
 from tests import installation
-from tests.http_client import get
+from tests.http_client import get, own_origin, post
+from tests.test_backup_download import make_symlink
 from tests.installation import PASSWORD, forget_config_cache, read_config, tree, write_config
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -832,3 +833,77 @@ def test_after_the_migration_the_stored_invoice_documents_are_found(style, serve
     xml = get(server_port, f"/invoice/xml_download?id={invoice_id}")
     assert xml.status == 200
     assert xml.body == LEGACY_FILES["invoices/2026/R26001 Probekunde.xml"]
+
+
+def _receipt_id(number):
+    with contextlib.closing(sqlite3.connect(_new("buch.db"))) as con:
+        return con.execute("SELECT ID FROM Documents WHERE Number = ?", (number,)).fetchone()[0]
+
+
+def _set_receipt_path(number, value):
+    with contextlib.closing(sqlite3.connect(_new("buch.db"))) as con:
+        con.execute("UPDATE Documents SET Path = ? WHERE Number = ?", (value, number))
+        con.commit()
+
+
+def test_after_the_migration_the_stored_receipt_files_are_found(style, server_port, logs):
+    # 1.x legte hochgeladene Dateien unter Documents/ ab. Der Umzug schreibt die Pfade wie die der Rechnungen um – bei relativem
+    # DATA_ROOT vom Arbeitsverzeichnis aus (./data/users/admin/…); die Datei muss sich danach öffnen lassen.
+    make_legacy()
+    _put(userctx.DATA_ROOT, "Documents/scan-4.pdf", b"%PDF-1.7 Beleg 4")
+    with contextlib.closing(sqlite3.connect(_stored("buch.db"))) as con:
+        _insert_document(con, "B4", _stored("Documents", "scan-4.pdf"))
+        con.commit()
+    _migrate(logs)
+    _, documents = paths_in(_new("buch.db"))
+    assert documents["B1"] == _new("Belege", "beleg-1.pdf")
+    assert documents["B4"] == _new("Documents", "scan-4.pdf")
+    for number, content in (("B1", LEGACY_FILES["Belege/beleg-1.pdf"]), ("B4", b"%PDF-1.7 Beleg 4")):
+        resp = get(server_port, f"/receipts/file?id={_receipt_id(number)}")
+        assert resp.status == 200 and resp.body == content
+
+
+def test_a_migrated_receipt_path_reaches_only_the_own_receipt_folders(style, server_port, logs):
+    # Die Form des Umzugs gilt nur im eigenen Benutzerordner und dort nur für Belege/ und Documents/ – nie für den Ordner
+    # eines anderen Benutzers, die Datenbank oder einen Weg mit ``..`` hinaus.
+    make_legacy()
+    _migrate(logs)
+    _put(_new(user="bob"), "Documents/fremd.pdf", b"%PDF-1.7 fremd")
+    os.makedirs(_new("Documents"), exist_ok=True)
+    make_symlink(os.path.abspath(_new("Documents", user="bob")), _new("Documents", "zu-bob"))   # ein Link im eigenen Ordner
+    receipt = _receipt_id("B1")
+    for value in (_new("Documents", "fremd.pdf", user="bob"),
+                  _new("buch.db"),
+                  _new("Documents", "..", "..", "bob", "Documents", "fremd.pdf"),
+                  _new("Documents", "zu-bob", "fremd.pdf")):
+        _set_receipt_path("B1", value)
+        resp = get(server_port, f"/receipts/file?id={receipt}")
+        assert resp.status == 404 and b"fremd" not in resp.body and b"SQLite" not in resp.body
+
+
+def _delete_receipt(port, receipt_id):
+    resp = post(port, f"/receipts/delete?id={receipt_id}", headers={"Origin": own_origin(port)},
+                csrf=auth.csrf_for(f"auto-login:{installation.ADMIN}"))
+    assert resp.status == 303 and resp.headers["Location"] == "/receipts"
+
+
+def test_deleting_a_migrated_receipt_never_removes_its_file(style, server_port, logs):
+    # Nur eine Datei, die der Upload selbst abgelegt hat (Wert ``Belege/<JJJJ>/<Name>``), geht beim Löschen mit. Ein umgezogener
+    # Pfad hat nie diese Form – und zeigt er auf dieselbe Datei wie ein Upload, bleibt sie auch beim Löschen des Uploads liegen.
+    make_legacy()
+    _put(userctx.DATA_ROOT, "Documents/scan-4.pdf", b"%PDF-1.7 Beleg 4")
+    with contextlib.closing(sqlite3.connect(_stored("buch.db"))) as con:
+        _insert_document(con, "B4", _stored("Documents", "scan-4.pdf"))
+        con.commit()
+    _migrate(logs)
+    upload = _put(_new(), "Belege/2026/26B001_x.pdf", b"%PDF-1.7 Upload")
+    with contextlib.closing(sqlite3.connect(_new("buch.db"))) as con:
+        _insert_document(con, "26B001", "Belege/2026/26B001_x.pdf")                     # Form des Uploads
+        _insert_document(con, "B5", _new("Belege", "2026", "26B001_x.pdf"))              # Form des Umzugs, dieselbe Datei
+        con.commit()
+    _delete_receipt(server_port, _receipt_id("B4"))
+    assert os.path.exists(_new("Documents", "scan-4.pdf"))
+    _delete_receipt(server_port, _receipt_id("26B001"))
+    assert os.path.exists(upload)                                                   # B5 zeigt noch darauf
+    _delete_receipt(server_port, _receipt_id("B5"))
+    assert os.path.exists(upload)                                                   # B5 hat nicht die Form des Uploads

@@ -4,9 +4,6 @@ Kurzliste, öffentlich. Erledigtes wird gelöscht, nicht abgehakt – die Histor
 steht in `git log`. Eine Zeile je Punkt; Details gehören in Commit, Issue oder `docs/regeln/`.
 Fragen zu Steuern, Kontierung und DATEV, die ein Steuerbüro beantworten kann, stehen in `docs/fachfragen.md`.
 
-## Repo & Veröffentlichung
-- Docker-Demo (`-e UBUCHHALTUNG_DEMO=1`) einmal im echten Container prüfen, ebenso den Umzug einer 1.x-Installation
-
 ## Funktionen
 - Sammelimport: Exportdateien und Kontoauszüge als Sammlung hineingeben, ohne auf Importreihenfolgen zu achten – Spalten frei gewählter Exporte erkennen und in einer Vorschau zuordnen, ein gemeinsamer Abgleich mit sichtbaren Zweifelsfällen; braucht Schemaänderung und vorher einen Entwurf. Tabellenansichten kommen als XLS (BIFF8): eigener Leser oder neue Abhängigkeit
 - Kontoauszüge im MT940-Format (heute gelesen: CAMT.053, PDF von DKB und Volksbank Rottweil, CSV der DKB)
