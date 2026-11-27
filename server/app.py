@@ -16,6 +16,7 @@ import ssl
 import sys
 import unicodedata
 from db import Database, DeleteRefused, MigrationBackupError, SchemaTooNewError
+from db.ustva import KIND_QUARTER, USTVA_PDF_NOT_IST_TEXT, quarter_end_month
 from export.pdf_core import LOGO_CONTENT_TYPES, logo_extension
 import os
 import auth
@@ -52,6 +53,7 @@ from .pages_bwa import BWA_CSV_FAILED_TEXT, PDF_FAILED_TEXT, BwaQuery, PageBwa, 
 from .pages_euer import EUER_PDF_FAILED_TEXT, EuerQuery, PageEuer, read_euer_pdf_query
 from .pages_susa import SUSA_CSV_FAILED_TEXT, SUSA_PDF_FAILED_TEXT, PageSusa, SusaQuery, read_susa_pdf_query
 from .pages_liquidity import LIQUIDITY_PDF_FAILED_TEXT, PageLiquidity
+from .pages_ustva import USTVA_PDF_FAILED_TEXT, PageUstva, UstvaQuery, read_kind, read_ustva_pdf_query
 from .pages_receipts import PageReceipts, PageReceiptEdit
 from .pages_setup import PageSetup, PageSetupStart
 from .pages_invoice import PageInvoice
@@ -1546,6 +1548,31 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                     pdf_bytes, filename = handlers.handle_liquidity_pdf(db, query, with_accounts, datetime.date.today())
                     if pdf_bytes is None:
                         self.respond(500, LIQUIDITY_PDF_FAILED_TEXT, content_type="text/plain; charset=utf-8")
+                    else:
+                        self._send_document(pdf_bytes, filename, None, 'application/pdf', 'attachment')
+            elif route == "/ustva":
+                # Umsatzsteuer-Voranmeldung: wie die Liquiditätsrechnung – gemeinsamer Zeitraum samt Cookie, der Monat folgt daraus (bei einem Quartal
+                # das Quartal dieses Monats), nur der Anmeldezeitraum kommt aus der Adresse; schreibt nichts in den Bestand
+                qs = self._query()
+                today = datetime.date.today()
+                date_from, date_to, set_cookie = resolve_period(qs, self.headers.get('Cookie'))
+                kind = read_kind(qs, date_from, date_to)
+                year, month = period_month(date_from, date_to, today)
+                if kind == KIND_QUARTER:
+                    month = quarter_end_month(month)
+                hdrs = {"Set-Cookie": period_cookie_header(date_from, date_to)} if set_cookie else None
+                self.respond(200, PageUstva(db, UstvaQuery(year, month, kind), date_from, date_to, today), headers=hdrs)
+            elif route == "/ustva/pdf":
+                # dieselbe Adresse wie die Seite, aber streng gelesen; nur bei Ist-Versteuerung; liest nur, nichts landet auf der Platte, kein Cookie
+                query, error = read_ustva_pdf_query(self._query())
+                if error:
+                    self.respond(400, error, content_type="text/plain; charset=utf-8")
+                elif db.get_vat_method() != 'ist':
+                    self.respond(400, USTVA_PDF_NOT_IST_TEXT, content_type="text/plain; charset=utf-8")
+                else:
+                    pdf_bytes, filename = handlers.handle_ustva_pdf(db, query, datetime.date.today())
+                    if pdf_bytes is None:
+                        self.respond(500, USTVA_PDF_FAILED_TEXT, content_type="text/plain; charset=utf-8")
                     else:
                         self._send_document(pdf_bytes, filename, None, 'application/pdf', 'attachment')
             elif self.path == "/setup":

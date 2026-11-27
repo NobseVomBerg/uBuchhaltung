@@ -77,8 +77,8 @@ TAX_KEY_CORRECTIONS = (
 )
 
 #: Ab dieser Schema-Zahl (Version 2.4.0) trägt ein eigener Kontakt (Firma oder Person) die Besteuerungsart seiner
-#: Umsatzsteuer (``Contacts.VatMethod``: ``'ist'`` oder ``'soll'``, NULL = nicht festgelegt). Die Angabe wird nur
-#: gespeichert und angezeigt – keine Buchung, Auswertung und kein Export liest sie.
+#: Umsatzsteuer (``Contacts.VatMethod``: ``'ist'`` oder ``'soll'``, NULL = nicht festgelegt). Die Angabe wird gespeichert und
+#: angezeigt – keine Buchung liest sie; die Seite Umsatzsteuer-Voranmeldung zeigt Zahlen nur bei ``'ist'``.
 VAT_METHOD_SCHEMA = 2004
 
 #: Ab dieser Schema-Zahl (Version 2.5.0) trägt ein Bankkonto das Kennzeichen „reines Geschäftskonto“

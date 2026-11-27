@@ -6,7 +6,7 @@ Seitenübergreifender Zeitraum-Filter (Jahr / von-bis).
 
 Der gewählte Zeitraum wird als Cookie gespeichert und gilt damit über alle
 Seiten hinweg (Dashboard, Buchungen, Rechnungen, Belege, Arbeitszeiten, Fahrten und die
-vier Auswertungen BWA, EÜR, Summen- und Saldenliste, Liquidität).
+fünf Auswertungen BWA, EÜR, Summen- und Saldenliste, Liquidität, Umsatzsteuer-Voranmeldung).
 
 Auflösungs-Priorität:  explizite Query-Parameter  >  Cookie  >  Default (akt. Jahr)
 
@@ -165,8 +165,8 @@ def _is_calendar_month(d_from: date, d_to: date) -> bool:
 
 
 def period_month(date_from, date_to, today: date) -> tuple[int, int]:
-    """(Jahr, Monat), den eine Monatsauswertung (BWA, Summen- und Saldenliste, Liquidität)
-    zum gemeinsamen Zeitraum zeigt.
+    """(Jahr, Monat), den eine Monatsauswertung (BWA, Summen- und Saldenliste, Liquidität,
+    Umsatzsteuer-Voranmeldung) zum gemeinsamen Zeitraum zeigt.
 
     - Genau ein Kalendermonat: dieser Monat.
     - Sonst Jahr und Monat des Bis-Datums – ein ganzes Jahr zeigt also seinen letzten Monat,
@@ -191,7 +191,7 @@ def period_filter_widget(date_from: str, date_to: str, base_path: str,
 
     Zentrale Stelle für ALLE Seiten mit Zeitraum-Filter (Dashboard, Transactions, Receipts,
     Invoice, WorkTimes, Trips und die Auswertungen BWA, EÜR, Summen- und Saldenliste,
-    Liquidität). Datums-/Jahres-/Monatswechsel lösen einen Server-Reload aus
+    Liquidität, Umsatzsteuer-Voranmeldung). Datums-/Jahres-/Monatswechsel lösen einen Server-Reload aus
     (``base_path?from=..&to=..``), sodass nur der gewählte Zeitraum geladen/gerendert wird.
     Die Zeile steht so auf jeder Seite in derselben Höhe – deshalb nie ein eigenes Formular
     mit Auswahlfeldern oder farbigen Knöpfen an ihrer Stelle.

@@ -1,4 +1,4 @@
-# DATEV-Export, Dashboard, BWA, EÜR, Summen- und Saldenliste, Liquidität
+# DATEV-Export, Dashboard, BWA, EÜR, Summen- und Saldenliste, Liquidität, Umsatzsteuer-Voranmeldung
 
 ## DATEV-Export
 
@@ -84,16 +84,17 @@
 - Seite: Zeile „Überträge zwischen eigenen Konten“ (`.dashTransfers`) nur bei Wert ≠ 0 (auf den Cent), im Monats-Tooltip nur bei ≠ 0, ohne
   Balken; Werte maskiert. Test: `tests/test_dashboard_split.py`; `entry_form_golden_2_0_8.json` gilt nur über Saldo, Anzahl, Monatssummen.
 
-## Gemeinsames der Auswertungen (BWA, EÜR, SuSa, Liquidität)
+## Gemeinsames der Auswertungen (BWA, EÜR, SuSa, Liquidität, Umsatzsteuer-Voranmeldung)
 
 - Seiten nehmen den gemeinsamen Zeitraum (`from`/`to`, sonst Cookie, sonst laufendes Jahr – `resolve_period`; das Cookie setzt die Route);
   ungültiger Wert wird ohne Hinweis verworfen. Monatsauswertungen leiten den Monat ab (`period.period_month`, siehe `oberflaeche.md`);
   `year`/`month` liest die Seite nicht.
 - PDFs lesen ihre Parameter streng (doppelter Schlüssel ungültig, 400), setzen kein Cookie, landen nie auf der Platte (`appDownload`).
-  PDFs und CSV stehen nicht in der Positivliste des Diagnose-MCP; die Seiten `/bwa`, `/euer`, `/susa`, `/liquiditaet` stehen darin
+  PDFs und CSV stehen nicht in der Positivliste des Diagnose-MCP; die Seiten `/bwa`, `/euer`, `/susa`, `/liquiditaet`, `/ustva` stehen darin
   (schreiben nichts; Nachweis im Test). Fester Hinweis: keine Steuerberatung; keine Marken- und Produktnamen.
 - Untermenü: `REPORT_PAGES`, `reports_submenu` in `server/pages_bwa.py`; jede Seite ruft `Header1('bwa')` auf.
-- Alle haben keine eigene Lesart der Buchungen; Zahlen kommen aus `get_euer_data` bzw. den Zeilen des DATEV-Exports.
+- Alle haben keine eigene Lesart der Buchungen; Zahlen kommen aus `get_euer_data` (zerlegt in `_euer_entries`, die gelesenen Sätze, und `_euer_totals`, das
+  Aufsummieren – beide nutzt auch die Voranmeldung) bzw. den Zeilen des DATEV-Exports.
 
 ## BWA
 
@@ -130,7 +131,8 @@
 - Die Umsatzsteuer bleibt EINE virtuelle Zeile 3806 (das Umsatzsteuerkonto eines Eintrags wirkt nur in der Summen- und Saldenliste).
 - Gelesen wird der Stand der Stammdaten von heute (verschiebt Steuer früherer Zeiträume zwischen Sammelzeile und Konto; Summen bleiben).
 - Grenzen: Einordnung 6884–6892 (EÜR: Vorsteuer, Liste: Umsatzsteuer) gilt für jeden Satz; Zweckkonten, die kein Aufwand sind (Privat,
-  Darlehen), führen ihre Steuer bei 19 % als Vorsteuer. Test: `tests/test_tax_accounts_reports.py`.
+  Darlehen), führen ihre Steuer bei 19 % als Vorsteuer – die Voranmeldung nimmt Vorsteuer auf Privatkonten aus Kz 66 heraus (`private_tax`). Test:
+  `tests/test_tax_accounts_reports.py`.
 
 ## EÜR-Ansicht
 
@@ -242,3 +244,56 @@
 - Laufzeit: je Spanne zwei `get_euer_data`-Aufrufe; den größten Teil macht `_settle_stock` (liest den ganzen Bestand), die Liquiditätsrechnung
   ruft es einmal je Aufruf.
 - Tests: `tests/test_liquidity.py`, `tests/test_liquidity_pdf.py`.
+
+## Umsatzsteuer-Voranmeldung
+
+- `db/ustva.py` (rein), `Database.get_ustva`, `server/pages_ustva.py`, `export/pdf_ustva.py`; `GET /ustva`, `/ustva/pdf`. Die Kennzahlen 81 (Umsätze zu 19 %), 86 (zu
+  7 %), 66 (Vorsteuer) und 83 (Vorauszahlung) für einen Monat oder ein Quartal, zum Übertragen in den Vordruck – **die App übermittelt nichts**, kein amtliches
+  Formular, keine Steuerberatung. **Nur bei `VatMethod='ist'`** (`Database.get_vat_method`): bei `'soll'` und ohne Angabe steht ein fester Satz da (`USTVA_SOLL_TEXT`,
+  `USTVA_UNSET_TEXT`), `get_ustva` läuft nicht, und `/ustva/pdf` antwortet 400 (`USTVA_PDF_NOT_IST_TEXT`). Ein Merkmal „Kleinunternehmer“ an der Firma gibt es
+  nicht (§ 19 steht nur je Beleg): Der Satz dazu steht fest auf der Seite ohne Zahlen, mit Zahlen nur, wenn im Zeitraum Erlöse auf 4184 stehen.
+- **Zeitraum:** `art` = `monat` oder `quartal` (`read_kind`: genau einmal und gültig, sonst `quartal`, wenn der gemeinsame Zeitraum genau ein Kalenderquartal ist
+  (`is_calendar_quarter`), sonst `monat` – ohne Hinweis). Der Monat folgt dem gemeinsamen Zeitraum (`period.period_month`, siehe `oberflaeche.md`); bei einem Quartal gilt
+  das Quartal dieses Monats (`quarter_end_month`). Das PDF liest `year`, `month`, `art` streng (`read_ustva_pdf_query`: doppelter Schlüssel ungültig, `art` fehlt = Monat,
+  ein Quartal nur mit Monat 3, 6, 9 oder 12, 400 „Ungültiger Zeitraum.“, nichts getauscht oder korrigiert); `USt-Voranmeldung_JJJJ-MM.pdf` bzw. `…_JJJJ-Q1.pdf`.
+- **Keine eigene Lesart:** dieselben Sätze wie die EÜR (`_euer_entries` ohne Kontofilter: es zählt das Datum der Bankbewegung bzw. der Kassenbuchung – auch bei der Vorsteuer, nicht
+  das der Rechnung), dazu drei Ergänzungen, damit nichts still fehlt: (a) Kinder einer Bankbewegung im Zeitraum mit eigenem Datum außerhalb, (b) eigenständige Sätze ohne
+  Bankbewegung, die die EÜR nicht liest – nicht die Forderung („10000 an 4405“) und die Gegenbuchung der Stornorechnung: Sie bewegen kein Geld, die Steuer entsteht erst mit der
+  Zahlung –, (c) Bankbewegungen ohne Satz (`_liquidity_unbooked`, nur gezählt, nicht in der Summe). Formen und Art wie in der EÜR und im DATEV-Export (`matching.read_entry_form`,
+  `is_asset_transfer`, `datev_keys`).
+- **Zuordnung** (`db.ustva.assign`, rein; jede Regel hat einen Fall in `tests/test_ustva.py`): Jeder Satz steht in genau einer Kennzahl, genau einem Grund unter „Nicht zugeordnet“
+  (`UNASSIGNED_REASONS`, in dieser Reihenfolge) oder bei `neutral` – nie mit Steuer. Nicht lesbar (Text, Bruchteil, über 2^63) → `unreadable` (Basis und Steuer 0); Betrag und
+  Steuer 0 → neutral. Das Zweckkonto wie in `get_euer_data` (`purpose_first` das Konto, sonst das Gegenkonto; Umbuchung das Gegenkonto).
+  - Spiegel: neutral, mit Steuer `tax_other`. Umbuchung mit Debitor oder Wartekonto auf einer Seite („Rechnungskette“): „4405 an 4400“ nach den Erlösregeln, umgekehrt oder ohne
+    Erlös `transfer_other` (ohne Steuer neutral); Anlage ↔ Erfolgskonto neutral (mit Steuer `tax_other`); Privat ↔ Erfolgskonto `private_transfer`; jede andere Umbuchung neutral,
+    mit Steuer oder Erlöskonto `transfer_other`.
+  - Zahlung: ohne Zweckkonto `no_account`; Wartekonto `waiting`; Erlöskonto (4000–4999 und 6884–6892 ohne die Wartekonten) nach den Erlösregeln; Aufwand oder Anlage (5000–7999 ohne
+    6884–6892, 1–999) mit Steuer: ohne Satz `tax_without_rate`, Vorzeichen von Betrag und Steuer verschieden `rate_tax_mismatch`, sonst **Kz 66** (jeder Satz über 0 %, die Basis
+    als −Netto: eine Ausgabe ist positiv); Privat mit Steuer `private_tax`; Debitor und jedes andere Konto mit Steuer `tax_other`; alle ohne Steuer neutral.
+  - Erlösregeln: 4185 `account_4185` (gleich welcher Satz); Satz 0 mit Steuer `tax_without_rate`, ohne Steuer `zero_rate` (4184, 4730, 4100 …); Satz außer 19 und 7 %
+    `other_rate`; 19 oder 7 % mit Steuer 0 oder gegenläufigem Vorzeichen `rate_tax_mismatch`; sonst **Kz 81** bzw. **Kz 86** (auch gewährte Skonti 4736/4731 und Erstattungen
+    mit negativem Vorzeichen, 6885).
+  - Herkunft und Datum (nur bei einer Kennzahl oder einem Grund): ein eigenständiger Satz ist `private_transfer` oder `no_bank`; ein Satz, dessen eigenes Datum oder dessen
+    Bankbewegung außerhalb des Zeitraums liegt, ist `other_date` – er steht in beiden betroffenen Zeiträumen dort und in keiner Kennzahl. Liegen beide Daten im Zeitraum, zählt der
+    Satz normal. Die Wartekonten stehen nie im Kontendetail einer Kennzahl; erhaltenes Skonto und Erstattungen auf ein Aufwandskonto mindern 66 über das Vorzeichen (keine Sonderregel).
+- **Rundung:** nur ganze Zahlen (Minor Units), nie `float`. Die Bemessungsgrundlage steht genau und in vollen Euro ohne Cent (`BASE_ROUNDING`, EINE Stelle: zur Null hin, die Richtung ist
+  nicht belegt – `docs/fachfragen.md`; aus der Summe je Kennzahl, nie je Konto); die Steuer wie gebucht, auf den Cent, nie aus den vollen Euro neu gerechnet (das Formular kann
+  um Cent abweichen).
+- **Abstimmung:** die Steuer der Kennzahlen (81 + 86 − 66) gegen `EuerTotals.vat_minor + input_tax_minor` (Umsatzsteuer und Vorsteuer laut EÜR im selben Zeitraum, Rohvorzeichen) mit
+  der Abweichung. Sie geht auf, wenn nichts unter „Nicht zugeordnet“ steht; ein Posten dort, den die EÜR liest und der Steuer trägt, zeigt sich als Abweichung (so auch ein Satz mit
+  anderem Datum als seine Bankbewegung). 6884–6892 trennt sie nicht: Die EÜR führt die Steuer als Vorsteuer (positiv), die Seite als Kz 81 – dieselbe Summe, andere Einordnung. Ein
+  Satz, dessen Betrag, Steuerbetrag oder Steuersatz Text ist, bräche `_euer_totals` ab (wie `get_euer_data`): `get_ustva` lässt ihn in der Gegenrechnung aus, er steht unter
+  `unreadable` – nie eine Ausnahme.
+- **Invarianten (Pflicht-Tests, `tests/test_ustva.py`) – nicht lockern:** in der SuSa-Welt, in `random_books` (Seeds 1–5) und im Demobestand, für jeden Monat und jedes Quartal: Zahl,
+  Netto (die Basis von Kz 66 als −Netto) und Steuer der Kennzahlen, der Gründe (auch `unreadable`) und von `neutral` ergeben genau die der gelesenen Sätze; `neutral` trägt nie
+  Steuer; die Zahl der gelesenen Sätze (EÜR + (a) + (b)) stimmt mit eigener SQL überein. Feste Werte der SuSa-Welt (1. Quartal 2026: 81 = 400,00 €/76,00 €, 86 = 100,00 €/7,00 €,
+  66 = 21,57 €, 83 = 61,43 €, Abweichung 0,00 €) sind der Maßstab. `get_euer_data` ist durch das Herausziehen von `_euer_entries`/`_euer_totals` unverändert (SHA-256-Schnappschüsse –
+  Code ändern, nie den Schnappschuss).
+- **Seite:** vorhandene Klassen (`bwaTable`, `reportTable`, `group-row`, `child-row` …), Skript nur `var`/`function` mit Präfix `ustva`; Konten aufklappbar; die Auswahl „Anmeldezeitraum“ steht im
+  Inhalt (GET-Formular mit `from`/`to`), nie in der Menüzeile. Hinweise: Zeitraum noch nicht abgelaufen (Ende nach heute), Posten unter „Nicht zugeordnet“ oder Bankbewegungen ohne Satz,
+  Kleinunternehmer (nur bei 4184). Die Routen stehen in keiner der Mengen `_ACTION_PATHS`, `_GENERATE_PATHS`, `_JSON_PATHS`, `_POST_ONLY_JSON_PATHS`, `_SEARCH_PATHS`, `_UPLOAD_PATHS`, `_LOCK_FREE_ROUTES`.
+  PDF: A4 hoch, nichts auf der Platte; ein Grund mit langer Bezeichnung wird umbrochen (die Anzahl am Ende bleibt), ein Kontoname gekürzt.
+- **Grenzen:** Vorsteuer mit Zahlungsdatum (nicht mit dem Datum der Rechnung – über den Jahreswechsel kritisch, `docs/fachfragen.md`); kein Merkmal „Kleinunternehmer“; keine
+  Kennzahlen 43, 48, 87, 41, 35, 36, kein § 13b, keine innergemeinschaftlichen Vorgänge, keine Einfuhrumsatzsteuer, keine Kz 39, 65, 69; steuerfreie Umsätze stehen unter „Nicht
+  zugeordnet“. Viele eigenständige, nicht abgeglichene Sätze (Importbestände) ergeben viele Posten `no_bank`.
+- Tests: `tests/test_ustva.py`, `tests/test_ustva_pdf.py`.

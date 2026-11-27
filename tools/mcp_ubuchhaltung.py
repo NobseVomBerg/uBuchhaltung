@@ -211,9 +211,9 @@ def _keys(*names, period=False):
 # SQL-Abfrage. Aus demselben Grund fehlen die JSON-Route der Vorschläge zu einem Beleg (seit 2.6.0), der Buchungsvorschlag aus einem
 # Beleg (/transactions/receipt-proposal, seit 2.10.1) und der Vorschlag aus der Historie (/transactions/suggest), und die POST-Route, die die
 # Datei eines Belegs liest und die Lesung speichert, ist keine Anzeigeseite (docs/regeln/belege.md, „Belegerkennung“).
-# /bwa/pdf, /euer/pdf, /susa/pdf und /liquiditaet/pdf fehlen bewusst: Sie liefern Dokumente, keine Anzeigeseiten (die Seiten /bwa, /euer,
-# /susa und /liquiditaet schreiben nichts in den Bestand – das Cookie des Zeitraums setzen sie wie jede Seite mit period=True –, Tests in
-# tests/test_bwa.py, tests/test_euer_view.py, tests/test_susa.py und tests/test_liquidity.py).
+# /bwa/pdf, /euer/pdf, /susa/pdf, /liquiditaet/pdf und /ustva/pdf fehlen bewusst: Sie liefern Dokumente, keine Anzeigeseiten (die Seiten /bwa,
+# /euer, /susa, /liquiditaet und /ustva schreiben nichts in den Bestand – das Cookie des Zeitraums setzen sie wie jede Seite mit period=True –, Tests in
+# tests/test_bwa.py, tests/test_euer_view.py, tests/test_susa.py, tests/test_liquidity.py und tests/test_ustva.py).
 _PAGE_ALLOWLIST = {
     "/": _keys("acct", period=True),
     "/dashboard": _keys("acct", period=True),
@@ -221,6 +221,7 @@ _PAGE_ALLOWLIST = {
     "/euer": _keys(period=True),
     "/susa": _keys(period=True),
     "/liquiditaet": _keys("variant", period=True),
+    "/ustva": _keys("art", period=True),
     "/about": _keys(),
     "/invoice": _keys("search", "status", "id", period=True),
     "/invoice/view": _keys("id"),

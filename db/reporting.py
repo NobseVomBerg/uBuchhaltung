@@ -9,6 +9,7 @@ import json
 import math
 from collections import Counter
 from decimal import Decimal
+from typing import NamedTuple
 from money import to_minor, from_minor
 from . import datev_keys
 from .matching import (
@@ -197,6 +198,19 @@ def _minor_or_zero(value) -> int:
     return 0
 
 
+def _strict_minor(value):
+    """Ein Betrag aus der Datenbank als ganze Minor Units, wo er sich sicher lesen lässt: eine Ganzzahl (kein ``bool``) gilt, eine ganzzahlige endliche
+    Kommazahl unter 2^63 wird zur Ganzzahl; alles andere – Text, NULL, ein Bruchteil, NaN, eine größere Zahl – ist ``None`` (nicht lesbar). Anders als
+    ``_minor_or_zero`` wird nie still 0 daraus: Die Umsatzsteuer-Voranmeldung nennt so einen Satz."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and math.isfinite(value) and value.is_integer() and abs(value) < _MAX_MINOR:
+        return int(value)
+    return None
+
+
 def _by_sign(rest):
     """Ein Rest nach seinem Vorzeichen: ``(Einnahme, Ausgabe)`` – positiv ist eine Einnahme, alles andere eine Ausgabe."""
     return (rest, 0) if rest > 0 else (0, rest)
@@ -285,6 +299,53 @@ def _dashboard_month_list(date_from, date_to):
         months.append((f'{year:04d}-{month:02d}', label))
         year, month = (year + 1, 1) if month == 12 else (year, month + 1)
     return months
+
+
+class EuerEntry(NamedTuple):
+    """Ein Satz, den ``get_euer_data`` liest (``ReportingMixin._euer_entries``), wie die Datenbank ihn trägt – die Beträge ungeprüft, der Steuerbetrag
+    und der Steuersatz ohne NULL (0). ``parent_date``: das Datum der Bankbewegung (nur Sektion 1), sonst ``None``."""
+    amount: object
+    coa_id: object
+    counter_coa_id: object
+    tax_amount: object
+    tax_rate: object
+    stored_form: object
+    parent_date: object
+    entry_date: object
+    section: int               # 1, 2 (auch 2b) oder 3
+
+
+class EuerScan(NamedTuple):
+    """Was ``_euer_entries`` liest: die Sätze (``{Buchungs-ID: EuerEntry}``, die erste Sektion gewinnt) und die Kontenmengen, mit denen Form und Art eines
+    Satzes gelesen werden (Zahlungskonten von jetzt, Anlage- und Erfolgskonten)."""
+    entries: dict
+    liquid_coa_ids: set
+    asset_coa_ids: set
+    pl_coa_ids: set
+
+
+class EuerTotals(NamedTuple):
+    """Das Ergebnis von ``_euer_totals``: ``totals`` (Saldo je COA-ID) und ``ust_total`` als Akkumulatoren wie bisher, ``unassigned_input_tax`` (Vorsteuer
+    ohne Vorsteuerkonto, Zeile 1409), dazu ``vat_minor`` (dieselben Summanden wie ``ust_total``) und ``input_tax_minor`` (die Summe aller Steuerbeträge im
+    Vorsteuer-Zweig, mit dem Vorzeichen, wie gebucht) als ganze Zahlen."""
+    totals: dict
+    ust_total: float
+    unassigned_input_tax: object
+    vat_minor: int
+    input_tax_minor: int
+
+
+def _ustva_entry(booking_id, entry: EuerEntry, source: str, scan: EuerScan, coa_numbers: dict):
+    """Ein gelesener Satz als ``db.ustva.UstvaEntry``: Form und Art wie in ``get_euer_data`` (``read_entry_form``, ``is_asset_transfer``; ein Satz der Sektion 3
+    ist immer eine Umbuchung ohne Geldfluss), Kontonummern statt IDs und die Beträge streng gelesen (``_strict_minor``). Ein Datum, das kein Text ist
+    (per SQL-Konsole schreibbar), liegt in keinem Zeitraum: leerer Text."""
+    from .ustva import UstvaEntry
+    form = read_entry_form(entry.stored_form, entry.coa_id, entry.counter_coa_id, scan.liquid_coa_ids)
+    asset_transfer = entry.section == 3 or is_asset_transfer(entry.coa_id, entry.counter_coa_id, scan.liquid_coa_ids, scan.asset_coa_ids,
+                                                              scan.pl_coa_ids, form=form)
+    dates = [value if value is None or isinstance(value, str) else '' for value in (entry.entry_date, entry.parent_date)]
+    return UstvaEntry(booking_id, source, form, coa_numbers.get(entry.coa_id), coa_numbers.get(entry.counter_coa_id), _strict_minor(entry.amount),
+                      _strict_minor(entry.tax_amount), entry.tax_rate, dates[0], dates[1], asset_transfer)
 
 
 class ReportingMixin:
@@ -511,6 +572,300 @@ class ReportingMixin:
         """
         return self.get_dashboard(date_from, date_to, account_ids)[0]
 
+    def _euer_entries(self, cursor, date_from: str, date_to: str, account_ids: list | None = None,
+                      only_asset_transfers: bool = False) -> EuerScan:
+        """Die Sätze, die ``get_euer_data`` liest – die Sektionen 1, 2, 2b und 3 mit den Regeln aus dessen Docstring, je Satz (Schlüssel
+        ist seine ID, die erste Sektion gewinnt) als ``EuerEntry`` samt Sektion und beiden Daten. Dazu die Kontenmengen, mit denen
+        ``_euer_totals`` (und ``get_ustva``) die Form und die Art eines Satzes lesen. Rein lesend."""
+        # Zahlungskonten von jetzt: nur für Zeilen ohne gespeicherte Form (Roh-SQL)
+        liquid_coa_ids = self._get_payment_coa_ids(cursor)
+
+        cursor.execute("SELECT ID FROM Accounts")
+        all_acct_ids = {r[0] for r in cursor.fetchall()}
+        if account_ids:
+            ph = ','.join('?' * len(account_ids))
+            cursor.execute(
+                f"SELECT ID, SKRAccount, IsCash FROM Accounts "
+                f"WHERE ID IN ({ph})", account_ids)
+        else:
+            cursor.execute("SELECT ID, SKRAccount, IsCash FROM Accounts")
+        accts = cursor.fetchall()
+
+        # Sätze, die an keinem Konto hängen (Sektion 3, Verrechnungskonto), zählen nur,
+        # wenn alle Konten gewählt sind
+        unfiltered = not account_ids or all_acct_ids <= set(account_ids)
+
+        acct_ids = [a[0] for a in accts]               # auch die Kasse (Buchungsmaske)
+        cash_skr = [a[1] for a in accts if a[2]]
+        cash_coa_ids: set[int] = set()
+        if cash_skr:
+            ph = ','.join('?' * len(cash_skr))
+            cursor.execute(
+                f"SELECT ID FROM ChartOfAccounts "
+                f"WHERE AccountNumber IN ({ph})", cash_skr)
+            cash_coa_ids = {r[0] for r in cursor.fetchall()}
+
+        # Jede Buchung zählt höchstens einmal: Schlüssel ist ihre ID, die erste Sektion gewinnt.
+        # Die Sektionen sind so geschnitten, dass sie sich möglichst nicht überschneiden; die ID
+        # sorgt dafür, dass auch eine Überschneidung nie doppelt zählt (z. B. ein Satz Anlage ↔
+        # Erfolgskonto mit Account_ID = Kasse, den 2b und 3 beide träfen).
+        entries: dict[int, EuerEntry] = {}
+
+        def _collect(rows, section):
+            for booking_id, *values in rows:
+                entries.setdefault(booking_id, EuerEntry(*values, section))
+
+        # Anlage- und Erfolgskonten: Umbuchungen zwischen beiden (AfA) gehören in Sektion 3
+        asset_coa_ids = self._get_asset_coa_ids(cursor)
+        pl_coa_ids = self._get_pl_coa_ids(cursor)
+        asset_transfer_ids: set[int] = set()            # nur für ``only_asset_transfers``
+
+        # ── 1. Entry-Kinder von Bank-Buchungen ───────────────────────
+        if acct_ids:
+            ph = ','.join('?' * len(acct_ids))
+            cursor.execute(f"""
+              SELECT e.ID, e.Amount, e.COA_ID, e.CounterCOA_ID,
+                  COALESCE(e.TaxAmount, 0), COALESCE(e.TaxRate, 0), e.EntryForm, p.DateBooking, e.DateBooking
+                FROM Bookings e
+                JOIN Bookings p ON p.ID = e.ParentBooking_ID
+                WHERE e.BookingType = 'entry'
+                  AND p.Account_ID IN ({ph})
+                  AND e.DateBooking BETWEEN ? AND ?
+                  AND (e.Status IS NULL OR e.Status != 'resolved')
+            """, acct_ids + [date_from, date_to])
+            children = cursor.fetchall()
+            _collect(children, 1)
+            if only_asset_transfers:
+                # Eine Umbuchung zwischen Anlage- und Erfolgskonto UNTER einer Bankbewegung (der Restbuchwert
+                # im Split des Verkaufs, eine dort zugeordnete AfA) bewegt so wenig Geld wie eine eigenständige:
+                # Ihre Wirkung auf das Konto der Bewegung ist 0. Sie zählt mit, was sie hier beisteuert.
+                asset_transfer_ids.update(
+                    row[0] for row in children
+                    if is_asset_transfer(row[2], row[3], liquid_coa_ids, asset_coa_ids, pl_coa_ids,
+                                         form=read_entry_form(row[6], row[2], row[3], liquid_coa_ids)))
+
+        # ── 2. Standalone-Sätze auf Kassenkonten (und dem Verrechnungskonto) ──
+        # Das Verrechnungskonto hängt an keinem Konto: Es zählt nur ohne Kontofilter.
+        # Eine einzige Abfrage über beide Mengen, damit ein Satz nicht doppelt kommt,
+        # wenn 1460 zugleich die SKR-Nummer einer Kasse ist.
+        s2_coa = set(cash_coa_ids)
+        if unfiltered:
+            cursor.execute("SELECT ID FROM ChartOfAccounts WHERE AccountNumber = ?",
+                           (CLEARING_ACCOUNT_NUMBER,))
+            s2_coa.update(r[0] for r in cursor.fetchall())
+        if s2_coa:
+            coa_list = list(s2_coa)
+            ph = ','.join('?' * len(coa_list))
+            cursor.execute(f"""
+              SELECT e.ID, e.Amount, e.COA_ID, e.CounterCOA_ID,
+                  COALESCE(e.TaxAmount, 0), COALESCE(e.TaxRate, 0), e.EntryForm, NULL, e.DateBooking
+                FROM Bookings e
+                WHERE e.BookingType = 'entry'
+                  AND e.ParentBooking_ID IS NULL
+                  AND (e.COA_ID IN ({ph}) OR e.CounterCOA_ID IN ({ph}))
+                  AND e.DateBooking BETWEEN ? AND ?
+                  AND (e.Status IS NULL OR e.Status != 'resolved')
+            """, coa_list + coa_list + [date_from, date_to])
+            _collect(cursor.fetchall(), 2)
+
+        # ── 2b. Kassen-Buchungen direkt via Account_ID ────────────────
+        # Erfasst manuelle Einzel-Buchungen, bei denen Account_ID auf ein
+        # Kassenkonto zeigt, aber kein COA-Spiegel gesetzt ist (z.B. ältere
+        # Einträge ohne CounterCOA_ID oder Kasse ohne SKRAccount). Eine AfA-Buchung
+        # alter Form (mit Account_ID) und eine Umbuchung zwischen Anlage- und
+        # Erfolgskonto sind kein Geldfluss und gehören in Sektion 3 – auch wenn die
+        # Maske ihnen eine Kasse als Konto eingetragen hat (sonst zählten sie doppelt).
+        # Mit Kontofilter „nur Kasse“ zählen sie deshalb nicht: AfA hängt an keinem Konto.
+        cash_acct_ids = [a[0] for a in accts if a[2]]  # IsCash=1
+        if cash_acct_ids:
+            ph2 = ','.join('?' * len(cash_acct_ids))
+            if s2_coa:
+                # Ausschließen was schon in Sektion 2 erfasst wird
+                coa_list = list(s2_coa)
+                excl_ph = ','.join('?' * len(coa_list))
+                not_in_s2 = (
+                    f" AND NOT (COALESCE(e.COA_ID,-1) IN ({excl_ph})"
+                    f" OR COALESCE(e.CounterCOA_ID,-1) IN ({excl_ph}))")
+                excl_params: list = coa_list + coa_list
+            else:
+                not_in_s2 = ""
+                excl_params = []
+            cursor.execute(f"""
+              SELECT e.ID, e.Amount, e.COA_ID, e.CounterCOA_ID,
+                  COALESCE(e.TaxAmount, 0), COALESCE(e.TaxRate, 0), e.EntryForm, NULL, e.DateBooking
+                FROM Bookings e
+                WHERE e.BookingType = 'entry'
+                  AND e.ParentBooking_ID IS NULL
+                  AND e.Account_ID IN ({ph2})
+                  {not_in_s2}
+                  AND NOT EXISTS (SELECT 1 FROM AssetDepreciations d
+                                  WHERE d.Booking_ID = e.ID)
+                  AND e.DateBooking BETWEEN ? AND ?
+                  AND (e.Status IS NULL OR e.Status != 'resolved')
+            """, cash_acct_ids + excl_params + [date_from, date_to])
+            _collect((row for row in cursor.fetchall()
+                      if not is_asset_transfer(
+                          row[2], row[3], liquid_coa_ids, asset_coa_ids, pl_coa_ids,
+                          form=read_entry_form(row[6], row[2], row[3], liquid_coa_ids))), 2)
+
+        # ── 3. Umbuchungen zwischen Anlage- und Erfolgskonto (AfA) ────
+        # Nicht zahlungswirksam, an kein Konto gebunden: nur ohne Kontofilter. Sätze, die
+        # eine AfA-Planzeile referenziert (auch alter Form: Aufwandskonto, kein
+        # Gegenkonto), gehören immer dazu; alle übrigen nur als Anlagen-Umbuchung.
+        # Eine solche Umbuchung trägt keine Zahlung, also auch keine Vorsteuer: Steuerbetrag
+        # und -satz bleiben außen vor, der Betrag gilt, wie gebucht, als Aufwand (sonst käme
+        # z. B. aus „6220 an 0520“ +119 mit 19 % eine Vorsteuer auf 1406 dazu). Der
+        # Anlagenkauf mit Vorsteuer läuft als Kind einer Bankbewegung (Sektion 1).
+        if unfiltered:
+            asset_cond, asset_params = '', []
+            if asset_coa_ids:
+                asset_list = list(asset_coa_ids)
+                ph = ','.join('?' * len(asset_list))
+                asset_cond = f" OR e.COA_ID IN ({ph}) OR e.CounterCOA_ID IN ({ph})"
+                asset_params = asset_list + asset_list
+            cursor.execute(f"""
+              SELECT e.ID, e.Amount, e.COA_ID, e.CounterCOA_ID,
+                  EXISTS (SELECT 1 FROM AssetDepreciations d WHERE d.Booking_ID = e.ID),
+                  e.EntryForm, e.DateBooking
+                FROM Bookings e
+                WHERE e.BookingType = 'entry'
+                  AND e.ParentBooking_ID IS NULL
+                  AND e.DateBooking BETWEEN ? AND ?
+                  AND (e.Status IS NULL OR e.Status != 'resolved')
+                  AND (EXISTS (SELECT 1 FROM AssetDepreciations d
+                               WHERE d.Booking_ID = e.ID){asset_cond})
+            """, [date_from, date_to] + asset_params)
+            for (booking_id, amount, coa_id, counter_coa_id, depreciation_linked,
+                 stored_form, entry_date) in cursor.fetchall():
+                if depreciation_linked or is_asset_transfer(
+                        coa_id, counter_coa_id, liquid_coa_ids, asset_coa_ids, pl_coa_ids,
+                        form=read_entry_form(stored_form, coa_id, counter_coa_id,
+                                             liquid_coa_ids)):
+                    if booking_id not in entries:          # nur ein Satz, den Sektion 3 als erste findet
+                        asset_transfer_ids.add(booking_id)
+                    entries.setdefault(booking_id,
+                                       EuerEntry(amount, coa_id, counter_coa_id, 0, 0, stored_form, None, entry_date, 3))
+        if only_asset_transfers:
+            entries = {booking_id: entries[booking_id] for booking_id in asset_transfer_ids}
+
+        return EuerScan(entries, liquid_coa_ids, asset_coa_ids, pl_coa_ids)
+
+    def _euer_totals(self, cursor, scan: EuerScan) -> EuerTotals:
+        """Das Aufsummieren von ``get_euer_data``: je Satz das Zweckkonto bestimmen (Form, ``purpose_first`` das Konto, sonst das Gegenkonto; bei
+        einer Umbuchung beide Seiten), den Saldo je Konto, die Umsatzsteuer aus Einnahmen (virtuelle Zeile 3806) und die Vorsteuer aus Ausgaben
+        (1401/1406, Konten der Stammdaten, sonst die virtuelle Zeile 1409) bilden – die Beträge wie bisher in den Akkumulatoren ``totals`` und
+        ``ust_total``. ``vat_minor`` und ``input_tax_minor`` sind dieselben Summanden als ganze Zahl, ohne Rundung und ohne ``float``. Rein
+        lesend."""
+        from collections import defaultdict
+        from .susa import TAX_ACCOUNTS, TAX_INPUT          # hier, nicht oben: ``susa`` importiert dieses Modul
+
+        entries, liquid_coa_ids, asset_coa_ids = scan.entries, scan.liquid_coa_ids, scan.asset_coa_ids
+
+        # ── Einnahmen-COA-IDs ermitteln (für USt-Zuordnung auf 3806) ──
+        # Die Wartekonten liegen zwar in der Erlösklasse, sind aber noch keine
+        # Einnahme – ihre USt entsteht erst mit der Umbuchung bei Zahlung.
+        _neutral_ph = ','.join('?' * len(NEUTRAL_ACCOUNT_NUMBERS))
+        cursor.execute(f"""
+            SELECT ID FROM ChartOfAccounts
+            WHERE AccountNumber BETWEEN ? AND ?
+              AND AccountNumber NOT IN ({_neutral_ph})
+        """, list(INCOME_ACCOUNT_RANGE) + list(NEUTRAL_ACCOUNT_NUMBERS))
+        income_coa_ids = {r[0] for r in cursor.fetchall()}
+
+        cursor.execute("""
+            SELECT ID, AccountNumber FROM ChartOfAccounts
+            WHERE AccountNumber IN (1401, 1406)
+        """)
+        input_tax_coa_ids = {acct_nr: coa_id for coa_id, acct_nr in cursor.fetchall()}
+        report_accounts = self._report_tax_accounts(cursor)      # Vorsteuerkonten der Steuersätze (Stammdaten), je Satz
+
+        neutral_coa_ids = self._get_neutral_coa_ids(cursor)
+
+        # ── Zweck-Konto bestimmen und aggregieren ─────────────────────
+        # Netto-Beträge pro Konto + virtuelle USt-Zeile (3806) + virtuelle Vorsteuerzeile (1409)
+        totals: dict[int, float] = defaultdict(float)
+        ust_total: float = 0.0   # nur USt aus Einnahmen → 3806
+        unassigned_input_tax = 0  # Vorsteuer ohne Vorsteuerkonto → 1409
+        vat_minor = 0            # dieselben Summanden wie ust_total, als ganze Zahl (Umsatzsteuer-Voranmeldung)
+        input_tax_minor = 0      # jeder Steuerbetrag, der in den Vorsteuer-Zweig geht (Rohvorzeichen)
+
+        def _book(coa, value):
+            """Betrag verbuchen – Bestandskonten bleiben aus der EÜR heraus."""
+            if coa and coa not in neutral_coa_ids:
+                totals[coa] += value
+
+        def _purpose(coa):
+            """Zweckkonto; ein Bestandskonto ist keines (kein Vorsteuerabzug)."""
+            return coa if coa and coa not in neutral_coa_ids else None
+
+        def _book_transfer(coa, value):
+            """Umbuchung verbuchen – ein Anlagekonto ist kein Einnahme- oder Ausgabekonto
+            (AfA „Aufwand an Anlage“ soll 0520 nicht als Einnahme zeigen)."""
+            if coa not in asset_coa_ids:
+                _book(coa, value)
+
+        for entry in entries.values():
+            amount, coa_id, counter_coa_id, tax_amount, tax_rate, stored_form = entry[:6]
+            netto = amount - tax_amount  # Brutto → Netto
+
+            purpose_coa_id = None
+
+            form = read_entry_form(stored_form, coa_id, counter_coa_id, liquid_coa_ids)
+            if form in MIRROR_FORMS:
+                continue                      # Übertrag zwischen Geldkonten
+
+            if form == FORM_TRANSFER:
+                # Umbuchung (beide Seiten kontiert, keine liquide, z. B. 4405→4400):
+                # Betrag auf beide Konten verteilen, damit z. B. Erlöse unter 4400
+                # erscheinen und 4405 reduziert wird. Anlagekonten bleiben draußen.
+                purpose_coa_id = _purpose(counter_coa_id)
+                _book_transfer(counter_coa_id, netto)
+                if counter_coa_id in income_coa_ids:
+                    ust_total += tax_amount
+                    vat_minor += tax_amount
+                _book_transfer(coa_id, -netto)
+            else:
+                # Zahlung: Das Zweckkonto ist die nicht-liquide Seite. Fehlt die
+                # liquide Seite (Bankkonto ohne SKR-Nummer, nachträglich verknüpfter
+                # Beleg), bleibt es eine Zahlung – früher lief so ein Satz in den
+                # Umbuchungs-Zweig und kam mit umgedrehtem Vorzeichen und ohne
+                # Steuer in die EÜR.
+                # (Ohne Zweckkonto – nichts kontiert – ist ``purpose`` leer: nichts wird gebucht.)
+                purpose = coa_id if form == FORM_PURPOSE_FIRST else counter_coa_id
+                if purpose:
+                    purpose_coa_id = _purpose(purpose)
+                    _book(purpose, netto)
+                    if purpose in income_coa_ids:
+                        ust_total += tax_amount
+                        vat_minor += tax_amount
+
+            # Vorsteuer aus Ausgaben separat ausweisen: auf 1401/1406 (5, 7, 16, 19 %); jede andere – sie ist gezahlt und gehört
+            # in die EÜR – auf dem Vorsteuerkonto der Stammdaten, sonst auf der virtuellen Zeile 1409.
+            if (purpose_coa_id is not None
+                    and purpose_coa_id not in income_coa_ids
+                    and tax_amount != 0):
+                input_tax_minor += tax_amount
+                input_tax_account = None
+                if abs(tax_rate - 0.05) < 0.0001 or abs(tax_rate - 0.07) < 0.0001:
+                    input_tax_account = 1401
+                elif abs(tax_rate - 0.16) < 0.0001 or abs(tax_rate - 0.19) < 0.0001:
+                    input_tax_account = 1406
+                if input_tax_account in input_tax_coa_ids:
+                    totals[input_tax_coa_ids[input_tax_account]] += tax_amount
+                else:
+                    # Kein Satz von 5, 7, 16, 19 % (oder dessen Konto fehlt im Kontenrahmen, oder kein Satz): erst die feste Tabelle der Summen- und
+                    # Saldenliste (sie fängt einen als Prozentzahl gespeicherten Satz, 19 statt 0,19), dann die Stammdaten, dann die virtuelle Zeile.
+                    pct = datev_keys.percent(tax_rate)
+                    fixed_account = TAX_ACCOUNTS[TAX_INPUT].get(pct)
+                    if fixed_account in input_tax_coa_ids:
+                        totals[input_tax_coa_ids[fixed_account]] += tax_amount
+                    elif pct in report_accounts.input:
+                        totals[report_accounts.input[pct]] += tax_amount
+                    else:
+                        unassigned_input_tax += tax_amount
+
+        return EuerTotals(totals, ust_total, unassigned_input_tax, vat_minor, input_tax_minor)
+
     def get_euer_data(self, date_from: str, date_to: str,
                       account_ids: list | None = None, *,
                       only_asset_transfers: bool = False) -> list:
@@ -572,279 +927,11 @@ class ReportingMixin:
             list of (AccountNumber, Name, total_amount)
             sortiert nach AccountNumber, nur Konten mit Saldo ≠ 0.
         """
-        from collections import defaultdict
-        from .susa import TAX_ACCOUNTS, TAX_INPUT          # hier, nicht oben: ``susa`` importiert dieses Modul
-
         conn = self._get_connection()
         cursor = conn.cursor()
-
-        # Zahlungskonten von jetzt: nur für Zeilen ohne gespeicherte Form (Roh-SQL)
-        liquid_coa_ids = self._get_payment_coa_ids(cursor)
-
-        cursor.execute("SELECT ID FROM Accounts")
-        all_acct_ids = {r[0] for r in cursor.fetchall()}
-        if account_ids:
-            ph = ','.join('?' * len(account_ids))
-            cursor.execute(
-                f"SELECT ID, SKRAccount, IsCash FROM Accounts "
-                f"WHERE ID IN ({ph})", account_ids)
-        else:
-            cursor.execute("SELECT ID, SKRAccount, IsCash FROM Accounts")
-        accts = cursor.fetchall()
-
-        # Sätze, die an keinem Konto hängen (Sektion 3, Verrechnungskonto), zählen nur,
-        # wenn alle Konten gewählt sind
-        unfiltered = not account_ids or all_acct_ids <= set(account_ids)
-
-        acct_ids = [a[0] for a in accts]               # auch die Kasse (Buchungsmaske)
-        cash_skr = [a[1] for a in accts if a[2]]
-        cash_coa_ids: set[int] = set()
-        if cash_skr:
-            ph = ','.join('?' * len(cash_skr))
-            cursor.execute(
-                f"SELECT ID FROM ChartOfAccounts "
-                f"WHERE AccountNumber IN ({ph})", cash_skr)
-            cash_coa_ids = {r[0] for r in cursor.fetchall()}
-
-        # Jede Buchung zählt höchstens einmal: Schlüssel ist ihre ID, die erste Sektion gewinnt.
-        # Die Sektionen sind so geschnitten, dass sie sich möglichst nicht überschneiden; die ID
-        # sorgt dafür, dass auch eine Überschneidung nie doppelt zählt (z. B. ein Satz Anlage ↔
-        # Erfolgskonto mit Account_ID = Kasse, den 2b und 3 beide träfen).
-        entries: dict[int, tuple] = {}
-
-        def _collect(rows):
-            for booking_id, *values in rows:
-                entries.setdefault(booking_id, tuple(values))
-
-        # Anlage- und Erfolgskonten: Umbuchungen zwischen beiden (AfA) gehören in Sektion 3
-        asset_coa_ids = self._get_asset_coa_ids(cursor)
-        pl_coa_ids = self._get_pl_coa_ids(cursor)
-        asset_transfer_ids: set[int] = set()            # nur für ``only_asset_transfers``
-
-        # ── 1. Entry-Kinder von Bank-Buchungen ───────────────────────
-        if acct_ids:
-            ph = ','.join('?' * len(acct_ids))
-            cursor.execute(f"""
-              SELECT e.ID, e.Amount, e.COA_ID, e.CounterCOA_ID,
-                  COALESCE(e.TaxAmount, 0), COALESCE(e.TaxRate, 0), e.EntryForm
-                FROM Bookings e
-                JOIN Bookings p ON p.ID = e.ParentBooking_ID
-                WHERE e.BookingType = 'entry'
-                  AND p.Account_ID IN ({ph})
-                  AND e.DateBooking BETWEEN ? AND ?
-                  AND (e.Status IS NULL OR e.Status != 'resolved')
-            """, acct_ids + [date_from, date_to])
-            children = cursor.fetchall()
-            _collect(children)
-            if only_asset_transfers:
-                # Eine Umbuchung zwischen Anlage- und Erfolgskonto UNTER einer Bankbewegung (der Restbuchwert
-                # im Split des Verkaufs, eine dort zugeordnete AfA) bewegt so wenig Geld wie eine eigenständige:
-                # Ihre Wirkung auf das Konto der Bewegung ist 0. Sie zählt mit, was sie hier beisteuert.
-                asset_transfer_ids.update(
-                    row[0] for row in children
-                    if is_asset_transfer(row[2], row[3], liquid_coa_ids, asset_coa_ids, pl_coa_ids,
-                                         form=read_entry_form(row[6], row[2], row[3], liquid_coa_ids)))
-
-        # ── 2. Standalone-Sätze auf Kassenkonten (und dem Verrechnungskonto) ──
-        # Das Verrechnungskonto hängt an keinem Konto: Es zählt nur ohne Kontofilter.
-        # Eine einzige Abfrage über beide Mengen, damit ein Satz nicht doppelt kommt,
-        # wenn 1460 zugleich die SKR-Nummer einer Kasse ist.
-        s2_coa = set(cash_coa_ids)
-        if unfiltered:
-            cursor.execute("SELECT ID FROM ChartOfAccounts WHERE AccountNumber = ?",
-                           (CLEARING_ACCOUNT_NUMBER,))
-            s2_coa.update(r[0] for r in cursor.fetchall())
-        if s2_coa:
-            coa_list = list(s2_coa)
-            ph = ','.join('?' * len(coa_list))
-            cursor.execute(f"""
-              SELECT e.ID, e.Amount, e.COA_ID, e.CounterCOA_ID,
-                  COALESCE(e.TaxAmount, 0), COALESCE(e.TaxRate, 0), e.EntryForm
-                FROM Bookings e
-                WHERE e.BookingType = 'entry'
-                  AND e.ParentBooking_ID IS NULL
-                  AND (e.COA_ID IN ({ph}) OR e.CounterCOA_ID IN ({ph}))
-                  AND e.DateBooking BETWEEN ? AND ?
-                  AND (e.Status IS NULL OR e.Status != 'resolved')
-            """, coa_list + coa_list + [date_from, date_to])
-            _collect(cursor.fetchall())
-
-        # ── 2b. Kassen-Buchungen direkt via Account_ID ────────────────
-        # Erfasst manuelle Einzel-Buchungen, bei denen Account_ID auf ein
-        # Kassenkonto zeigt, aber kein COA-Spiegel gesetzt ist (z.B. ältere
-        # Einträge ohne CounterCOA_ID oder Kasse ohne SKRAccount). Eine AfA-Buchung
-        # alter Form (mit Account_ID) und eine Umbuchung zwischen Anlage- und
-        # Erfolgskonto sind kein Geldfluss und gehören in Sektion 3 – auch wenn die
-        # Maske ihnen eine Kasse als Konto eingetragen hat (sonst zählten sie doppelt).
-        # Mit Kontofilter „nur Kasse“ zählen sie deshalb nicht: AfA hängt an keinem Konto.
-        cash_acct_ids = [a[0] for a in accts if a[2]]  # IsCash=1
-        if cash_acct_ids:
-            ph2 = ','.join('?' * len(cash_acct_ids))
-            if s2_coa:
-                # Ausschließen was schon in Sektion 2 erfasst wird
-                coa_list = list(s2_coa)
-                excl_ph = ','.join('?' * len(coa_list))
-                not_in_s2 = (
-                    f" AND NOT (COALESCE(e.COA_ID,-1) IN ({excl_ph})"
-                    f" OR COALESCE(e.CounterCOA_ID,-1) IN ({excl_ph}))")
-                excl_params: list = coa_list + coa_list
-            else:
-                not_in_s2 = ""
-                excl_params = []
-            cursor.execute(f"""
-              SELECT e.ID, e.Amount, e.COA_ID, e.CounterCOA_ID,
-                  COALESCE(e.TaxAmount, 0), COALESCE(e.TaxRate, 0), e.EntryForm
-                FROM Bookings e
-                WHERE e.BookingType = 'entry'
-                  AND e.ParentBooking_ID IS NULL
-                  AND e.Account_ID IN ({ph2})
-                  {not_in_s2}
-                  AND NOT EXISTS (SELECT 1 FROM AssetDepreciations d
-                                  WHERE d.Booking_ID = e.ID)
-                  AND e.DateBooking BETWEEN ? AND ?
-                  AND (e.Status IS NULL OR e.Status != 'resolved')
-            """, cash_acct_ids + excl_params + [date_from, date_to])
-            _collect(row for row in cursor.fetchall()
-                     if not is_asset_transfer(
-                         row[2], row[3], liquid_coa_ids, asset_coa_ids, pl_coa_ids,
-                         form=read_entry_form(row[6], row[2], row[3], liquid_coa_ids)))
-
-        # ── 3. Umbuchungen zwischen Anlage- und Erfolgskonto (AfA) ────
-        # Nicht zahlungswirksam, an kein Konto gebunden: nur ohne Kontofilter. Sätze, die
-        # eine AfA-Planzeile referenziert (auch alter Form: Aufwandskonto, kein
-        # Gegenkonto), gehören immer dazu; alle übrigen nur als Anlagen-Umbuchung.
-        # Eine solche Umbuchung trägt keine Zahlung, also auch keine Vorsteuer: Steuerbetrag
-        # und -satz bleiben außen vor, der Betrag gilt, wie gebucht, als Aufwand (sonst käme
-        # z. B. aus „6220 an 0520“ +119 mit 19 % eine Vorsteuer auf 1406 dazu). Der
-        # Anlagenkauf mit Vorsteuer läuft als Kind einer Bankbewegung (Sektion 1).
-        if unfiltered:
-            asset_cond, asset_params = '', []
-            if asset_coa_ids:
-                asset_list = list(asset_coa_ids)
-                ph = ','.join('?' * len(asset_list))
-                asset_cond = f" OR e.COA_ID IN ({ph}) OR e.CounterCOA_ID IN ({ph})"
-                asset_params = asset_list + asset_list
-            cursor.execute(f"""
-              SELECT e.ID, e.Amount, e.COA_ID, e.CounterCOA_ID,
-                  EXISTS (SELECT 1 FROM AssetDepreciations d WHERE d.Booking_ID = e.ID),
-                  e.EntryForm
-                FROM Bookings e
-                WHERE e.BookingType = 'entry'
-                  AND e.ParentBooking_ID IS NULL
-                  AND e.DateBooking BETWEEN ? AND ?
-                  AND (e.Status IS NULL OR e.Status != 'resolved')
-                  AND (EXISTS (SELECT 1 FROM AssetDepreciations d
-                               WHERE d.Booking_ID = e.ID){asset_cond})
-            """, [date_from, date_to] + asset_params)
-            for (booking_id, amount, coa_id, counter_coa_id, depreciation_linked,
-                 stored_form) in cursor.fetchall():
-                if depreciation_linked or is_asset_transfer(
-                        coa_id, counter_coa_id, liquid_coa_ids, asset_coa_ids, pl_coa_ids,
-                        form=read_entry_form(stored_form, coa_id, counter_coa_id,
-                                             liquid_coa_ids)):
-                    if booking_id not in entries:          # nur ein Satz, den Sektion 3 als erste findet
-                        asset_transfer_ids.add(booking_id)
-                    entries.setdefault(booking_id,
-                                       (amount, coa_id, counter_coa_id, 0, 0, stored_form))
-        if only_asset_transfers:
-            entries = {booking_id: entries[booking_id] for booking_id in asset_transfer_ids}
-
-        # ── Einnahmen-COA-IDs ermitteln (für USt-Zuordnung auf 3806) ──
-        # Die Wartekonten liegen zwar in der Erlösklasse, sind aber noch keine
-        # Einnahme – ihre USt entsteht erst mit der Umbuchung bei Zahlung.
-        _neutral_ph = ','.join('?' * len(NEUTRAL_ACCOUNT_NUMBERS))
-        cursor.execute(f"""
-            SELECT ID FROM ChartOfAccounts
-            WHERE AccountNumber BETWEEN ? AND ?
-              AND AccountNumber NOT IN ({_neutral_ph})
-        """, list(INCOME_ACCOUNT_RANGE) + list(NEUTRAL_ACCOUNT_NUMBERS))
-        income_coa_ids = {r[0] for r in cursor.fetchall()}
-
-        cursor.execute("""
-            SELECT ID, AccountNumber FROM ChartOfAccounts
-            WHERE AccountNumber IN (1401, 1406)
-        """)
-        input_tax_coa_ids = {acct_nr: coa_id for coa_id, acct_nr in cursor.fetchall()}
-        report_accounts = self._report_tax_accounts(cursor)      # Vorsteuerkonten der Steuersätze (Stammdaten), je Satz
-
-        neutral_coa_ids = self._get_neutral_coa_ids(cursor)
-
-        # ── Zweck-Konto bestimmen und aggregieren ─────────────────────
-        # Netto-Beträge pro Konto + virtuelle USt-Zeile (3806) + virtuelle Vorsteuerzeile (1409)
-        totals: dict[int, float] = defaultdict(float)
-        ust_total: float = 0.0   # nur USt aus Einnahmen → 3806
-        unassigned_input_tax = 0  # Vorsteuer ohne Vorsteuerkonto → 1409
-
-        def _book(coa, value):
-            """Betrag verbuchen – Bestandskonten bleiben aus der EÜR heraus."""
-            if coa and coa not in neutral_coa_ids:
-                totals[coa] += value
-
-        def _purpose(coa):
-            """Zweckkonto; ein Bestandskonto ist keines (kein Vorsteuerabzug)."""
-            return coa if coa and coa not in neutral_coa_ids else None
-
-        def _book_transfer(coa, value):
-            """Umbuchung verbuchen – ein Anlagekonto ist kein Einnahme- oder Ausgabekonto
-            (AfA „Aufwand an Anlage“ soll 0520 nicht als Einnahme zeigen)."""
-            if coa not in asset_coa_ids:
-                _book(coa, value)
-
-        for amount, coa_id, counter_coa_id, tax_amount, tax_rate, stored_form in entries.values():
-            netto = amount - tax_amount  # Brutto → Netto
-
-            purpose_coa_id = None
-
-            form = read_entry_form(stored_form, coa_id, counter_coa_id, liquid_coa_ids)
-            if form in MIRROR_FORMS:
-                continue                      # Übertrag zwischen Geldkonten
-
-            if form == FORM_TRANSFER:
-                # Umbuchung (beide Seiten kontiert, keine liquide, z. B. 4405→4400):
-                # Betrag auf beide Konten verteilen, damit z. B. Erlöse unter 4400
-                # erscheinen und 4405 reduziert wird. Anlagekonten bleiben draußen.
-                purpose_coa_id = _purpose(counter_coa_id)
-                _book_transfer(counter_coa_id, netto)
-                if counter_coa_id in income_coa_ids:
-                    ust_total += tax_amount
-                _book_transfer(coa_id, -netto)
-            else:
-                # Zahlung: Das Zweckkonto ist die nicht-liquide Seite. Fehlt die
-                # liquide Seite (Bankkonto ohne SKR-Nummer, nachträglich verknüpfter
-                # Beleg), bleibt es eine Zahlung – früher lief so ein Satz in den
-                # Umbuchungs-Zweig und kam mit umgedrehtem Vorzeichen und ohne
-                # Steuer in die EÜR.
-                # (Ohne Zweckkonto – nichts kontiert – ist ``purpose`` leer: nichts wird gebucht.)
-                purpose = coa_id if form == FORM_PURPOSE_FIRST else counter_coa_id
-                if purpose:
-                    purpose_coa_id = _purpose(purpose)
-                    _book(purpose, netto)
-                    if purpose in income_coa_ids:
-                        ust_total += tax_amount
-
-            # Vorsteuer aus Ausgaben separat ausweisen: auf 1401/1406 (5, 7, 16, 19 %); jede andere – sie ist gezahlt und gehört
-            # in die EÜR – auf dem Vorsteuerkonto der Stammdaten, sonst auf der virtuellen Zeile 1409.
-            if (purpose_coa_id is not None
-                    and purpose_coa_id not in income_coa_ids
-                    and tax_amount != 0):
-                input_tax_account = None
-                if abs(tax_rate - 0.05) < 0.0001 or abs(tax_rate - 0.07) < 0.0001:
-                    input_tax_account = 1401
-                elif abs(tax_rate - 0.16) < 0.0001 or abs(tax_rate - 0.19) < 0.0001:
-                    input_tax_account = 1406
-                if input_tax_account in input_tax_coa_ids:
-                    totals[input_tax_coa_ids[input_tax_account]] += tax_amount
-                else:
-                    # Kein Satz von 5, 7, 16, 19 % (oder dessen Konto fehlt im Kontenrahmen, oder kein Satz): erst die feste Tabelle der Summen- und
-                    # Saldenliste (sie fängt einen als Prozentzahl gespeicherten Satz, 19 statt 0,19), dann die Stammdaten, dann die virtuelle Zeile.
-                    pct = datev_keys.percent(tax_rate)
-                    fixed_account = TAX_ACCOUNTS[TAX_INPUT].get(pct)
-                    if fixed_account in input_tax_coa_ids:
-                        totals[input_tax_coa_ids[fixed_account]] += tax_amount
-                    elif pct in report_accounts.input:
-                        totals[report_accounts.input[pct]] += tax_amount
-                    else:
-                        unassigned_input_tax += tax_amount
+        scan = self._euer_entries(cursor, date_from, date_to, account_ids, only_asset_transfers)
+        t = self._euer_totals(cursor, scan)
+        totals, ust_total, unassigned_input_tax = t.totals, t.ust_total, t.unassigned_input_tax
 
         # ── COA-Details laden ─────────────────────────────────────────
         result: list[tuple] = []
@@ -969,6 +1056,62 @@ class ReportingMixin:
         banks = bank_skr_numbers(self.fetch_accounts())
         bwa_report = build_report(year, month, variant, periods, rows, banks)
         return build_liquidity(year, month, variant, periods, rows, transfer_rows, bwa_report, banks, cash)
+
+    def get_ustva(self, year: int, month: int, kind: str):
+        """Umsatzsteuer-Voranmeldung für einen Monat oder ein Quartal (``db.ustva.UstvaReport``): die Kennzahlen 81, 86, 66 und 83 aus denselben Sätzen wie
+        die EÜR (``_euer_entries`` ohne Kontofilter – es zählt das Datum der Bankbewegung bzw. der Kassenbuchung, auch bei der Vorsteuer) und drei Ergänzungen,
+        damit nichts still fehlt: (a) Kinder einer Bankbewegung im Zeitraum, deren eigenes Datum außerhalb liegt, (b) eigenständige Sätze ohne Bankbewegung, die die
+        EÜR nicht liest – außer der Forderung und der Gegenbuchung der Rechnungskette ohne Erlösseite: Sie bewegen kein Geld, die Steuer entsteht erst mit der Zahlung –
+        und (c) Bankbewegungen ohne Satz (``_liquidity_unbooked``, nur gezählt). Wohin ein Satz gehört, steht in ``db.ustva.assign``; die Abstimmung nimmt
+        Umsatzsteuer und Vorsteuer aus ``_euer_totals``. Rein lesend.
+
+        ``ValueError`` wie ``db.ustva.ustva_period``: Jahr außerhalb von 1 bis 9999, Monat außerhalb von 1 bis 12, unbekannte Art oder ein Quartal, dessen
+        Monat nicht 3, 6, 9 oder 12 ist."""
+        from .ustva import SOURCE_EUER, SOURCE_OTHER_DATE, SOURCE_STANDALONE, build_ustva, is_chain_without_revenue, ustva_period
+        date_from, date_to = ustva_period(year, month, kind)
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            scan = self._euer_entries(cursor, date_from, date_to)                                  # ohne Kontofilter, wie /euer
+            # ``_euer_totals`` rechnet nur mit Zahlen: Ein Satz, dessen Betrag, Steuerbetrag oder Satz Text ist (per SQL-Konsole schreibbar), brächte es zum
+            # Absturz, wie ``get_euer_data``. Er steht hier unter „Betrag nicht lesbar“ und fehlt nur in der Gegenrechnung mit der EÜR.
+            summable = {booking_id: entry for booking_id, entry in scan.entries.items()
+                        if all(isinstance(value, (int, float)) and math.isfinite(value) for value in (entry.amount, entry.tax_amount, entry.tax_rate))}
+            euer = self._euer_totals(cursor, scan._replace(entries=summable))
+
+            coa_numbers: dict = {}
+            names: dict = {}
+            for coa_id, number, name in cursor.execute('SELECT ID, AccountNumber, Name FROM ChartOfAccounts ORDER BY ID').fetchall():
+                number = datev_keys.account_number(number)
+                coa_numbers[coa_id] = number
+                if number is not None:
+                    names.setdefault(number, _name_text(name))
+
+            entries = [_ustva_entry(booking_id, entry, SOURCE_EUER, scan, coa_numbers) for booking_id, entry in scan.entries.items()]
+            columns = "e.ID, e.Amount, e.COA_ID, e.CounterCOA_ID, COALESCE(e.TaxAmount, 0), COALESCE(e.TaxRate, 0), e.EntryForm, {parent}, e.DateBooking"
+            # (a) Kinder einer Bankbewegung im Zeitraum mit eigenem Datum außerhalb: dieselbe Auswahl wie Sektion 1 der EÜR, nur mit getauschten Daten
+            for booking_id, *values in cursor.execute(
+                    f"SELECT {columns.format(parent='p.DateBooking')} FROM Bookings e JOIN Bookings p ON p.ID = e.ParentBooking_ID "
+                    "WHERE e.BookingType = 'entry' AND p.Account_ID IN (SELECT ID FROM Accounts) AND p.DateBooking BETWEEN ? AND ? "
+                    "AND NOT (e.DateBooking BETWEEN ? AND ?) AND (e.Status IS NULL OR e.Status != 'resolved')",
+                    [date_from, date_to, date_from, date_to]).fetchall():
+                entries.append(_ustva_entry(booking_id, EuerEntry(*values, 0), SOURCE_OTHER_DATE, scan, coa_numbers))
+            # (b) eigenständige Sätze im Zeitraum, die die EÜR nicht liest
+            for booking_id, *values in cursor.execute(
+                    f"SELECT {columns.format(parent='NULL')} FROM Bookings e "
+                    "WHERE e.BookingType = 'entry' AND e.ParentBooking_ID IS NULL AND e.DateBooking BETWEEN ? AND ? "
+                    "AND (e.Status IS NULL OR e.Status != 'resolved')", [date_from, date_to]).fetchall():
+                if booking_id in scan.entries:
+                    continue
+                entry = _ustva_entry(booking_id, EuerEntry(*values, 0), SOURCE_STANDALONE, scan, coa_numbers)
+                if not is_chain_without_revenue(entry):
+                    entries.append(entry)
+            # (c) Bankbewegungen ohne Satz, die kein Übertrag deckt
+            scope = self._dashboard_scope(cursor, None)
+            unbooked = self._liquidity_unbooked(cursor, date_from, date_to, scope[0]) if scope else (0, 0)
+        finally:
+            conn.close()
+        return build_ustva(year, month, kind, entries, names, int(euer.vat_minor), int(euer.input_tax_minor), unbooked)
 
     def _susa_unbalanced(self, cursor, end: str, bound: int):
         """Die Bankbewegungen bis ``end``, deren Buchungssätze nicht ihren Betrag ergeben – dieselbe Regel und dieselbe Auswahl wie
